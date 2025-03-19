@@ -2,7 +2,7 @@
 
 This repository is part of my journey to learn about building interpreters from scratch, following Bob Nystrom's book **"Crafting Interpreters"**. 
 
-Currently, the project contains a **Java-based interpreter** (`Jlox`), which is the second interpreter built in the book.
+Currently, the project contains a **Java-based interpreter** (`Jlox`), which is the first interpreter built in the book.
 
 ## What I’m Learning
 - Writing an interpreter in **Java**.
