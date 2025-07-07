@@ -1,0 +1,42 @@
+plugins {
+    id 'java'
+}
+
+group = 'com.craftinginterpreters'
+version = '1.0-SNAPSHOT'
+
+sourceCompatibility = '21'  // Updated to JDK 21
+targetCompatibility = '21'  // Updated to JDK 21
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // Add dependencies if necessary
+    // For example:
+    // testImplementation 'org.junit.jupiter:junit-jupiter-api:5.7.2'
+}
+
+sourceSets {
+    main {
+        java {
+            // Define the directory for your main source code
+            srcDirs = ['src/com/craftinginterpreters/lox', 'src/com/craftinginterpreters/tool']
+        }
+    }
+}
+
+task buildJava {
+    dependsOn 'classes'
+}
+
+task runJava(type: JavaExec) {
+    main = 'com.craftinginterpreters.lox.Lox'  // Main class containing the main method
+    classpath = sourceSets.main.runtimeClasspath
+    args = []  // Add any arguments here if necessary
+}
+
+task cleanBuild(type: Delete) {
+    delete buildDir  // Clean the build directory
+}
