@@ -1,8 +1,11 @@
-plugins {
-    id 'java'
-}
+// // build.gradle
 
-group = 'com.craftinginterpreters'
+ plugins {
+     id 'java'
+     id 'application'
+ }
+
+group   = 'com.craftinginterpreters'
 version = '1.0-SNAPSHOT'
 
 java {
@@ -19,8 +22,6 @@ dependencies {
     // e.g. testImplementation 'org.junit.jupiter:junit-jupiter:5.9.0'
 }
 
-task runJava(type: JavaExec) {
+application {
     mainClass.set("com.craftinginterpreters.lox.Lox")
-    classpath = sourceSets.main.get().runtimeClasspath
-    args = [] 
 }
