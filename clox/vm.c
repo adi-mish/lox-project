@@ -26,9 +26,12 @@ static void runtimeError(const char *format, ...) {
   resetStack();
 }
 
-void initVM() { resetStack(); }
+void initVM() {
+  resetStack();
+  vm.objects = NULL;
+}
 
-void freeVM() {}
+void freeVM() { freeObjects(); }
 
 static InterpretResult run() {
 #define READ_BYTE() (*vm.ip++)
