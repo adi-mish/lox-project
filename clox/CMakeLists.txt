@@ -20,12 +20,19 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 #------------------------------------------------------------------------------
-# Output directories
+#------------------------------------------------------------------------------  
+# Output directories (per-configuration)  
 #------------------------------------------------------------------------------
-set(OUTPUT_DIR ${CMAKE_SOURCE_DIR}/build)
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${OUTPUT_DIR})
-set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${OUTPUT_DIR})
-set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${OUTPUT_DIR})
+set(OUTPUT_BASE ${CMAKE_SOURCE_DIR}/build)
+
+# For single-config generators (e.g. Unix Makefiles, Ninja)
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_DEBUG   ${OUTPUT_BASE}/Debug)
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_DEBUG   ${OUTPUT_BASE}/Debug)
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_DEBUG   ${OUTPUT_BASE}/Debug)
+
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE ${OUTPUT_BASE}/Release)
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_RELEASE ${OUTPUT_BASE}/Release)
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_RELEASE ${OUTPUT_BASE}/Release)
 
 #------------------------------------------------------------------------------
 # Language standards and flags
