@@ -1,54 +1,63 @@
 #pragma once
 #include "Expr.h"
 #include "Stmt.h"
-#include <map>
-#include <string>
+#include "Token.h"
+#include "Visitor.h"
+#include <stack>
+#include <unordered_map>
 #include <vector>
 
 namespace eloxir {
 
-class Resolver : public Expr::Visitor, public Stmt::Visitor {
+class Resolver : public ExprVisitor, public StmtVisitor {
 public:
-    Resolver();
-    
-    void resolve(const std::vector<std::unique_ptr<Stmt::Stmt>>& statements);
-    void resolve(Stmt::Stmt* stmt);
-    void resolve(Expr::Expr* expr);
-    
-    void visitBinaryExpr(Expr::Binary* expr) override;
-    void visitGroupingExpr(Expr::Grouping* expr) override;
-    void visitLiteralExpr(Expr::Literal* expr) override;
-    void visitUnaryExpr(Expr::Unary* expr) override;
-    void visitVariableExpr(Expr::Variable* expr) override;
-    void visitAssignExpr(Expr::Assign* expr) override;
-    void visitLogicalExpr(Expr::Logical* expr) override;
-    void visitCallExpr(Expr::Call* expr) override;
+  Resolver();
+  void resolve(const std::vector<std::unique_ptr<Stmt>> &statements);
 
-    void visitExpressionStmt(Stmt::Expression* stmt) override;
-    void visitPrintStmt(Stmt::Print* stmt) override;
-    void visitVarStmt(Stmt::Var* stmt) override;
-    void visitBlockStmt(Stmt::Block* stmt) override;
-    void visitIfStmt(Stmt::If* stmt) override;
-    void visitWhileStmt(Stmt::While* stmt) override;
-    void visitFunctionStmt(Stmt::Function* stmt) override;
-    void visitReturnStmt(Stmt::Return* stmt) override;
+  // depth map for backend/interpreter
+  std::unordered_map<const Expr *, int> locals;
+
+  // == Stmt
+  void visitBlockStmt(Block *) override;
+  void visitVarStmt(Var *) override;
+  void visitFunctionStmt(Function *) override;
+  void visitExpressionStmt(Expression *) override;
+  void visitIfStmt(If *) override;
+  void visitPrintStmt(Print *) override;
+  void visitReturnStmt(Return *) override;
+  void visitWhileStmt(While *) override;
+  void visitClassStmt(Class *) override;
+
+  // == Expr
+  void visitAssignExpr(Assign *) override;
+  void visitBinaryExpr(Binary *) override;
+  void visitCallExpr(Call *) override;
+  void visitGroupingExpr(Grouping *) override;
+  void visitLiteralExpr(Literal *) override;
+  void visitLogicalExpr(Logical *) override;
+  void visitUnaryExpr(Unary *) override;
+  void visitVariableExpr(Variable *) override;
+  void visitGetExpr(Get *) override;
+  void visitSetExpr(Set *) override;
+  void visitThisExpr(This *) override;
+  void visitSuperExpr(Super *) override;
 
 private:
-    std::vector<std::map<std::string, bool>> scopes;
-    
-    enum class FunctionType {
-        NONE,
-        FUNCTION
-    };
-    
-    FunctionType currentFunction = FunctionType::NONE;
-    
-    void beginScope();
-    void endScope();
-    void declare(const Token& name);
-    void define(const Token& name);
-    void resolveLocal(Expr::Expr* expr, const Token& name);
-    void resolveFunction(Stmt::Function* function, FunctionType type);
+  enum class FunctionType { NONE, FUNCTION, INITIALIZER, METHOD };
+  enum class ClassType { NONE, CLASS, SUBCLASS };
+
+  std::vector<std::unordered_map<std::string, bool>> scopes;
+  FunctionType currentFunction = FunctionType::NONE;
+  ClassType currentClass = ClassType::NONE;
+
+  void beginScope();
+  void endScope();
+  void declare(const Token &name);
+  void define(const Token &name);
+  void resolve(Stmt *stmt);
+  void resolve(Expr *expr);
+  void resolveFunction(Function *function, FunctionType type);
+  void resolveLocal(Expr *expr, const Token &name);
 };
 
 } // namespace eloxir

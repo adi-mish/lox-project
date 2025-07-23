@@ -1,257 +1,484 @@
 #include "Parser.h"
-#include <sstream>
-#include <stdexcept>
+#include <iostream>
 
 namespace eloxir {
 
-// Simple scanner for demo purposes
-std::vector<Token> scanTokens(const std::string& source) {
-    std::vector<Token> tokens;
-    // Just for demonstration - not a real scanner
-    // In a real implementation, this would tokenize the source
-    
-    // Add a simple token for "print" literal
-    tokens.push_back(Token(TokenType::PRINT, "print", std::monostate{}, 1));
-    
-    // Add string literal token
-    tokens.push_back(Token(TokenType::STRING, "\"hello\"", std::string("hello"), 1));
-    
-    // Add semicolon
-    tokens.push_back(Token(TokenType::SEMICOLON, ";", std::monostate{}, 1));
-    
-    // Add EOF token
-    tokens.push_back(Token(TokenType::EOF_TOKEN, "", std::monostate{}, 1));
-    
-    return tokens;
-}
+Parser::Parser(const std::vector<Token> &tokens) : tokens(tokens) {}
 
-Parser::Parser(const std::vector<Token>& tokens) : tokens(tokens), current(0) {}
+std::vector<std::unique_ptr<Stmt>> Parser::parse() {
+  std::vector<std::unique_ptr<Stmt>> statements;
 
-std::vector<std::unique_ptr<Stmt::Stmt>> Parser::parse() {
-    std::vector<std::unique_ptr<Stmt::Stmt>> statements;
-    
-    while (!isAtEnd()) {
-        try {
-            statements.push_back(declaration());
-        } catch (const ParseError&) {
-            synchronize();
-        }
-    }
-    
-    return statements;
-}
-
-std::unique_ptr<Stmt::Stmt> Parser::parseREPLLine() {
+  while (!isAtEnd()) {
     try {
-        if (match({TokenType::PRINT})) {
-            return printStatement();
-        }
-        
-        return expressionStatement();
-    } catch (const ParseError&) {
-        synchronize();
-        return nullptr;
+      auto stmt = declaration();
+      if (stmt) {
+        statements.push_back(std::move(stmt));
+      }
+    } catch (const std::runtime_error &e) {
+      std::cerr << "Parse error: " << e.what() << std::endl;
+      synchronize();
     }
+  }
+
+  return statements;
 }
 
-std::unique_ptr<Expr::Expr> Parser::expression() {
-    return assignment();
-}
-
-std::unique_ptr<Expr::Expr> Parser::assignment() {
-    // Simplified assignment parsing for now
-    return equality();
-}
-
-std::unique_ptr<Expr::Expr> Parser::equality() {
-    // Simplified for now
-    return primary();
-}
-
-std::unique_ptr<Expr::Expr> Parser::comparison() {
-    // Simplified
-    return term();
-}
-
-std::unique_ptr<Expr::Expr> Parser::term() {
-    // Simplified
-    return factor();
-}
-
-std::unique_ptr<Expr::Expr> Parser::factor() {
-    // Simplified
-    return unary();
-}
-
-std::unique_ptr<Expr::Expr> Parser::unary() {
-    // Simplified
-    return primary();
-}
-
-std::unique_ptr<Expr::Expr> Parser::primary() {
-    if (match({TokenType::STRING})) {
-        std::string strValue = std::get<std::string>(previous().getLiteral());
-        return std::make_unique<Expr::Literal>(strValue);
-    }
-    
-    // Simplified
-    return nullptr;
-}
-
-std::unique_ptr<Expr::Expr> Parser::call() {
-    // Simplified
-    return primary();
-}
-
-std::unique_ptr<Expr::Expr> Parser::finishCall(std::unique_ptr<Expr::Expr> callee) {
-    // Simplified
-    return callee;
-}
-
-std::unique_ptr<Stmt::Stmt> Parser::declaration() {
-    if (match({TokenType::VAR})) {
-        return varDeclaration();
-    }
-    
+std::unique_ptr<Stmt> Parser::declaration() {
+  try {
+    if (match(TokenType::CLASS))
+      return classDeclaration();
+    if (match(TokenType::FUN))
+      return std::unique_ptr<Stmt>(funDeclaration("function"));
+    if (match(TokenType::VAR))
+      return varDeclaration();
     return statement();
+  } catch (const std::runtime_error &e) {
+    synchronize();
+    throw;
+  }
 }
 
-std::unique_ptr<Stmt::Stmt> Parser::varDeclaration() {
-    // Simplified
-    return nullptr;
+std::unique_ptr<Stmt> Parser::classDeclaration() {
+  Token name = consume(TokenType::IDENTIFIER, "Expected class name.");
+
+  std::unique_ptr<Variable> superclass = nullptr;
+  if (match(TokenType::LESS)) {
+    consume(TokenType::IDENTIFIER, "Expected superclass name.");
+    superclass = std::make_unique<Variable>(previous());
+  }
+
+  consume(TokenType::LEFT_BRACE, "Expected '{' before class body.");
+
+  std::vector<std::unique_ptr<Function>> methods;
+  while (!check(TokenType::RIGHT_BRACE) && !isAtEnd()) {
+    methods.push_back(funDeclaration("method"));
+  }
+
+  consume(TokenType::RIGHT_BRACE, "Expected '}' after class body.");
+  return std::make_unique<Class>(name, std::move(superclass),
+                                 std::move(methods));
 }
 
-std::unique_ptr<Stmt::Stmt> Parser::statement() {
-    if (match({TokenType::PRINT})) {
-        return printStatement();
+std::unique_ptr<Function> Parser::funDeclaration(const std::string &kind) {
+  Token name = consume(TokenType::IDENTIFIER, "Expected " + kind + " name.");
+
+  consume(TokenType::LEFT_PAREN, "Expected '(' after " + kind + " name.");
+  std::vector<Token> parameters;
+  if (!check(TokenType::RIGHT_PAREN)) {
+    do {
+      if (parameters.size() >= 255) {
+        error(peek(), "Can't have more than 255 parameters.");
+      }
+      parameters.push_back(
+          consume(TokenType::IDENTIFIER, "Expected parameter name."));
+    } while (match(TokenType::COMMA));
+  }
+  consume(TokenType::RIGHT_PAREN, "Expected ')' after parameters.");
+
+  consume(TokenType::LEFT_BRACE, "Expected '{' before " + kind + " body.");
+  auto body = block();
+  return std::make_unique<Function>(name, std::move(parameters),
+                                    std::move(body));
+}
+
+std::unique_ptr<Stmt> Parser::varDeclaration() {
+  Token name = consume(TokenType::IDENTIFIER, "Expected variable name.");
+
+  std::unique_ptr<Expr> initializer = nullptr;
+  if (match(TokenType::EQUAL)) {
+    initializer = expression();
+  }
+
+  consume(TokenType::SEMICOLON, "Expected ';' after variable declaration.");
+  return std::make_unique<Var>(name, std::move(initializer));
+}
+
+std::unique_ptr<Stmt> Parser::statement() {
+  if (match(TokenType::FOR))
+    return forStatement();
+  if (match(TokenType::IF))
+    return ifStatement();
+  if (match(TokenType::PRINT))
+    return printStatement();
+  if (match(TokenType::RETURN))
+    return returnStatement();
+  if (match(TokenType::WHILE))
+    return whileStatement();
+  if (match(TokenType::LEFT_BRACE))
+    return std::unique_ptr<Stmt>(block());
+
+  return expressionStatement();
+}
+
+std::unique_ptr<Stmt> Parser::forStatement() {
+  consume(TokenType::LEFT_PAREN, "Expected '(' after 'for'.");
+
+  std::unique_ptr<Stmt> initializer;
+  if (match(TokenType::SEMICOLON)) {
+    initializer = nullptr;
+  } else if (match(TokenType::VAR)) {
+    initializer = varDeclaration();
+  } else {
+    initializer = expressionStatement();
+  }
+
+  std::unique_ptr<Expr> condition = nullptr;
+  if (!check(TokenType::SEMICOLON)) {
+    condition = expression();
+  }
+  consume(TokenType::SEMICOLON, "Expected ';' after loop condition.");
+
+  std::unique_ptr<Expr> increment = nullptr;
+  if (!check(TokenType::RIGHT_PAREN)) {
+    increment = expression();
+  }
+  consume(TokenType::RIGHT_PAREN, "Expected ')' after for clauses.");
+
+  auto body = statement();
+
+  if (increment != nullptr) {
+    std::vector<std::unique_ptr<Stmt>> statements;
+    statements.push_back(std::move(body));
+    statements.push_back(std::make_unique<Expression>(std::move(increment)));
+    body = std::make_unique<Block>(std::move(statements));
+  }
+
+  if (condition == nullptr) {
+    condition = std::make_unique<Literal>(true);
+  }
+  body = std::make_unique<While>(std::move(condition), std::move(body));
+
+  if (initializer != nullptr) {
+    std::vector<std::unique_ptr<Stmt>> statements;
+    statements.push_back(std::move(initializer));
+    statements.push_back(std::move(body));
+    body = std::make_unique<Block>(std::move(statements));
+  }
+
+  return body;
+}
+
+std::unique_ptr<Stmt> Parser::ifStatement() {
+  consume(TokenType::LEFT_PAREN, "Expected '(' after 'if'.");
+  auto condition = expression();
+  consume(TokenType::RIGHT_PAREN, "Expected ')' after if condition.");
+
+  auto thenBranch = statement();
+  std::unique_ptr<Stmt> elseBranch = nullptr;
+  if (match(TokenType::ELSE)) {
+    elseBranch = statement();
+  }
+
+  return std::make_unique<If>(std::move(condition), std::move(thenBranch),
+                              std::move(elseBranch));
+}
+
+std::unique_ptr<Stmt> Parser::printStatement() {
+  auto value = expression();
+  consume(TokenType::SEMICOLON, "Expected ';' after value.");
+  return std::make_unique<Print>(std::move(value));
+}
+
+std::unique_ptr<Stmt> Parser::returnStatement() {
+  Token keyword = previous();
+  std::unique_ptr<Expr> value = nullptr;
+  if (!check(TokenType::SEMICOLON)) {
+    value = expression();
+  }
+
+  consume(TokenType::SEMICOLON, "Expected ';' after return value.");
+  return std::make_unique<Return>(keyword, std::move(value));
+}
+
+std::unique_ptr<Stmt> Parser::whileStatement() {
+  consume(TokenType::LEFT_PAREN, "Expected '(' after 'while'.");
+  auto condition = expression();
+  consume(TokenType::RIGHT_PAREN, "Expected ')' after condition.");
+  auto body = statement();
+
+  return std::make_unique<While>(std::move(condition), std::move(body));
+}
+
+std::unique_ptr<Stmt> Parser::expressionStatement() {
+  auto expr = expression();
+  consume(TokenType::SEMICOLON, "Expected ';' after expression.");
+  return std::make_unique<Expression>(std::move(expr));
+}
+
+std::unique_ptr<Block> Parser::block() {
+  std::vector<std::unique_ptr<Stmt>> statements;
+
+  while (!check(TokenType::RIGHT_BRACE) && !isAtEnd()) {
+    statements.push_back(declaration());
+  }
+
+  consume(TokenType::RIGHT_BRACE, "Expected '}' after block.");
+  return std::make_unique<Block>(std::move(statements));
+}
+
+std::unique_ptr<Expr> Parser::expression() { return assignment(); }
+
+std::unique_ptr<Expr> Parser::assignment() {
+  auto expr = logic_or();
+
+  if (match(TokenType::EQUAL)) {
+    Token equals = previous();
+    auto value = assignment();
+
+    if (auto var = dynamic_cast<Variable *>(expr.get())) {
+      Token name = var->name;
+      return std::make_unique<Assign>(name, std::move(value));
+    } else if (auto get = dynamic_cast<Get *>(expr.get())) {
+      return std::make_unique<Set>(std::move(get->object), get->name,
+                                   std::move(value));
     }
-    
-    return expressionStatement();
+
+    error(equals, "Invalid assignment target.");
+  }
+
+  return expr;
 }
 
-std::unique_ptr<Stmt::Stmt> Parser::printStatement() {
-    auto value = expression();
-    consume(TokenType::SEMICOLON, "Expect ';' after value.");
-    return std::make_unique<Stmt::Print>(std::move(value));
+std::unique_ptr<Expr> Parser::logic_or() {
+  auto expr = logic_and();
+
+  while (match(TokenType::OR)) {
+    Token op = previous();
+    auto right = logic_and();
+    expr = std::make_unique<Logical>(std::move(expr), op, std::move(right));
+  }
+
+  return expr;
 }
 
-std::unique_ptr<Stmt::Stmt> Parser::expressionStatement() {
+std::unique_ptr<Expr> Parser::logic_and() {
+  auto expr = equality();
+
+  while (match(TokenType::AND)) {
+    Token op = previous();
+    auto right = equality();
+    expr = std::make_unique<Logical>(std::move(expr), op, std::move(right));
+  }
+
+  return expr;
+}
+
+std::unique_ptr<Expr> Parser::equality() {
+  auto expr = comparison();
+
+  while (match({TokenType::BANG_EQUAL, TokenType::EQUAL_EQUAL})) {
+    Token op = previous();
+    auto right = comparison();
+    expr = std::make_unique<Binary>(std::move(expr), op, std::move(right));
+  }
+
+  return expr;
+}
+
+std::unique_ptr<Expr> Parser::comparison() {
+  auto expr = term();
+
+  while (match({TokenType::GREATER, TokenType::GREATER_EQUAL, TokenType::LESS,
+                TokenType::LESS_EQUAL})) {
+    Token op = previous();
+    auto right = term();
+    expr = std::make_unique<Binary>(std::move(expr), op, std::move(right));
+  }
+
+  return expr;
+}
+
+std::unique_ptr<Expr> Parser::term() {
+  auto expr = factor();
+
+  while (match({TokenType::MINUS, TokenType::PLUS})) {
+    Token op = previous();
+    auto right = factor();
+    expr = std::make_unique<Binary>(std::move(expr), op, std::move(right));
+  }
+
+  return expr;
+}
+
+std::unique_ptr<Expr> Parser::factor() {
+  auto expr = unary();
+
+  while (match({TokenType::SLASH, TokenType::STAR})) {
+    Token op = previous();
+    auto right = unary();
+    expr = std::make_unique<Binary>(std::move(expr), op, std::move(right));
+  }
+
+  return expr;
+}
+
+std::unique_ptr<Expr> Parser::unary() {
+  if (match({TokenType::BANG, TokenType::MINUS})) {
+    Token op = previous();
+    auto right = unary();
+    return std::make_unique<Unary>(op, std::move(right));
+  }
+
+  return call();
+}
+
+std::unique_ptr<Expr> Parser::call() {
+  auto expr = primary();
+
+  while (true) {
+    if (match(TokenType::LEFT_PAREN)) {
+      expr = finishCall(std::move(expr));
+    } else if (match(TokenType::DOT)) {
+      Token name =
+          consume(TokenType::IDENTIFIER, "Expected property name after '.'.");
+      expr = std::make_unique<Get>(std::move(expr), name);
+    } else {
+      break;
+    }
+  }
+
+  return expr;
+}
+
+std::unique_ptr<Expr> Parser::finishCall(std::unique_ptr<Expr> callee) {
+  std::vector<std::unique_ptr<Expr>> arguments;
+
+  if (!check(TokenType::RIGHT_PAREN)) {
+    do {
+      if (arguments.size() >= 255) {
+        error(peek(), "Can't have more than 255 arguments.");
+      }
+      arguments.push_back(expression());
+    } while (match(TokenType::COMMA));
+  }
+
+  Token paren =
+      consume(TokenType::RIGHT_PAREN, "Expected ')' after arguments.");
+  return std::make_unique<Call>(std::move(callee), paren, std::move(arguments));
+}
+
+std::unique_ptr<Expr> Parser::primary() {
+  if (match(TokenType::TRUE))
+    return std::make_unique<Literal>(true);
+  if (match(TokenType::FALSE))
+    return std::make_unique<Literal>(false);
+  if (match(TokenType::NIL))
+    return std::make_unique<Literal>(nullptr);
+
+  if (match(TokenType::NUMBER)) {
+    return std::make_unique<Literal>(previous().getLiteral());
+  }
+
+  if (match(TokenType::STRING)) {
+    return std::make_unique<Literal>(previous().getLiteral());
+  }
+
+  if (match(TokenType::SUPER)) {
+    Token keyword = previous();
+    consume(TokenType::DOT, "Expected '.' after 'super'.");
+    Token method =
+        consume(TokenType::IDENTIFIER, "Expected superclass method name.");
+    return std::make_unique<Super>(keyword, method);
+  }
+
+  if (match(TokenType::THIS)) {
+    return std::make_unique<This>(previous());
+  }
+
+  if (match(TokenType::IDENTIFIER)) {
+    return std::make_unique<Variable>(previous());
+  }
+
+  if (match(TokenType::LEFT_PAREN)) {
     auto expr = expression();
-    consume(TokenType::SEMICOLON, "Expect ';' after expression.");
-    return std::make_unique<Stmt::Expression>(std::move(expr));
+    consume(TokenType::RIGHT_PAREN, "Expected ')' after expression.");
+    return std::make_unique<Grouping>(std::move(expr));
+  }
+
+  throw error(peek(), "Expected expression.");
 }
 
-std::unique_ptr<Stmt::Stmt> Parser::block() {
-    // Simplified
-    return nullptr;
-}
-
-std::unique_ptr<Stmt::Stmt> Parser::ifStatement() {
-    // Simplified
-    return nullptr;
-}
-
-std::unique_ptr<Stmt::Stmt> Parser::whileStatement() {
-    // Simplified
-    return nullptr;
-}
-
-std::unique_ptr<Stmt::Stmt> Parser::forStatement() {
-    // Simplified
-    return nullptr;
-}
-
-std::unique_ptr<Stmt::Function> Parser::function(const std::string& kind) {
-    // Simplified
-    return nullptr;
-}
-
-std::unique_ptr<Stmt::Stmt> Parser::returnStatement() {
-    // Simplified
-    return nullptr;
-}
-
-bool Parser::match(const std::vector<TokenType>& types) {
-    for (TokenType type : types) {
-        if (check(type)) {
-            advance();
-            return true;
-        }
+// Helper methods
+bool Parser::match(const std::initializer_list<TokenType> &types) {
+  for (TokenType type : types) {
+    if (check(type)) {
+      advance();
+      return true;
     }
-    return false;
+  }
+  return false;
 }
 
-bool Parser::check(TokenType type) const {
-    if (isAtEnd()) return false;
-    return peek().getType() == type;
+bool Parser::match(TokenType type) {
+  if (check(type)) {
+    advance();
+    return true;
+  }
+  return false;
+}
+
+bool Parser::check(TokenType type) {
+  if (isAtEnd())
+    return false;
+  return peek().getType() == type;
 }
 
 Token Parser::advance() {
-    if (!isAtEnd()) current++;
-    return previous();
+  if (!isAtEnd())
+    current++;
+  return previous();
 }
 
-bool Parser::isAtEnd() const {
-    return peek().getType() == TokenType::EOF_TOKEN;
+bool Parser::isAtEnd() { return peek().getType() == TokenType::EOF_TOKEN; }
+
+Token Parser::peek() { return tokens[current]; }
+
+Token Parser::previous() { return tokens[current - 1]; }
+
+Token Parser::consume(TokenType type, const std::string &message) {
+  if (check(type))
+    return advance();
+
+  throw error(peek(), message);
 }
 
-Token Parser::peek() const {
-    return tokens[current];
-}
+std::runtime_error Parser::error(const Token &token,
+                                 const std::string &message) {
+  std::string where;
+  if (token.getType() == TokenType::EOF_TOKEN) {
+    where = " at end";
+  } else {
+    where = " at '" + token.getLexeme() + "'";
+  }
 
-Token Parser::previous() const {
-    return tokens[current - 1];
-}
-
-Token Parser::consume(TokenType type, const std::string& message) {
-    if (check(type)) return advance();
-    throw error(peek(), message);
-}
-
-Parser::ParseError Parser::error(const Token& token, const std::string& message) {
-    std::ostringstream errorMsg;
-    if (token.getType() == TokenType::EOF_TOKEN) {
-        errorMsg << "at end: " << message;
-    } else {
-        errorMsg << "at '" << token.getLexeme() << "': " << message;
-    }
-    
-    return ParseError(errorMsg.str());
+  std::string fullMessage = "[line " + std::to_string(token.getLine()) +
+                            "] Error" + where + ": " + message;
+  return std::runtime_error(fullMessage);
 }
 
 void Parser::synchronize() {
-    advance();
-    
-    while (!isAtEnd()) {
-        if (previous().getType() == TokenType::SEMICOLON) return;
-        
-        switch (peek().getType()) {
-            case TokenType::CLASS:
-            case TokenType::FUN:
-            case TokenType::VAR:
-            case TokenType::FOR:
-            case TokenType::IF:
-            case TokenType::WHILE:
-            case TokenType::PRINT:
-            case TokenType::RETURN:
-                return;
-            default:
-                break;
-        }
-        
-        advance();
-    }
-}
+  advance();
 
-std::pair<std::unique_ptr<Stmt::Stmt>, std::string> parseREPL(const std::string& source) {
-    try {
-        auto tokens = scanTokens(source);
-        Parser parser(tokens);
-        auto stmt = parser.parseREPLLine();
-        return {std::move(stmt), ""};
-    } catch (const std::exception& e) {
-        return {nullptr, e.what()};
+  while (!isAtEnd()) {
+    if (previous().getType() == TokenType::SEMICOLON)
+      return;
+
+    switch (peek().getType()) {
+    case TokenType::CLASS:
+    case TokenType::FUN:
+    case TokenType::VAR:
+    case TokenType::FOR:
+    case TokenType::IF:
+    case TokenType::WHILE:
+    case TokenType::PRINT:
+    case TokenType::RETURN:
+      return;
+    default:
+      break;
     }
+
+    advance();
+  }
 }
 
 } // namespace eloxir

@@ -3,166 +3,210 @@
 
 namespace eloxir {
 
-Resolver::Resolver() {}
+Resolver::Resolver() = default;
 
-void Resolver::resolve(const std::vector<std::unique_ptr<Stmt::Stmt>>& statements) {
-    for (const auto& statement : statements) {
-        resolve(statement.get());
+void Resolver::resolve(const std::vector<std::unique_ptr<Stmt>> &statements) {
+  for (const auto &s : statements)
+    resolve(s.get());
+}
+
+void Resolver::resolve(Stmt *stmt) { stmt->accept(this); }
+void Resolver::resolve(Expr *expr) { expr->accept(this); }
+
+void Resolver::beginScope() { scopes.emplace_back(); }
+void Resolver::endScope() { scopes.pop_back(); }
+
+void Resolver::declare(const Token &name) {
+  if (scopes.empty())
+    return;
+  auto &scope = scopes.back();
+  if (scope.find(name.getLexeme()) != scope.end()) {
+    throw std::runtime_error("Variable already declared in this scope: " +
+                             name.getLexeme());
+  }
+  scope[name.getLexeme()] = false;
+}
+
+void Resolver::define(const Token &name) {
+  if (scopes.empty())
+    return;
+  scopes.back()[name.getLexeme()] = true;
+}
+
+void Resolver::resolveLocal(Expr *expr, const Token &name) {
+  for (int i = static_cast<int>(scopes.size()) - 1; i >= 0; --i) {
+    if (scopes[i].count(name.getLexeme())) {
+      locals[expr] = static_cast<int>(scopes.size()) - 1 - i;
+      return;
     }
+  }
+  // global variable, leave unresolved
 }
 
-void Resolver::resolve(Stmt::Stmt* stmt) {
-    stmt->accept(this);
+void Resolver::resolveFunction(Function *function, FunctionType type) {
+  FunctionType enclosing = currentFunction;
+  currentFunction = type;
+
+  beginScope();
+  for (const auto &param : function->params) {
+    declare(param);
+    define(param);
+  }
+  resolve(function->body.get());
+  endScope();
+
+  currentFunction = enclosing;
 }
 
-void Resolver::resolve(Expr::Expr* expr) {
-    expr->accept(this);
+// === Stmt visitors ===
+void Resolver::visitBlockStmt(Block *s) {
+  beginScope();
+  for (auto &st : s->statements)
+    resolve(st.get());
+  endScope();
 }
 
-void Resolver::visitBinaryExpr(Expr::Binary* expr) {
-    resolve(expr->left.get());
-    resolve(expr->right.get());
+void Resolver::visitVarStmt(Var *s) {
+  declare(s->name);
+  if (s->initializer)
+    resolve(s->initializer.get());
+  define(s->name);
 }
 
-void Resolver::visitGroupingExpr(Expr::Grouping* expr) {
-    resolve(expr->expression.get());
+void Resolver::visitFunctionStmt(Function *s) {
+  declare(s->name);
+  define(s->name);
+  resolveFunction(s, FunctionType::FUNCTION);
 }
 
-void Resolver::visitLiteralExpr(Expr::Literal* /*expr*/) {
-    // Nothing to resolve
+void Resolver::visitExpressionStmt(Expression *s) {
+  resolve(s->expression.get());
 }
 
-void Resolver::visitUnaryExpr(Expr::Unary* expr) {
-    resolve(expr->right.get());
+void Resolver::visitIfStmt(If *s) {
+  resolve(s->condition.get());
+  resolve(s->thenBranch.get());
+  if (s->elseBranch)
+    resolve(s->elseBranch.get());
 }
 
-void Resolver::visitVariableExpr(Expr::Variable* expr) {
-    if (!scopes.empty()) {
-        auto& scope = scopes.back();
-        auto it = scope.find(expr->name.getLexeme());
-        if (it != scope.end() && it->second == false) {
-            throw std::runtime_error("Can't read local variable in its own initializer.");
-        }
+void Resolver::visitPrintStmt(Print *s) { resolve(s->expression.get()); }
+
+void Resolver::visitReturnStmt(Return *s) {
+  if (currentFunction == FunctionType::NONE) {
+    throw std::runtime_error("Can't return from top-level code.");
+  }
+  if (s->value) {
+    if (currentFunction == FunctionType::INITIALIZER) {
+      throw std::runtime_error("Can't return a value from an initializer.");
     }
-    
-    resolveLocal(expr, expr->name);
+    resolve(s->value.get());
+  }
 }
 
-void Resolver::visitAssignExpr(Expr::Assign* expr) {
-    resolve(expr->value.get());
-    resolveLocal(expr, expr->name);
+void Resolver::visitWhileStmt(While *s) {
+  resolve(s->condition.get());
+  resolve(s->body.get());
 }
 
-void Resolver::visitLogicalExpr(Expr::Logical* expr) {
-    resolve(expr->left.get());
-    resolve(expr->right.get());
-}
+void Resolver::visitClassStmt(Class *s) {
+  ClassType enclosingClass = currentClass;
+  currentClass = ClassType::CLASS;
 
-void Resolver::visitCallExpr(Expr::Call* expr) {
-    resolve(expr->callee.get());
-    
-    for (const auto& argument : expr->arguments) {
-        resolve(argument.get());
-    }
-}
+  declare(s->name);
+  define(s->name);
 
-void Resolver::visitExpressionStmt(Stmt::Expression* stmt) {
-    resolve(stmt->expression.get());
-}
+  if (s->superclass && s->superclass->name.getLexeme() == s->name.getLexeme()) {
+    throw std::runtime_error("A class can't inherit from itself.");
+  }
 
-void Resolver::visitPrintStmt(Stmt::Print* stmt) {
-    resolve(stmt->expression.get());
-}
+  if (s->superclass) {
+    currentClass = ClassType::SUBCLASS;
+    resolve(s->superclass.get());
 
-void Resolver::visitVarStmt(Stmt::Var* stmt) {
-    declare(stmt->name);
-    if (stmt->initializer != nullptr) {
-        resolve(stmt->initializer.get());
-    }
-    define(stmt->name);
-}
-
-void Resolver::visitBlockStmt(Stmt::Block* stmt) {
     beginScope();
-    resolve(stmt->statements);
+    scopes.back()["super"] = true;
+  }
+
+  beginScope();
+  scopes.back()["this"] = true;
+
+  for (auto &method : s->methods) {
+    FunctionType decl = (method->name.getLexeme() == "init")
+                            ? FunctionType::INITIALIZER
+                            : FunctionType::METHOD;
+    resolveFunction(method.get(), decl);
+  }
+  endScope();
+
+  if (s->superclass)
     endScope();
+  currentClass = enclosingClass;
 }
 
-void Resolver::visitIfStmt(Stmt::If* stmt) {
-    resolve(stmt->condition.get());
-    resolve(stmt->thenBranch.get());
-    if (stmt->elseBranch != nullptr) {
-        resolve(stmt->elseBranch.get());
+// === Expr visitors ===
+void Resolver::visitAssignExpr(Assign *e) {
+  resolve(e->value.get());
+  resolveLocal(e, e->name);
+}
+
+void Resolver::visitBinaryExpr(Binary *e) {
+  resolve(e->left.get());
+  resolve(e->right.get());
+}
+
+void Resolver::visitCallExpr(Call *e) {
+  resolve(e->callee.get());
+  for (auto &arg : e->arguments)
+    resolve(arg.get());
+}
+
+void Resolver::visitGroupingExpr(Grouping *e) { resolve(e->expression.get()); }
+
+void Resolver::visitLiteralExpr(Literal *) { /* nothing */
+}
+
+void Resolver::visitLogicalExpr(Logical *e) {
+  resolve(e->left.get());
+  resolve(e->right.get());
+}
+
+void Resolver::visitUnaryExpr(Unary *e) { resolve(e->right.get()); }
+
+void Resolver::visitVariableExpr(Variable *e) {
+  if (!scopes.empty()) {
+    auto &scope = scopes.back();
+    const auto &lex = e->name.getLexeme();
+    if (scope.count(lex) && scope[lex] == false) {
+      throw std::runtime_error(
+          "Can't read local variable in its own initializer.");
     }
+  }
+  resolveLocal(e, e->name);
 }
 
-void Resolver::visitWhileStmt(Stmt::While* stmt) {
-    resolve(stmt->condition.get());
-    resolve(stmt->body.get());
+void Resolver::visitGetExpr(Get *e) { resolve(e->object.get()); }
+
+void Resolver::visitSetExpr(Set *e) {
+  resolve(e->value.get());
+  resolve(e->object.get());
 }
 
-void Resolver::visitFunctionStmt(Stmt::Function* stmt) {
-    declare(stmt->name);
-    define(stmt->name);
-    
-    resolveFunction(stmt, FunctionType::FUNCTION);
+void Resolver::visitThisExpr(This *e) {
+  if (currentClass == ClassType::NONE) {
+    throw std::runtime_error("Can't use 'this' outside of a class.");
+  }
+  resolveLocal(e, e->keyword);
 }
 
-void Resolver::visitReturnStmt(Stmt::Return* stmt) {
-    if (currentFunction == FunctionType::NONE) {
-        throw std::runtime_error("Can't return from top-level code.");
-    }
-    
-    if (stmt->value != nullptr) {
-        resolve(stmt->value.get());
-    }
-}
-
-void Resolver::beginScope() {
-    scopes.emplace_back();
-}
-
-void Resolver::endScope() {
-    scopes.pop_back();
-}
-
-void Resolver::declare(const Token& name) {
-    if (scopes.empty()) return;
-    
-    auto& scope = scopes.back();
-    if (scope.find(name.getLexeme()) != scope.end()) {
-        throw std::runtime_error("Already a variable with this name in this scope.");
-    }
-    scope[name.getLexeme()] = false;
-}
-
-void Resolver::define(const Token& name) {
-    if (scopes.empty()) return;
-    scopes.back()[name.getLexeme()] = true;
-}
-
-void Resolver::resolveLocal(Expr::Expr* expr, const Token& name) {
-    for (int i = scopes.size() - 1; i >= 0; i--) {
-        if (scopes[i].find(name.getLexeme()) != scopes[i].end()) {
-            // In real implementation, this would set the depth to i
-            return;
-        }
-    }
-}
-
-void Resolver::resolveFunction(Stmt::Function* function, FunctionType type) {
-    FunctionType enclosingFunction = currentFunction;
-    currentFunction = type;
-    
-    beginScope();
-    for (const auto& param : function->params) {
-        declare(param);
-        define(param);
-    }
-    resolve(function->body);
-    endScope();
-    
-    currentFunction = enclosingFunction;
+void Resolver::visitSuperExpr(Super *e) {
+  if (currentClass == ClassType::NONE) {
+    throw std::runtime_error("Can't use 'super' outside of a class.");
+  } else if (currentClass != ClassType::SUBCLASS) {
+    throw std::runtime_error(
+        "Can't use 'super' in a class with no superclass.");
+  }
+  resolveLocal(e, e->keyword);
 }
 
 } // namespace eloxir
