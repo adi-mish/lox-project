@@ -1,5 +1,5 @@
 #include "CodeGenVisitor.h"
-#include "runtime/Value.h"
+#include "../runtime/Value.h"
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/Function.h>
 #include <llvm/IR/Type.h>
@@ -68,10 +68,8 @@ void CodeGenVisitor::visitBinaryExpr(Binary *e) {
     builder.SetInsertPoint(doneBB);
     auto phi = builder.CreatePHI(llvmValueTy(), 2);
     phi->addIncoming(numResult, numBB);
-    phi->addIncoming(
-        l, builder.GetInsertBlock()
-               ->getParent()
-               ->getEntryBlock()); // Default to left operand for error
+    phi->addIncoming(l,
+                     &fn->getEntryBlock()); // Default to left operand for error
 
     value = phi;
   } else {
@@ -106,8 +104,13 @@ void CodeGenVisitor::visitLiteralExpr(Literal *e) {
     uint64_t boolValue = 0x7ffc000000000000ULL |
                          (static_cast<uint64_t>(Tag::BOOL) << 48) | (b ? 1 : 0);
     value = llvm::ConstantInt::get(llvmValueTy(), boolValue);
+  } else if (std::holds_alternative<std::monostate>(e->value)) {
+    // nil (monostate represents nil in our variant)
+    uint64_t nilValue =
+        0x7ffc000000000000ULL | (static_cast<uint64_t>(Tag::NIL) << 48);
+    value = llvm::ConstantInt::get(llvmValueTy(), nilValue);
   } else {
-    // nil
+    // Default fallback to nil
     uint64_t nilValue =
         0x7ffc000000000000ULL | (static_cast<uint64_t>(Tag::NIL) << 48);
     value = llvm::ConstantInt::get(llvmValueTy(), nilValue);
@@ -243,28 +246,5 @@ void CodeGenVisitor::visitClassStmt(Class *s) {
   // TODO: Implement class declaration
   (void)s; // Suppress unused parameter warning
 }
-
-// Implementation of codegen methods for Stmt classes
-namespace Stmt {
-void Expression::codegen(CodeGenVisitor &codeGen) {
-  codeGen.visitExpressionStmt(this);
-}
-
-void Print::codegen(CodeGenVisitor &codeGen) { codeGen.visitPrintStmt(this); }
-
-void Var::codegen(CodeGenVisitor &codeGen) { codeGen.visitVarStmt(this); }
-
-void Block::codegen(CodeGenVisitor &codeGen) { codeGen.visitBlockStmt(this); }
-
-void If::codegen(CodeGenVisitor &codeGen) { codeGen.visitIfStmt(this); }
-
-void While::codegen(CodeGenVisitor &codeGen) { codeGen.visitWhileStmt(this); }
-
-void Function::codegen(CodeGenVisitor &codeGen) {
-  codeGen.visitFunctionStmt(this);
-}
-
-void Return::codegen(CodeGenVisitor &codeGen) { codeGen.visitReturnStmt(this); }
-} // namespace Stmt
 
 } // namespace eloxir

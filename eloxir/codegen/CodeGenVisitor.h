@@ -1,8 +1,8 @@
 #pragma once
-#include "frontend/Expr.h"
-#include "frontend/Stmt.h"
-#include "frontend/Visitor.h"
-#include "runtime/Value.h"
+#include "../frontend/Expr.h"
+#include "../frontend/Stmt.h"
+#include "../frontend/Visitor.h"
+#include "../runtime/Value.h"
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/Module.h>
