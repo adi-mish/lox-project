@@ -363,7 +363,7 @@ std::unique_ptr<Expr> Parser::primary() {
   if (match(TokenType::FALSE))
     return std::make_unique<Literal>(false);
   if (match(TokenType::NIL))
-    return std::make_unique<Literal>(nullptr);
+    return std::make_unique<Literal>(std::monostate{});
 
   if (match(TokenType::NUMBER)) {
     return std::make_unique<Literal>(previous().getLiteral());

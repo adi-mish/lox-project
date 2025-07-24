@@ -1,47 +1,27 @@
 #include "Stmt.h"
+#include "../codegen/CodeGenVisitor.h"
 #include "Visitor.h"
 
 namespace eloxir {
 
-// Forward declaration to avoid including CodeGenVisitor
-class CodeGenVisitor;
+// Implementations for codegen methods - delegate to visitor
+void Expression::codegen(CodeGenVisitor &cg) { cg.visitExpressionStmt(this); }
 
-// Stub implementations for codegen methods
-void Expression::codegen(CodeGenVisitor &cg) {
-  // TODO: Implement when codegen is ready
-}
+void Print::codegen(CodeGenVisitor &cg) { cg.visitPrintStmt(this); }
 
-void Print::codegen(CodeGenVisitor &cg) {
-  // TODO: Implement when codegen is ready
-}
+void Var::codegen(CodeGenVisitor &cg) { cg.visitVarStmt(this); }
 
-void Var::codegen(CodeGenVisitor &cg) {
-  // TODO: Implement when codegen is ready
-}
+void Block::codegen(CodeGenVisitor &cg) { cg.visitBlockStmt(this); }
 
-void Block::codegen(CodeGenVisitor &cg) {
-  // TODO: Implement when codegen is ready
-}
+void If::codegen(CodeGenVisitor &cg) { cg.visitIfStmt(this); }
 
-void If::codegen(CodeGenVisitor &cg) {
-  // TODO: Implement when codegen is ready
-}
+void While::codegen(CodeGenVisitor &cg) { cg.visitWhileStmt(this); }
 
-void While::codegen(CodeGenVisitor &cg) {
-  // TODO: Implement when codegen is ready
-}
+void Function::codegen(CodeGenVisitor &cg) { cg.visitFunctionStmt(this); }
 
-void Function::codegen(CodeGenVisitor &cg) {
-  // TODO: Implement when codegen is ready
-}
+void Return::codegen(CodeGenVisitor &cg) { cg.visitReturnStmt(this); }
 
-void Return::codegen(CodeGenVisitor &cg) {
-  // TODO: Implement when codegen is ready
-}
-
-void Class::codegen(CodeGenVisitor &cg) {
-  // TODO: Implement when codegen is ready
-}
+void Class::codegen(CodeGenVisitor &cg) { cg.visitClassStmt(this); }
 
 // Accept method implementations
 void Expression::accept(StmtVisitor *v) { v->visitExpressionStmt(this); }

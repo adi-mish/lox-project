@@ -7,32 +7,52 @@ namespace eloxir {
 // IEEE‑754 NaN box:
 //   64‑bit slot: quiet‑NaN     0xFFF8'0000'0000'0000
 //   Top 3 bits encode tag, lower 48 bits encode pointer / payload.
-enum class Tag: uint8_t { NUMBER=0, BOOL=1, NIL=2, OBJ=3 };
+enum class Tag : uint8_t { NUMBER = 0, BOOL = 1, NIL = 2, OBJ = 3 };
 
 class Value {
-    uint64_t bits;
-    static constexpr uint64_t MASK_TAG = 0x7ULL << 48;
-    static constexpr uint64_t QNAN     = 0x7ffc000000000000ULL;
+  uint64_t bits;
+  static constexpr uint64_t MASK_TAG = 0x7ULL << 48;
+  static constexpr uint64_t QNAN = 0x7ffc000000000000ULL;
 
 public:
-    /* ctors for each dynamic type … */
-    static Value number(double d)      { uint64_t u; std::memcpy(&u,&d,8); return {u}; }
-    static Value boolean(bool b)       { return { QNAN | (static_cast<uint64_t>(Tag::BOOL)<<48) | b }; }
-    static Value nil()                 { return { QNAN | (static_cast<uint64_t>(Tag::NIL )<<48) }; }
-    static Value object(void* p)       { return { QNAN | (static_cast<uint64_t>(Tag::OBJ )<<48) | reinterpret_cast<uint64_t>(p) }; }
+  /* ctors for each dynamic type … */
+  static Value number(double d) {
+    uint64_t u;
+    std::memcpy(&u, &d, 8);
+    return Value{u};
+  }
+  static Value boolean(bool b) {
+    return Value{QNAN | (static_cast<uint64_t>(Tag::BOOL) << 48) | b};
+  }
+  static Value nil() {
+    return Value{QNAN | (static_cast<uint64_t>(Tag::NIL) << 48)};
+  }
+  static Value object(void *p) {
+    return Value{QNAN | (static_cast<uint64_t>(Tag::OBJ) << 48) |
+                 reinterpret_cast<uint64_t>(p)};
+  }
+  static Value fromBits(uint64_t bits) { return Value{bits}; }
 
-    Tag   tag()   const { return (bits & MASK_TAG) ? static_cast<Tag>((bits>>48)&0x7) : Tag::NUMBER; }
-    bool  isNum() const { return tag()==Tag::NUMBER; }
-    double asNum()const { double d; std::memcpy(&d,&bits,8); return d; }
-    bool   isBool() const { return tag()==Tag::BOOL; }
-    bool   asBool() const { return bits & 1; }
-    bool   isNil() const { return tag()==Tag::NIL; }
-    bool   isObj() const { return tag()==Tag::OBJ; }
-    void*  asObj() const { return reinterpret_cast<void*>(bits & ~QNAN); }
+  Tag tag() const {
+    return (bits & MASK_TAG) ? static_cast<Tag>((bits >> 48) & 0x7)
+                             : Tag::NUMBER;
+  }
+  bool isNum() const { return tag() == Tag::NUMBER; }
+  double asNum() const {
+    double d;
+    std::memcpy(&d, &bits, 8);
+    return d;
+  }
+  bool isBool() const { return tag() == Tag::BOOL; }
+  bool asBool() const { return bits & 1; }
+  bool isNil() const { return tag() == Tag::NIL; }
+  bool isObj() const { return tag() == Tag::OBJ; }
+  void *asObj() const { return reinterpret_cast<void *>(bits & ~QNAN); }
 
-    uint64_t getBits() const { return bits; }
-private: 
-    explicit Value(uint64_t b): bits(b) {}
+  uint64_t getBits() const { return bits; }
+
+private:
+  explicit Value(uint64_t b) : bits(b) {}
 };
 
 } // namespace eloxir

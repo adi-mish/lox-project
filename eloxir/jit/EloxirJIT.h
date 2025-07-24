@@ -5,14 +5,15 @@
 namespace eloxir {
 
 class EloxirJIT {
-    std::unique_ptr<llvm::orc::LLJIT> jit;
+  std::unique_ptr<llvm::orc::LLJIT> jit;
 
-    EloxirJIT() = default;
+  EloxirJIT() = default;
+
 public:
-    static llvm::Expected<std::unique_ptr<EloxirJIT>> Create();
+  static llvm::Expected<std::unique_ptr<EloxirJIT>> Create();
 
-    llvm::Error addModule(llvm::orc::ThreadSafeModule tsm);
-    llvm::Expected<llvm::JITEvaluatedSymbol> lookup(std::string name);
+  llvm::Error addModule(llvm::orc::ThreadSafeModule tsm);
+  llvm::Expected<llvm::JITEvaluatedSymbol> lookup(std::string name);
 };
 
 } // namespace eloxir
