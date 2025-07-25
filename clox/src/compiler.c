@@ -45,7 +45,11 @@ typedef struct {
   int depth;
 } Local;
 
+typedef enum { TYPE_FUNCTION, TYPE_SCRIPT } FunctionType;
+
 typedef struct {
+  ObjFunction *function;
+  FunctionType type;
   Local locals[UINT8_COUNT];
   int localCount;
   int scopeDepth;
@@ -74,11 +78,11 @@ static void emitBytes(uint8_t byte1, uint8_t byte2);
 static void emitReturn();
 static uint8_t makeConstant(Value value);
 static void emitConstant(Value value);
-static void endCompiler();
+static ObjFunction *endCompiler();
 static uint8_t identifierConstant(Token *name);
 static void defineVariable(uint8_t global);
 
-static Chunk *currentChunk() { return compilingChunk; }
+static Chunk *currentChunk() { return &current->function->chunk; }
 
 static void errorAt(Token *token, const char *message) {
   if (parser.panicMode)
@@ -189,19 +193,31 @@ static void patchJump(int offset) {
   currentChunk()->code[offset + 1] = jump & 0xff;
 }
 
-static void initCompiler(Compiler *compiler) {
+static void initCompiler(Compiler *compiler, FunctionType type) {
+  compiler->function = newFunction();
+  compiler->type = type;
   compiler->localCount = 0;
   compiler->scopeDepth = 0;
-  current = compiler;
+
+  Local *local = &current->locals[current->localCount++];
+  local->depth = 0;
+  local->name.start = "";
+  local->name.length = 0;
 }
 
-static void endCompiler() {
+static ObjFunction *endCompiler() {
   emitReturn();
+  ObjFunction *function = current->function;
+
 #ifdef DEBUG_PRINT_CODE
   if (!parser.hadError) {
-    disassembleChunk(currentChunk(), "code");
+    disassembleChunk(currentChunk(), function->name != NULL
+                                         ? function->name->chars
+                                         : "<script>");
   }
 #endif
+
+  return function;
 }
 
 static void beginScope() { current->scopeDepth++; }
@@ -459,7 +475,6 @@ ParseRule rules[] = {
     [TOKEN_IF] = {NULL, NULL, PREC_NONE},
     [TOKEN_NIL] = {literal, NULL, PREC_NONE},
     [TOKEN_OR] = {NULL, or_, PREC_OR},
-    [TOKEN_OR] = {NULL, NULL, PREC_NONE},
     [TOKEN_PRINT] = {NULL, NULL, PREC_NONE},
     [TOKEN_RETURN] = {NULL, NULL, PREC_NONE},
     [TOKEN_SUPER] = {NULL, NULL, PREC_NONE},
@@ -660,11 +675,10 @@ static void statement() {
   }
 }
 
-bool compile(const char *source, Chunk *chunk) {
+ObjFunction *compile(const char *source) {
   initScanner(source);
   Compiler compiler;
-  initCompiler(&compiler);
-  compilingChunk = chunk;
+  initCompiler(&compiler, TYPE_SCRIPT);
 
   parser.hadError = false;
   parser.panicMode = false;
@@ -673,6 +687,6 @@ bool compile(const char *source, Chunk *chunk) {
   while (!match(TOKEN_EOF)) {
     declaration();
   }
-  endCompiler();
-  return !parser.hadError;
+  ObjFunction *function = endCompiler();
+  return parser.hadError ? NULL : function;
 }

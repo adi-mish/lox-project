@@ -44,6 +44,7 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 set(COMMON_WARNINGS
     -Wall
     -Wextra
+    -Wpedantic
     -Werror
     -Wno-unused-parameter
 )
@@ -67,7 +68,7 @@ if(MSVC)
   )
 else()
   target_compile_options(clox PRIVATE
-    $<$<CONFIG:Debug>:-O0 -g>
+    $<$<CONFIG:Debug>:-O0 -g3 -fno-inline>
     $<$<CONFIG:Release>:-O3 -flto>
   )
 endif()
