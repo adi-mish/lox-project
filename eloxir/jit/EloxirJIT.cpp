@@ -1,4 +1,5 @@
 #include "EloxirJIT.h"
+#include "../runtime/RuntimeAPI.h"
 #include "OptimisationPipeline.h"
 #include <llvm/ExecutionEngine/Orc/JITTargetMachineBuilder.h>
 #include <llvm/ExecutionEngine/Orc/LLJIT.h>
@@ -30,6 +31,20 @@ llvm::Expected<std::unique_ptr<EloxirJIT>> EloxirJIT::Create() {
   j->jit->getMainJITDylib().addGenerator(llvm::cantFail(
       llvm::orc::DynamicLibrarySearchGenerator::GetForCurrentProcess(
           j->jit->getDataLayout().getGlobalPrefix())));
+
+  // Register runtime functions explicitly
+  llvm::orc::MangleAndInterner mangle(j->jit->getExecutionSession(),
+                                      j->jit->getDataLayout());
+  llvm::orc::SymbolMap runtimeSymbols;
+  runtimeSymbols[mangle("elx_print")] =
+      llvm::orc::ExecutorSymbolDef(llvm::orc::ExecutorAddr::fromPtr(&elx_print),
+                                   llvm::JITSymbolFlags::Exported);
+  runtimeSymbols[mangle("elx_clock")] =
+      llvm::orc::ExecutorSymbolDef(llvm::orc::ExecutorAddr::fromPtr(&elx_clock),
+                                   llvm::JITSymbolFlags::Exported);
+
+  llvm::cantFail(j->jit->getMainJITDylib().define(
+      llvm::orc::absoluteSymbols(runtimeSymbols)));
 
   // Optional: optimisation layer intercept
   j->jit->getIRTransformLayer().setTransform(

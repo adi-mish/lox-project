@@ -2,12 +2,18 @@
 #include "../frontend/Parser.h"
 #include "../jit/EloxirJIT.h"
 #include <iostream>
+#include <llvm/Support/TargetSelect.h>
 #include <memory>
 #include <string>
 
 using namespace llvm;
 
 int main() {
+  // Initialize LLVM targets
+  InitializeNativeTarget();
+  InitializeNativeTargetAsmPrinter();
+  InitializeNativeTargetAsmParser();
+
   auto jit = cantFail(eloxir::EloxirJIT::Create());
   while (true) {
     std::cout << ">>> ";
@@ -28,14 +34,13 @@ int main() {
     LLVMContext ctx;
     auto mod = std::make_unique<Module>("repl", ctx);
     eloxir::CodeGenVisitor cg(*mod);
-    exprAST->accept(&cg);
 
     // wrap in `__expr` function returning Value
     auto fnTy = FunctionType::get(cg.llvmValueTy(), {}, false);
     auto fn = Function::Create(fnTy, Function::ExternalLinkage, "__expr", *mod);
-    cg.builder.SetInsertPoint(BasicBlock::Create(ctx, "entry", fn));
+    cg.getBuilder().SetInsertPoint(BasicBlock::Create(ctx, "entry", fn));
     exprAST->codegen(cg);
-    cg.builder.CreateRet(cg.value);
+    cg.getBuilder().CreateRet(cg.value);
 
     cantFail(jit->addModule(orc::ThreadSafeModule(
         std::move(mod), std::make_unique<LLVMContext>())));
