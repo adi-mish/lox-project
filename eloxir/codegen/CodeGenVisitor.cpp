@@ -78,6 +78,29 @@ llvm::Value *CodeGenVisitor::fromDouble(llvm::Value *d) {
   return builder.CreateBitCast(d, llvmValueTy(), "fromdouble");
 }
 
+llvm::Value *CodeGenVisitor::isFalsy(llvm::Value *v) {
+  auto tag = tagOf(v);
+  auto boolTag = llvm::ConstantInt::get(
+      llvmValueTy(), (static_cast<uint64_t>(Tag::BOOL) << 48));
+  auto nilTag = llvm::ConstantInt::get(llvmValueTy(),
+                                       (static_cast<uint64_t>(Tag::NIL) << 48));
+
+  auto isBool = builder.CreateICmpEQ(tag, boolTag, "isBool");
+  auto isNil = builder.CreateICmpEQ(tag, nilTag, "isNil");
+
+  auto lowBit64 = builder.CreateAnd(v, llvm::ConstantInt::get(llvmValueTy(), 1),
+                                    "lowbit64");
+  auto lowBit = builder.CreateTrunc(lowBit64, builder.getInt1Ty(), "lowbit");
+
+  auto isFalseBool = builder.CreateAnd(
+      isBool, builder.CreateICmpEQ(lowBit, builder.getFalse()));
+  return builder.CreateOr(isFalseBool, isNil, "isFalsy");
+}
+
+llvm::Value *CodeGenVisitor::isTruthy(llvm::Value *v) {
+  return builder.CreateNot(isFalsy(v), "isTruthy");
+}
+
 llvm::Value *CodeGenVisitor::boolConst(bool b) {
   uint64_t bits =
       QNAN | (static_cast<uint64_t>(Tag::BOOL) << 48) | (b ? 1ULL : 0ULL);
@@ -237,24 +260,8 @@ void CodeGenVisitor::visitUnaryExpr(Unary *e) {
     break;
   }
   case TokenType::BANG: {
-    // truthiness: false only for false or nil
-    // tag==BOOL && lowbit==0  OR tag==NIL  => false
-    auto tag = tagOf(R);
-    auto boolTag = llvm::ConstantInt::get(
-        llvmValueTy(), (static_cast<uint64_t>(Tag::BOOL) << 48));
-    auto nilTag = llvm::ConstantInt::get(
-        llvmValueTy(), (static_cast<uint64_t>(Tag::NIL) << 48));
-
-    auto isBool = builder.CreateICmpEQ(tag, boolTag);
-    auto isNil = builder.CreateICmpEQ(tag, nilTag);
-    auto lowBit = builder.CreateTrunc(
-        builder.CreateAnd(R, llvm::ConstantInt::get(llvmValueTy(), 1)),
-        builder.getInt1Ty());
-
-    auto isFalseBool = builder.CreateAnd(
-        isBool, builder.CreateICmpEQ(lowBit, builder.getFalse()));
-    auto isFalsy = builder.CreateOr(isFalseBool, isNil, "isFalsy");
-    value = makeBool(isFalsy);
+    auto falsy = isFalsy(R);
+    value = makeBool(falsy); // !x is true when x is falsy
     break;
   }
   default:
@@ -290,13 +297,43 @@ void CodeGenVisitor::visitAssignExpr(Assign *e) {
 }
 
 void CodeGenVisitor::visitLogicalExpr(Logical *e) {
-  // Simple implementation: always return true for OR, false for AND
-  // This is a temporary fix to test basic functionality
+  // Evaluate left
+  e->left->accept(this);
+  llvm::Value *L = value;
+
+  auto fn = builder.GetInsertBlock()->getParent();
+  auto leftBB = builder.GetInsertBlock();
+  auto rightBB = llvm::BasicBlock::Create(ctx, "logic.right", fn);
+  auto endBB = llvm::BasicBlock::Create(ctx, "logic.end", fn);
+
+  llvm::Value *leftTruthy = isTruthy(L);
+
   if (e->op.getType() == TokenType::OR) {
-    value = boolConst(true);
+    // if left is truthy -> skip right
+    builder.CreateCondBr(leftTruthy, endBB, rightBB);
   } else { // AND
-    value = boolConst(false);
+    // if left is truthy -> evaluate right, else skip
+    builder.CreateCondBr(leftTruthy, rightBB, endBB);
   }
+
+  // Right side
+  builder.SetInsertPoint(rightBB);
+  e->right->accept(this);
+  llvm::Value *R = value;
+  builder.CreateBr(endBB);
+  auto rightEvalBB = builder.GetInsertBlock();
+
+  // Merge
+  builder.SetInsertPoint(endBB);
+  auto phi = builder.CreatePHI(llvmValueTy(), 2, "logic.res");
+  if (e->op.getType() == TokenType::OR) {
+    phi->addIncoming(L, leftBB);
+    phi->addIncoming(R, rightEvalBB);
+  } else { // AND
+    phi->addIncoming(R, rightEvalBB);
+    phi->addIncoming(L, leftBB);
+  }
+  value = phi;
 }
 
 void CodeGenVisitor::visitCallExpr(Call *e) {

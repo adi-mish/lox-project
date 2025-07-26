@@ -61,6 +61,8 @@ private:
   llvm::Value *boolConst(bool b);
   llvm::Value *nilConst();
   llvm::Value *makeBool(llvm::Value *i1);
+  llvm::Value *isFalsy(llvm::Value *v);  // returns i1
+  llvm::Value *isTruthy(llvm::Value *v); // returns i1 (= !isFalsy)
 };
 
 } // namespace eloxir
