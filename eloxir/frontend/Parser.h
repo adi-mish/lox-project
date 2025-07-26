@@ -14,6 +14,10 @@ public:
   explicit Parser(const std::vector<Token> &tokens);
   std::vector<std::unique_ptr<Stmt>> parse();
 
+  // Public for parseREPL usage
+  std::unique_ptr<Expr> expression();
+  bool isAtEnd();
+
 private:
   const std::vector<Token> &tokens;
   size_t current = 0;
@@ -35,7 +39,6 @@ private:
   std::unique_ptr<Block> block();
 
   // expressions
-  std::unique_ptr<Expr> expression();
   std::unique_ptr<Expr> assignment();
   std::unique_ptr<Expr> logic_or();
   std::unique_ptr<Expr> logic_and();
@@ -53,7 +56,6 @@ private:
   bool match(TokenType type);
   bool check(TokenType type);
   Token advance();
-  bool isAtEnd();
   Token peek();
   Token previous();
 
@@ -61,5 +63,9 @@ private:
   std::runtime_error error(const Token &token, const std::string &message);
   void synchronize();
 };
+
+// Free function for REPL parsing
+std::pair<std::unique_ptr<Stmt>, std::string>
+parseREPL(const std::string &source);
 
 } // namespace eloxir

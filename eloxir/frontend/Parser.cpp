@@ -1,4 +1,5 @@
 #include "Parser.h"
+#include "Scanner.h"
 #include <iostream>
 
 namespace eloxir {
@@ -478,6 +479,45 @@ void Parser::synchronize() {
     }
 
     advance();
+  }
+}
+
+// -------------------------- REPL helper ---------------------------------
+std::pair<std::unique_ptr<Stmt>, std::string>
+parseREPL(const std::string &source) {
+  try {
+    Scanner scanner(source);
+    auto tokens = scanner.scanTokens(); // assumes Scanner::scanTokens() ->
+                                        // std::vector<Token>
+
+    Parser p(tokens);
+
+    // Accept either a full statement ending with ';', or a bare expression.
+    // Try: expression followed by EOF. If that works, wrap in Print.
+    size_t save = 0;
+    try {
+      // Light-weight inline parse: reuse private methods by constructing a new
+      // Parser
+      Parser exprParser(tokens);
+      auto expr = exprParser.expression();
+      if (!exprParser.isAtEnd()) { /* not clean, fall back to full parse */
+        throw std::runtime_error("not single expr");
+      }
+      return {std::make_unique<Print>(std::move(expr)), ""};
+    } catch (...) {
+      (void)save;
+    }
+
+    // Fallback: full statement parse (must end with EOF)
+    auto stmts = p.parse();
+    if (stmts.empty())
+      return {nullptr, ""};
+    if (stmts.size() == 1)
+      return {std::move(stmts.front()), ""};
+    // Multiple statements in one REPL line: wrap in Block
+    return {std::make_unique<Block>(std::move(stmts)), ""};
+  } catch (const std::runtime_error &e) {
+    return {nullptr, e.what()};
   }
 }
 
