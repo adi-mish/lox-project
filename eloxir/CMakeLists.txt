@@ -17,4 +17,6 @@ add_executable(eloxir tools/repl.cpp)
 target_link_libraries(eloxir PRIVATE
     Frontend CodeGen Runtime EloxirJIT
     LLVMSupport LLVMOrcJIT LLVMAsmParser LLVMCore LLVMExecutionEngine
+    LLVMPasses LLVMAnalysis LLVMTransformUtils LLVMScalarOpts LLVMTarget
+    LLVMAsmPrinter LLVMX86Desc LLVMX86Info LLVMX86CodeGen LLVMX86AsmParser
 )
