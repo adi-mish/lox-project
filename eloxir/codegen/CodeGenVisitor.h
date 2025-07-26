@@ -23,6 +23,11 @@ public:
   llvm::Type *llvmValueTy() const;
   llvm::Value *value; // last visited Expr result
 
+  // Safe accessors for the builder / module
+  llvm::IRBuilder<> &getBuilder() { return builder; }
+  llvm::Module &getModule() { return mod; }
+  llvm::LLVMContext &getContext() { return ctx; }
+
   // == Expr nodes ==================================================
   void visitBinaryExpr(Binary *e) override;
   void visitGroupingExpr(Grouping *e) override;
@@ -50,6 +55,12 @@ public:
 
 private:
   llvm::Value *tagOf(llvm::Value *v);
+  llvm::Value *isNumber(llvm::Value *v);
+  llvm::Value *toDouble(llvm::Value *v);
+  llvm::Value *fromDouble(llvm::Value *d);
+  llvm::Value *boolConst(bool b);
+  llvm::Value *nilConst();
+  llvm::Value *makeBool(llvm::Value *i1);
 };
 
 } // namespace eloxir
