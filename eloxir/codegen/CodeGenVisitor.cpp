@@ -120,6 +120,86 @@ llvm::Value *CodeGenVisitor::makeBool(llvm::Value *i1) {
   return builder.CreateOr(base, zext, "boolval");
 }
 
+// Helper function for proper equality comparison following Lox semantics
+llvm::Value *CodeGenVisitor::valuesEqual(llvm::Value *L, llvm::Value *R) {
+  auto tagL = tagOf(L);
+  auto tagR = tagOf(R);
+
+  // Different types are never equal
+  auto sameType = builder.CreateICmpEQ(tagL, tagR, "sametype");
+
+  auto fn = builder.GetInsertBlock()->getParent();
+  auto sameTypeBB = llvm::BasicBlock::Create(ctx, "sametype", fn);
+  auto diffTypeBB = llvm::BasicBlock::Create(ctx, "difftype", fn);
+  auto contBB = llvm::BasicBlock::Create(ctx, "eq.cont", fn);
+
+  builder.CreateCondBr(sameType, sameTypeBB, diffTypeBB);
+
+  // Different types - return false
+  builder.SetInsertPoint(diffTypeBB);
+  auto falseVal = builder.getFalse();
+  builder.CreateBr(contBB);
+
+  // Same types - compare based on type
+  builder.SetInsertPoint(sameTypeBB);
+  auto zero = llvm::ConstantInt::get(llvmValueTy(), 0);
+  auto numTag = llvm::ConstantInt::get(
+      llvmValueTy(), static_cast<uint64_t>(Tag::NUMBER) << 48);
+  auto boolTag = llvm::ConstantInt::get(llvmValueTy(),
+                                        static_cast<uint64_t>(Tag::BOOL) << 48);
+
+  auto isNumBB = llvm::BasicBlock::Create(ctx, "eq.num", fn);
+  auto isBoolOrNilBB = llvm::BasicBlock::Create(ctx, "eq.boolnil", fn);
+
+  auto isNum = builder.CreateICmpEQ(tagL, numTag, "isnum");
+  builder.CreateCondBr(isNum, isNumBB, isBoolOrNilBB);
+
+  // Numbers: use floating-point comparison (handles NaN correctly)
+  builder.SetInsertPoint(isNumBB);
+  auto Ld = toDouble(L);
+  auto Rd = toDouble(R);
+  auto numEqual = builder.CreateFCmpOEQ(Ld, Rd, "numeq");
+  builder.CreateBr(contBB);
+
+  // Booleans and nil: bitwise comparison works (they have same tag, so just
+  // compare bits)
+  builder.SetInsertPoint(isBoolOrNilBB);
+  auto bitsEqual = builder.CreateICmpEQ(L, R, "bitseq");
+  builder.CreateBr(contBB);
+
+  // Merge results
+  builder.SetInsertPoint(contBB);
+  auto phi = builder.CreatePHI(builder.getInt1Ty(), 3, "eq.res");
+  phi->addIncoming(falseVal, diffTypeBB);
+  phi->addIncoming(numEqual, isNumBB);
+  phi->addIncoming(bitsEqual, isBoolOrNilBB);
+
+  return phi;
+}
+
+// Helper to check if both values are numbers and generate runtime error if not
+llvm::Value *CodeGenVisitor::checkBothNumbers(llvm::Value *L, llvm::Value *R,
+                                              llvm::BasicBlock *&successBB,
+                                              llvm::BasicBlock *&errorBB) {
+  auto fn = builder.GetInsertBlock()->getParent();
+  successBB = llvm::BasicBlock::Create(ctx, "both_numbers", fn);
+  errorBB = llvm::BasicBlock::Create(ctx, "type_error", fn);
+
+  auto isLNum = isNumber(L);
+  auto isRNum = isNumber(R);
+  auto both = builder.CreateAnd(isLNum, isRNum, "bothnum");
+
+  builder.CreateCondBr(both, successBB, errorBB);
+
+  // Error case - generate runtime error (trap for now)
+  builder.SetInsertPoint(errorBB);
+  auto trap = llvm::Intrinsic::getDeclaration(&mod, llvm::Intrinsic::trap);
+  builder.CreateCall(trap);
+  builder.CreateUnreachable();
+
+  return both;
+}
+
 // --------- Expr visitors -------------------------------------------------
 void CodeGenVisitor::visitBinaryExpr(Binary *e) {
   e->left->accept(this);
@@ -128,17 +208,27 @@ void CodeGenVisitor::visitBinaryExpr(Binary *e) {
   llvm::Value *R = value;
 
   auto fn = builder.GetInsertBlock()->getParent();
-  auto bothNumBB = llvm::BasicBlock::Create(ctx, "both_num", fn);
-  auto slowBB = llvm::BasicBlock::Create(ctx, "slowpath", fn);
-  auto contBB = llvm::BasicBlock::Create(ctx, "binop.cont", fn);
 
-  // Check numeric fast path
-  auto isLNum = isNumber(L);
-  auto isRNum = isNumber(R);
-  auto both = builder.CreateAnd(isLNum, isRNum, "bothnum");
-  builder.CreateCondBr(both, bothNumBB, slowBB);
+  // Handle equality operators separately (they work on any types)
+  if (e->op.getType() == TokenType::EQUAL_EQUAL) {
+    auto equal = valuesEqual(L, R);
+    value = makeBool(equal);
+    return;
+  }
 
-  // Fast path: do the operation on doubles
+  if (e->op.getType() == TokenType::BANG_EQUAL) {
+    auto equal = valuesEqual(L, R);
+    auto notEqual = builder.CreateNot(equal, "ne");
+    value = makeBool(notEqual);
+    return;
+  }
+
+  // For arithmetic and ordering operators, both operands must be numbers
+  llvm::BasicBlock *bothNumBB;
+  llvm::BasicBlock *errorBB;
+  checkBothNumbers(L, R, bothNumBB, errorBB);
+
+  // Fast path: both are numbers
   builder.SetInsertPoint(bothNumBB);
   llvm::Value *Ld = toDouble(L);
   llvm::Value *Rd = toDouble(R);
@@ -146,18 +236,20 @@ void CodeGenVisitor::visitBinaryExpr(Binary *e) {
 
   switch (e->op.getType()) {
   case TokenType::PLUS:
-    res = builder.CreateFAdd(Ld, Rd, "add");
+    res = fromDouble(builder.CreateFAdd(Ld, Rd, "add"));
     break;
   case TokenType::MINUS:
-    res = builder.CreateFSub(Ld, Rd, "sub");
+    res = fromDouble(builder.CreateFSub(Ld, Rd, "sub"));
     break;
   case TokenType::STAR:
-    res = builder.CreateFMul(Ld, Rd, "mul");
+    res = fromDouble(builder.CreateFMul(Ld, Rd, "mul"));
     break;
   case TokenType::SLASH:
-    res = builder.CreateFDiv(Ld, Rd, "div");
+    res = fromDouble(builder.CreateFDiv(Ld, Rd, "div"));
     break;
 
+  // Use ordered comparisons to handle NaN properly
+  // In Lox, all comparisons with NaN should return false
   case TokenType::GREATER:
     res = makeBool(builder.CreateFCmpOGT(Ld, Rd, "gt"));
     break;
@@ -170,43 +262,13 @@ void CodeGenVisitor::visitBinaryExpr(Binary *e) {
   case TokenType::LESS_EQUAL:
     res = makeBool(builder.CreateFCmpOLE(Ld, Rd, "le"));
     break;
-  case TokenType::EQUAL_EQUAL:
-    res = makeBool(builder.CreateFCmpOEQ(Ld, Rd, "eq"));
-    break;
-  case TokenType::BANG_EQUAL:
-    res = makeBool(builder.CreateFCmpONE(Ld, Rd, "ne"));
-    break;
 
   default:
-    // fallthrough to slow path
+    res = nilConst(); // shouldn't happen
     break;
   }
 
-  if (res) {
-    if (res->getType()->isDoubleTy())
-      res = fromDouble(res);
-    builder.CreateBr(contBB);
-  } else {
-    builder.CreateBr(slowBB); // unknown op -> slow
-  }
-  auto fastRes = res; // capture for PHI later
-
-  // Slow path: currently we trap (production-grade fail-fast instead of UB)
-  builder.SetInsertPoint(slowBB);
-  auto trap = llvm::Intrinsic::getDeclaration(&mod, llvm::Intrinsic::trap);
-  builder.CreateCall(trap);
-  builder.CreateUnreachable();
-
-  // Continue
-  builder.SetInsertPoint(contBB);
-  // Only create PHI if we actually have a fast result
-  if (fastRes) {
-    auto phi = builder.CreatePHI(llvmValueTy(), 1, "binop.res");
-    phi->addIncoming(fastRes, bothNumBB);
-    value = phi;
-  } else {
-    value = nilConst();
-  }
+  value = res;
 }
 
 void CodeGenVisitor::visitGroupingExpr(Grouping *e) {

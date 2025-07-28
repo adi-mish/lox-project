@@ -63,6 +63,12 @@ private:
   llvm::Value *makeBool(llvm::Value *i1);
   llvm::Value *isFalsy(llvm::Value *v);  // returns i1
   llvm::Value *isTruthy(llvm::Value *v); // returns i1 (= !isFalsy)
+
+  // New helper methods for proper comparisons
+  llvm::Value *valuesEqual(llvm::Value *L, llvm::Value *R); // returns i1
+  llvm::Value *checkBothNumbers(llvm::Value *L, llvm::Value *R,
+                                llvm::BasicBlock *&successBB,
+                                llvm::BasicBlock *&errorBB); // returns i1
 };
 
 } // namespace eloxir
