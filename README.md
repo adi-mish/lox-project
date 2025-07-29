@@ -80,5 +80,3 @@ If you’re following along with the book, feel free to use this repository as a
 This work is based on the book *Crafting Interpreters* by Bob Nystrom. The original source code and explanations are available at [craftinginterpreters.com](https://craftinginterpreters.com). Any mistakes or extensions here are my own.
 This work is based on the book *Crafting Interpreters* by Bob Nystrom. The original source code and explanations are available at [craftinginterpreters.com](https://craftinginterpreters.com). Any mistakes or extensions here are my own.
 
-```
-```
