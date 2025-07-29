@@ -56,11 +56,13 @@ public:
 private:
   llvm::Value *tagOf(llvm::Value *v);
   llvm::Value *isNumber(llvm::Value *v);
+  llvm::Value *isString(llvm::Value *v);
   llvm::Value *toDouble(llvm::Value *v);
   llvm::Value *fromDouble(llvm::Value *d);
   llvm::Value *boolConst(bool b);
   llvm::Value *nilConst();
   llvm::Value *makeBool(llvm::Value *i1);
+  llvm::Value *stringConst(const std::string &str);
   llvm::Value *isFalsy(llvm::Value *v);  // returns i1
   llvm::Value *isTruthy(llvm::Value *v); // returns i1 (= !isFalsy)
 

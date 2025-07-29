@@ -56,7 +56,10 @@ public:
   bool asBool() const { return bits & 1; }
   bool isNil() const { return tag() == Tag::NIL; }
   bool isObj() const { return tag() == Tag::OBJ; }
-  void *asObj() const { return reinterpret_cast<void *>(bits & ~QNAN); }
+  void *asObj() const {
+    // Extract the lower 48 bits as the pointer
+    return reinterpret_cast<void *>(bits & 0xFFFFFFFFFFFFULL);
+  }
 
   uint64_t getBits() const { return bits; }
 

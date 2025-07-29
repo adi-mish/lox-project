@@ -22,6 +22,22 @@ CodeGenVisitor::CodeGenVisitor(llvm::Module &m)
   llvm::FunctionType *clockFnTy =
       llvm::FunctionType::get(llvmValueTy(), {}, false);
   mod.getOrInsertFunction("elx_clock", clockFnTy);
+
+  // String functions
+  llvm::FunctionType *allocStringTy = llvm::FunctionType::get(
+      llvmValueTy(),
+      {llvm::PointerType::get(llvm::Type::getInt8Ty(ctx), 0),
+       llvm::Type::getInt32Ty(ctx)},
+      false);
+  mod.getOrInsertFunction("elx_allocate_string", allocStringTy);
+
+  llvm::FunctionType *concatTy = llvm::FunctionType::get(
+      llvmValueTy(), {llvmValueTy(), llvmValueTy()}, false);
+  mod.getOrInsertFunction("elx_concatenate_strings", concatTy);
+
+  llvm::FunctionType *strEqualTy = llvm::FunctionType::get(
+      llvm::Type::getInt32Ty(ctx), {llvmValueTy(), llvmValueTy()}, false);
+  mod.getOrInsertFunction("elx_strings_equal", strEqualTy);
 }
 
 llvm::Type *CodeGenVisitor::llvmValueTy() const {
@@ -113,11 +129,37 @@ llvm::Value *CodeGenVisitor::nilConst() {
 }
 
 llvm::Value *CodeGenVisitor::makeBool(llvm::Value *i1) {
-  // zero-extend to i64 then OR into a BOOL tagged value
-  auto zext = builder.CreateZExt(i1, llvmValueTy(), "bext");
-  auto base = llvm::ConstantInt::get(
-      llvmValueTy(), QNAN | (static_cast<uint64_t>(Tag::BOOL) << 48));
-  return builder.CreateOr(base, zext, "boolval");
+  // Convert i1 to Value representation
+  // Boolean values are: QNAN | (Tag::BOOL << 48) | (0 or 1)
+  auto qnanVal =
+      llvm::ConstantInt::get(llvmValueTy(), 0x7ff8000000000000ULL); // QNAN
+  auto tagVal = llvm::ConstantInt::get(
+      llvmValueTy(), (static_cast<uint64_t>(Tag::BOOL) << 48));
+  auto extended = builder.CreateZExt(i1, llvmValueTy(), "extend");
+  auto withTag = builder.CreateOr(qnanVal, tagVal, "qnan_tag");
+  return builder.CreateOr(withTag, extended, "bool");
+}
+
+llvm::Value *CodeGenVisitor::isString(llvm::Value *v) {
+  auto objTag = llvm::ConstantInt::get(llvmValueTy(),
+                                       (static_cast<uint64_t>(Tag::OBJ) << 48));
+  auto tag = tagOf(v);
+  return builder.CreateICmpEQ(tag, objTag, "isstr");
+}
+
+llvm::Value *CodeGenVisitor::stringConst(const std::string &str) {
+  // Create a global string constant
+  auto strConstant = builder.CreateGlobalStringPtr(str, "str");
+  auto lengthConst =
+      llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), str.length());
+
+  // Call elx_allocate_string
+  auto allocFn = mod.getFunction("elx_allocate_string");
+  if (!allocFn) {
+    // Fallback to nil if function not found
+    return nilConst();
+  }
+  return builder.CreateCall(allocFn, {strConstant, lengthConst}, "strobj");
 }
 
 // Helper function for proper equality comparison following Lox semantics
@@ -137,22 +179,29 @@ llvm::Value *CodeGenVisitor::valuesEqual(llvm::Value *L, llvm::Value *R) {
 
   // Different types - return false
   builder.SetInsertPoint(diffTypeBB);
-  auto falseVal = builder.getFalse();
   builder.CreateBr(contBB);
 
   // Same types - compare based on type
   builder.SetInsertPoint(sameTypeBB);
-  auto zero = llvm::ConstantInt::get(llvmValueTy(), 0);
   auto numTag = llvm::ConstantInt::get(
       llvmValueTy(), static_cast<uint64_t>(Tag::NUMBER) << 48);
-  auto boolTag = llvm::ConstantInt::get(llvmValueTy(),
-                                        static_cast<uint64_t>(Tag::BOOL) << 48);
+  auto objTag = llvm::ConstantInt::get(llvmValueTy(),
+                                       static_cast<uint64_t>(Tag::OBJ) << 48);
 
   auto isNumBB = llvm::BasicBlock::Create(ctx, "eq.num", fn);
+  auto isObjBB = llvm::BasicBlock::Create(ctx, "eq.obj", fn);
   auto isBoolOrNilBB = llvm::BasicBlock::Create(ctx, "eq.boolnil", fn);
+  auto checkObjBB = llvm::BasicBlock::Create(ctx, "check_obj", fn);
 
   auto isNum = builder.CreateICmpEQ(tagL, numTag, "isnum");
-  builder.CreateCondBr(isNum, isNumBB, isBoolOrNilBB);
+  auto isObj = builder.CreateICmpEQ(tagL, objTag, "isobj");
+
+  // Create a switch-like structure
+  builder.CreateCondBr(isNum, isNumBB, checkObjBB);
+
+  // Check obj branch
+  builder.SetInsertPoint(checkObjBB);
+  builder.CreateCondBr(isObj, isObjBB, isBoolOrNilBB);
 
   // Numbers: use floating-point comparison (handles NaN correctly)
   builder.SetInsertPoint(isNumBB);
@@ -161,17 +210,26 @@ llvm::Value *CodeGenVisitor::valuesEqual(llvm::Value *L, llvm::Value *R) {
   auto numEqual = builder.CreateFCmpOEQ(Ld, Rd, "numeq");
   builder.CreateBr(contBB);
 
-  // Booleans and nil: bitwise comparison works (they have same tag, so just
-  // compare bits)
+  // Objects: call string comparison function
+  builder.SetInsertPoint(isObjBB);
+  auto strEqualFn = mod.getFunction("elx_strings_equal");
+  auto objEqual = builder.CreateCall(strEqualFn, {L, R}, "streq");
+  auto objEqualBool = builder.CreateICmpNE(
+      objEqual, llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0),
+      "streqbool");
+  builder.CreateBr(contBB);
+
+  // For bool/nil, do bitwise comparison
   builder.SetInsertPoint(isBoolOrNilBB);
   auto bitsEqual = builder.CreateICmpEQ(L, R, "bitseq");
   builder.CreateBr(contBB);
 
   // Merge results
   builder.SetInsertPoint(contBB);
-  auto phi = builder.CreatePHI(builder.getInt1Ty(), 3, "eq.res");
-  phi->addIncoming(falseVal, diffTypeBB);
+  auto phi = builder.CreatePHI(builder.getInt1Ty(), 4, "eq.res");
+  phi->addIncoming(builder.getFalse(), diffTypeBB);
   phi->addIncoming(numEqual, isNumBB);
+  phi->addIncoming(objEqualBool, isObjBB);
   phi->addIncoming(bitsEqual, isBoolOrNilBB);
 
   return phi;
@@ -223,7 +281,55 @@ void CodeGenVisitor::visitBinaryExpr(Binary *e) {
     return;
   }
 
-  // For arithmetic and ordering operators, both operands must be numbers
+  // Handle PLUS specially - it can be number addition or string concatenation
+  if (e->op.getType() == TokenType::PLUS) {
+    auto bothAreNumbers =
+        builder.CreateAnd(isNumber(L), isNumber(R), "bothnum");
+    auto bothAreObjects =
+        builder.CreateAnd(isString(L), isString(R), "bothstr");
+
+    auto isNumAddBB = llvm::BasicBlock::Create(ctx, "plus.numadd", fn);
+    auto isStrConcatBB = llvm::BasicBlock::Create(ctx, "plus.strconcat", fn);
+    auto errorBB = llvm::BasicBlock::Create(ctx, "plus.error", fn);
+    auto contBB = llvm::BasicBlock::Create(ctx, "plus.cont", fn);
+
+    // Check if both are numbers first
+    auto checkStrBB = llvm::BasicBlock::Create(ctx, "plus.checkstr", fn);
+    builder.CreateCondBr(bothAreNumbers, isNumAddBB, checkStrBB);
+
+    // Check if both are strings
+    builder.SetInsertPoint(checkStrBB);
+    builder.CreateCondBr(bothAreObjects, isStrConcatBB, errorBB);
+
+    // Number addition
+    builder.SetInsertPoint(isNumAddBB);
+    auto Ld = toDouble(L);
+    auto Rd = toDouble(R);
+    auto numResult = fromDouble(builder.CreateFAdd(Ld, Rd, "add"));
+    builder.CreateBr(contBB);
+
+    // String concatenation
+    builder.SetInsertPoint(isStrConcatBB);
+    auto concatFn = mod.getFunction("elx_concatenate_strings");
+    auto strResult = builder.CreateCall(concatFn, {L, R}, "concat");
+    builder.CreateBr(contBB);
+
+    // Type error
+    builder.SetInsertPoint(errorBB);
+    auto trap = llvm::Intrinsic::getDeclaration(&mod, llvm::Intrinsic::trap);
+    builder.CreateCall(trap);
+    builder.CreateUnreachable();
+
+    // Merge results
+    builder.SetInsertPoint(contBB);
+    auto phi = builder.CreatePHI(llvmValueTy(), 2, "plus.res");
+    phi->addIncoming(numResult, isNumAddBB);
+    phi->addIncoming(strResult, isStrConcatBB);
+    value = phi;
+    return;
+  }
+
+  // For other arithmetic and ordering operators, both operands must be numbers
   llvm::BasicBlock *bothNumBB;
   llvm::BasicBlock *errorBB;
   checkBothNumbers(L, R, bothNumBB, errorBB);
@@ -235,9 +341,6 @@ void CodeGenVisitor::visitBinaryExpr(Binary *e) {
   llvm::Value *res = nullptr;
 
   switch (e->op.getType()) {
-  case TokenType::PLUS:
-    res = fromDouble(builder.CreateFAdd(Ld, Rd, "add"));
-    break;
   case TokenType::MINUS:
     res = fromDouble(builder.CreateFSub(Ld, Rd, "sub"));
     break;
@@ -282,8 +385,9 @@ void CodeGenVisitor::visitLiteralExpr(Literal *e) {
     std::memcpy(&bits, &d, sizeof(bits));
     value = llvm::ConstantInt::get(llvmValueTy(), bits);
   } else if (std::holds_alternative<std::string>(e->value)) {
-    // Not implemented yet: return nil for now
-    value = nilConst();
+    // Create a string object
+    const std::string &str = std::get<std::string>(e->value);
+    value = stringConst(str);
   } else if (std::holds_alternative<bool>(e->value)) {
     value = boolConst(std::get<bool>(e->value));
   } else {
