@@ -225,15 +225,20 @@ uint64_t elx_call_function(uint64_t func_bits, uint64_t *args, int arg_count) {
 
   if (!func) {
     // Not a function - this should be a runtime error
-    std::cerr << "Runtime error: attempted to call non-function value\n";
+    std::string error_msg =
+        "Runtime error: Can only call functions and classes.";
+    auto error_str = elx_allocate_string(error_msg.c_str(), error_msg.length());
+    elx_print(error_str);
     return Value::nil().getBits();
   }
 
   if (arg_count != func->arity) {
     // Wrong number of arguments - runtime error
-    std::cerr << "Runtime error: function '"
-              << (func->name ? func->name : "<anonymous>") << "' expects "
-              << func->arity << " arguments but got " << arg_count << "\n";
+    std::string error_msg =
+        "Runtime error: Expected " + std::to_string(func->arity) +
+        " arguments but got " + std::to_string(arg_count) + ".";
+    auto error_str = elx_allocate_string(error_msg.c_str(), error_msg.length());
+    elx_print(error_str);
     return Value::nil().getBits();
   }
 
@@ -268,8 +273,11 @@ uint64_t elx_call_function(uint64_t func_bits, uint64_t *args, int arg_count) {
       return fn(args[0], args[1], args[2], args[3]);
     }
     default:
-      std::cerr << "Runtime error: functions with more than 4 arguments are "
-                   "not yet supported\n";
+      std::string error_msg = "Runtime error: Functions with more than 4 "
+                              "arguments are not yet supported.";
+      auto error_str =
+          elx_allocate_string(error_msg.c_str(), error_msg.length());
+      elx_print(error_str);
       return Value::nil().getBits();
     }
   }
