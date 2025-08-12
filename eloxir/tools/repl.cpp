@@ -56,7 +56,7 @@ int main() {
     using FnTy = eloxir::Value (*)();
     eloxir::Value result = reinterpret_cast<FnTy>(sym.getAddress())();
     /* do nothing - elx_print already printed */
-    
+
     // Clean up temporary allocations between REPL iterations
     elx_cleanup_all_objects();
   }

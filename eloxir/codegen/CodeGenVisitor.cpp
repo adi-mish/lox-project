@@ -167,7 +167,13 @@ llvm::Value *CodeGenVisitor::isString(llvm::Value *v) {
 }
 
 llvm::Value *CodeGenVisitor::stringConst(const std::string &str) {
-  // Create a global string constant
+  // Check if this string has already been interned
+  auto internIt = internedStrings.find(str);
+  if (internIt != internedStrings.end()) {
+    return internIt->second; // Return existing string object
+  }
+
+  // Create a new string object
   auto strConstant = builder.CreateGlobalStringPtr(str, "str");
   auto lengthConst =
       llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), str.length());
@@ -178,7 +184,14 @@ llvm::Value *CodeGenVisitor::stringConst(const std::string &str) {
     // Fallback to nil if function not found
     return nilConst();
   }
-  return builder.CreateCall(allocFn, {strConstant, lengthConst}, "strobj");
+
+  auto strObj =
+      builder.CreateCall(allocFn, {strConstant, lengthConst}, "strobj");
+
+  // Intern the string for future use
+  internedStrings[str] = strObj;
+
+  return strObj;
 }
 
 // Helper function for proper equality comparison following Lox semantics
