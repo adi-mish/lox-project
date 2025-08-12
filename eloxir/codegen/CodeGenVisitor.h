@@ -19,8 +19,6 @@ class CodeGenVisitor : public ExprVisitor, public StmtVisitor {
   std::unordered_map<std::string, llvm::Value *> locals;
   // track which locals are direct values (like parameters) vs alloca'd
   std::unordered_set<std::string> directValues;
-  // global variables (including functions)
-  std::unordered_map<std::string, llvm::Value *> globals;
   // function table for user-defined functions
   std::unordered_map<std::string, llvm::Function *> functions;
   // current function being compiled (for return statements)
@@ -37,6 +35,9 @@ public:
   llvm::IRBuilder<> &getBuilder() { return builder; }
   llvm::Module &getModule() { return mod; }
   llvm::LLVMContext &getContext() { return ctx; }
+
+  // Access to globals for REPL persistence
+  std::unordered_map<std::string, llvm::Value *> globals;
 
   // == Expr nodes ==================================================
   void visitBinaryExpr(Binary *e) override;

@@ -43,4 +43,7 @@ int elx_strings_equal(uint64_t a_bits, uint64_t b_bits);
 uint64_t elx_allocate_function(const char *name, int arity,
                                void *llvm_function);
 uint64_t elx_call_function(uint64_t func_bits, uint64_t *args, int arg_count);
+
+// Memory management
+void elx_cleanup_all_objects(); // Clean up all tracked objects
 }

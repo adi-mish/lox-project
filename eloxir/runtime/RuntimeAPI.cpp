@@ -4,8 +4,12 @@
 #include <cstring>
 #include <iostream>
 #include <memory>
+#include <unordered_set>
 
 using namespace eloxir;
+
+// Simple object registry for tracking allocations
+static std::unordered_set<void *> allocated_objects;
 
 static const char *getString(Value v) {
   if (!v.isObj())
@@ -105,6 +109,9 @@ uint64_t elx_allocate_string(const char *chars, int length) {
   std::memcpy(str->chars, chars, length);
   str->chars[length] = '\0'; // null terminate
 
+  // Track the allocation
+  allocated_objects.insert(str);
+
   return Value::object(str).getBits();
 }
 
@@ -114,6 +121,10 @@ void elx_free_object(uint64_t obj_bits) {
     return;
 
   Obj *obj = static_cast<Obj *>(v.asObj());
+
+  // Remove from tracking registry
+  allocated_objects.erase(obj);
+
   free(obj);
 }
 
@@ -144,6 +155,9 @@ uint64_t elx_concatenate_strings(uint64_t a_bits, uint64_t b_bits) {
   std::memcpy(result->chars, str_a->chars, str_a->length);
   std::memcpy(result->chars + str_a->length, str_b->chars, str_b->length);
   result->chars[new_length] = '\0';
+
+  // Track the allocation
+  allocated_objects.insert(result);
 
   return Value::object(result).getBits();
 }
@@ -198,6 +212,9 @@ uint64_t elx_allocate_function(const char *name, int arity,
   }
   name_storage[name_len] = '\0';
   func->name = name_storage;
+
+  // Track the allocation
+  allocated_objects.insert(func);
 
   return Value::object(func).getBits();
 }
@@ -258,4 +275,12 @@ uint64_t elx_call_function(uint64_t func_bits, uint64_t *args, int arg_count) {
   }
 
   return Value::nil().getBits();
+}
+
+void elx_cleanup_all_objects() {
+  // Free all tracked objects
+  for (void *obj : allocated_objects) {
+    free(obj);
+  }
+  allocated_objects.clear();
 }

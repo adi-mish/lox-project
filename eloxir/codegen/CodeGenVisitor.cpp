@@ -268,11 +268,15 @@ llvm::Value *CodeGenVisitor::checkBothNumbers(llvm::Value *L, llvm::Value *R,
 
   builder.CreateCondBr(both, successBB, errorBB);
 
-  // Error case - generate runtime error (trap for now)
+  // Error case - generate runtime error instead of trap
   builder.SetInsertPoint(errorBB);
-  auto trap = llvm::Intrinsic::getDeclaration(&mod, llvm::Intrinsic::trap);
-  builder.CreateCall(trap);
-  builder.CreateUnreachable();
+  // Print error message and continue with nil instead of crashing
+  auto printFn = mod.getFunction("elx_print");
+  if (printFn) {
+    auto errorMsg = stringConst("Runtime error: Operands must be numbers.");
+    builder.CreateCall(printFn, {errorMsg}, "print_error");
+  }
+  // Don't return here - let the caller handle control flow
 
   return both;
 }
@@ -335,15 +339,22 @@ void CodeGenVisitor::visitBinaryExpr(Binary *e) {
 
     // Type error
     builder.SetInsertPoint(errorBB);
-    auto trap = llvm::Intrinsic::getDeclaration(&mod, llvm::Intrinsic::trap);
-    builder.CreateCall(trap);
-    builder.CreateUnreachable();
+    // Print error message and continue with nil instead of crashing
+    auto printFn = mod.getFunction("elx_print");
+    if (printFn) {
+      auto errorMsg = stringConst(
+          "Runtime error: Operands must be numbers or strings for +.");
+      builder.CreateCall(printFn, {errorMsg}, "print_error");
+    }
+    auto errorResult = nilConst();
+    builder.CreateBr(contBB);
 
     // Merge results
     builder.SetInsertPoint(contBB);
-    auto phi = builder.CreatePHI(llvmValueTy(), 2, "plus.res");
+    auto phi = builder.CreatePHI(llvmValueTy(), 3, "plus.res");
     phi->addIncoming(numResult, isNumAddBB);
     phi->addIncoming(strResult, isStrConcatBB);
+    phi->addIncoming(errorResult, errorBB);
     value = phi;
     return;
   }
@@ -390,7 +401,21 @@ void CodeGenVisitor::visitBinaryExpr(Binary *e) {
     break;
   }
 
-  value = res;
+  auto contBB = llvm::BasicBlock::Create(ctx, "binop.cont",
+                                         builder.GetInsertBlock()->getParent());
+  builder.CreateBr(contBB);
+
+  // Handle error case
+  builder.SetInsertPoint(errorBB);
+  auto errorResult = nilConst();
+  builder.CreateBr(contBB);
+
+  // Merge results
+  builder.SetInsertPoint(contBB);
+  auto phi = builder.CreatePHI(llvmValueTy(), 2, "binop.res");
+  phi->addIncoming(res, bothNumBB);
+  phi->addIncoming(errorResult, errorBB);
+  value = phi;
 }
 
 void CodeGenVisitor::visitGroupingExpr(Grouping *e) {
@@ -425,7 +450,8 @@ void CodeGenVisitor::visitUnaryExpr(Unary *e) {
     auto slowBB = llvm::BasicBlock::Create(ctx, "neg.slow", fn);
     auto contBB = llvm::BasicBlock::Create(ctx, "neg.cont", fn);
 
-    builder.CreateCondBr(isNumber(R), isNumBB, slowBB);
+    auto isNum = isNumber(R);
+    builder.CreateCondBr(isNum, isNumBB, slowBB);
 
     builder.SetInsertPoint(isNumBB);
     auto d = toDouble(R);
@@ -434,13 +460,20 @@ void CodeGenVisitor::visitUnaryExpr(Unary *e) {
     builder.CreateBr(contBB);
 
     builder.SetInsertPoint(slowBB);
-    auto trap = llvm::Intrinsic::getDeclaration(&mod, llvm::Intrinsic::trap);
-    builder.CreateCall(trap);
-    builder.CreateUnreachable();
+    // Print error message and continue with nil instead of crashing
+    auto printFn = mod.getFunction("elx_print");
+    if (printFn) {
+      auto errorMsg =
+          stringConst("Runtime error: Operand must be a number for negation.");
+      builder.CreateCall(printFn, {errorMsg}, "print_error");
+    }
+    auto errorResult = nilConst();
+    builder.CreateBr(contBB);
 
     builder.SetInsertPoint(contBB);
-    auto phi = builder.CreatePHI(llvmValueTy(), 1, "neg.res");
+    auto phi = builder.CreatePHI(llvmValueTy(), 2, "neg.res");
     phi->addIncoming(rv, isNumBB);
+    phi->addIncoming(errorResult, slowBB);
     value = phi;
     break;
   }
@@ -489,18 +522,44 @@ void CodeGenVisitor::visitVariableExpr(Variable *e) {
 
 void CodeGenVisitor::visitAssignExpr(Assign *e) {
   e->value->accept(this);
-  auto it = locals.find(e->name.getLexeme());
-  if (it == locals.end()) {
-    // create one lazily in current function entry
-    auto fn = builder.GetInsertBlock()->getParent();
-    auto &entry = fn->getEntryBlock();
-    llvm::IRBuilder<> save(entry.getFirstNonPHI());
-    auto slot =
-        save.CreateAlloca(llvmValueTy(), nullptr, e->name.getLexeme().c_str());
-    locals[e->name.getLexeme()] = slot;
-    it = locals.find(e->name.getLexeme());
+  llvm::Value *assignValue = value;
+
+  const std::string &varName = e->name.getLexeme();
+
+  // Check locals first
+  auto localIt = locals.find(varName);
+  if (localIt != locals.end()) {
+    if (directValues.count(varName)) {
+      // This is a parameter or direct value - we need to create storage for it
+      auto fn = builder.GetInsertBlock()->getParent();
+      auto &entry = fn->getEntryBlock();
+      llvm::IRBuilder<> save(entry.getFirstNonPHI());
+      auto slot = save.CreateAlloca(llvmValueTy(), nullptr, varName.c_str());
+      locals[varName] = slot;
+      directValues.erase(varName);
+    }
+    builder.CreateStore(assignValue, localIt->second);
+    value = assignValue; // Assignment returns the assigned value
+    return;
   }
-  builder.CreateStore(value, it->second);
+
+  // Check if it's a global variable
+  auto globalIt = globals.find(varName);
+  if (globalIt != globals.end()) {
+    // For globals, we update the globals map
+    globals[varName] = assignValue;
+    value = assignValue;
+    return;
+  }
+
+  // Variable not found - this is an error in Lox
+  auto printFn = mod.getFunction("elx_print");
+  if (printFn) {
+    auto errorMsg =
+        stringConst("Runtime error: Undefined variable '" + varName + "'.");
+    builder.CreateCall(printFn, {errorMsg}, "print_error");
+  }
+  value = nilConst();
 }
 
 void CodeGenVisitor::visitLogicalExpr(Logical *e) {
@@ -608,7 +667,11 @@ void CodeGenVisitor::visitVarStmt(Var *s) {
 
   auto fn = builder.GetInsertBlock()->getParent();
   auto &entry = fn->getEntryBlock();
-  llvm::IRBuilder<> save(entry.getFirstNonPHI());
+
+  // Create alloca at the beginning of the entry block
+  auto insertPoint = entry.getFirstNonPHI();
+  llvm::IRBuilder<> save(&entry, insertPoint ? insertPoint->getIterator()
+                                             : entry.begin());
   auto slot =
       save.CreateAlloca(llvmValueTy(), nullptr, s->name.getLexeme().c_str());
   builder.CreateStore(value, slot);
@@ -701,8 +764,13 @@ void CodeGenVisitor::visitWhileStmt(While *s) {
 }
 
 void CodeGenVisitor::visitFunctionStmt(Function *s) {
-  const std::string &funcName = s->name.getLexeme();
+  const std::string &baseFuncName = s->name.getLexeme();
   int arity = s->params.size();
+
+  // Make function names unique to avoid JIT symbol conflicts
+  static int functionCounter = 0;
+  std::string funcName =
+      baseFuncName + "_fn" + std::to_string(functionCounter++);
 
   // Create function type (all parameters and return value are Value types)
   std::vector<llvm::Type *> paramTypes(arity, llvmValueTy());
@@ -713,8 +781,8 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
   llvm::Function *llvmFunc = llvm::Function::Create(
       funcType, llvm::Function::ExternalLinkage, funcName, &mod);
 
-  // Store in function table
-  functions[funcName] = llvmFunc;
+  // Store in function table using the unique name
+  functions[baseFuncName] = llvmFunc;
 
   // Save current state
   llvm::Function *prevFunction = currentFunction;
@@ -749,9 +817,10 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
 
   // Verify the function
   if (llvm::verifyFunction(*llvmFunc, &llvm::errs())) {
-    llvm::errs() << "Function verification failed for: " << funcName << "\n";
+    llvm::errs() << "Function verification failed for: " << baseFuncName
+                 << "\n";
     llvmFunc->eraseFromParent();
-    functions.erase(funcName);
+    functions.erase(baseFuncName);
   }
 
   // Restore previous state
@@ -762,8 +831,8 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
   }
 
   // Create a function object value and store it in the variable with the
-  // function name
-  auto nameStr = builder.CreateGlobalStringPtr(funcName, "fname");
+  // function name (use original name, not unique name)
+  auto nameStr = builder.CreateGlobalStringPtr(baseFuncName, "fname");
   auto arityConst = llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), arity);
   auto funcPtr = builder.CreateBitCast(
       llvmFunc, llvm::PointerType::get(llvm::Type::getInt8Ty(ctx), 0));
@@ -773,7 +842,8 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
       builder.CreateCall(allocFn, {nameStr, arityConst, funcPtr}, "funcobj");
 
   // Store the function object in globals for access across expressions
-  globals[funcName] = funcObj;
+  // Use the original function name for lookup
+  globals[baseFuncName] = funcObj;
 
   // Also create a local variable for the current scope if we're in a function
   if (currentFunction && builder.GetInsertBlock()) {
@@ -781,13 +851,13 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
     auto &entry = fn->getEntryBlock();
     llvm::IRBuilder<> entryBuilder(entry.getFirstNonPHI());
     auto slot =
-        entryBuilder.CreateAlloca(llvmValueTy(), nullptr, funcName.c_str());
+        entryBuilder.CreateAlloca(llvmValueTy(), nullptr, baseFuncName.c_str());
     builder.CreateStore(funcObj, slot);
-    locals[funcName] = slot;
+    locals[baseFuncName] = slot;
   } else {
     // At global scope, store directly
-    locals[funcName] = funcObj;
-    directValues.insert(funcName);
+    locals[baseFuncName] = funcObj;
+    directValues.insert(baseFuncName);
   }
 
   value = funcObj;

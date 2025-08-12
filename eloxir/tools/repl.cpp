@@ -3,6 +3,7 @@
 #include "../jit/EloxirJIT.h"
 #include <iostream>
 #include <llvm/Support/TargetSelect.h>
+#include <llvm/Transforms/Utils/Cloning.h>
 #include <memory>
 #include <string>
 
@@ -33,20 +34,23 @@ int main() {
     if (!exprAST)
       continue;
 
-    LLVMContext ctx;
-    auto mod = std::make_unique<Module>("repl", ctx);
-    eloxir::CodeGenVisitor cg(*mod);
+    // Create a new context and module for each line
+    LLVMContext lineCtx;
+    auto lineMod = std::make_unique<Module>("repl_line", lineCtx);
+    eloxir::CodeGenVisitor lineCG(*lineMod);
 
     // wrap in unique function name to avoid duplicates
     std::string fnName = "__expr" + std::to_string(lineCount++);
-    auto fnTy = FunctionType::get(cg.llvmValueTy(), {}, false);
-    auto fn = Function::Create(fnTy, Function::ExternalLinkage, fnName, *mod);
-    cg.getBuilder().SetInsertPoint(BasicBlock::Create(ctx, "entry", fn));
-    exprAST->codegen(cg);
-    cg.getBuilder().CreateRet(cg.value);
+    auto fnTy = FunctionType::get(lineCG.llvmValueTy(), {}, false);
+    auto fn =
+        Function::Create(fnTy, Function::ExternalLinkage, fnName, *lineMod);
+    lineCG.getBuilder().SetInsertPoint(
+        BasicBlock::Create(lineCtx, "entry", fn));
+    exprAST->codegen(lineCG);
+    lineCG.getBuilder().CreateRet(lineCG.value);
 
     cantFail(jit->addModule(orc::ThreadSafeModule(
-        std::move(mod), std::make_unique<LLVMContext>())));
+        std::move(lineMod), std::make_unique<LLVMContext>())));
     auto sym = cantFail(jit->lookup(fnName));
     using FnTy = eloxir::Value (*)();
     eloxir::Value result = reinterpret_cast<FnTy>(sym.getAddress())();
