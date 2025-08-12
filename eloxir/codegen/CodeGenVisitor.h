@@ -23,7 +23,6 @@ class CodeGenVisitor : public ExprVisitor, public StmtVisitor {
   std::unordered_map<std::string, llvm::Function *> functions;
   // current function being compiled (for return statements)
   llvm::Function *currentFunction;
-  bool builtinsInitialized;
   // String interning map to avoid duplicate string objects
   std::unordered_map<std::string, llvm::Value *> internedStrings;
 
@@ -84,9 +83,6 @@ private:
   llvm::Value *checkBothNumbers(llvm::Value *L, llvm::Value *R,
                                 llvm::BasicBlock *&successBB,
                                 llvm::BasicBlock *&errorBB); // returns i1
-
-  // Helper method to create built-in function objects
-  void initializeBuiltins();
 };
 
 } // namespace eloxir

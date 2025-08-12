@@ -46,4 +46,8 @@ uint64_t elx_call_function(uint64_t func_bits, uint64_t *args, int arg_count);
 
 // Memory management
 void elx_cleanup_all_objects(); // Clean up all tracked objects
+
+// Global built-ins management
+uint64_t elx_get_global_builtin(const char *name);
+void elx_initialize_global_builtins();
 }

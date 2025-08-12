@@ -4,12 +4,17 @@
 #include <cstring>
 #include <iostream>
 #include <memory>
+#include <unordered_map>
 #include <unordered_set>
 
 using namespace eloxir;
 
 // Simple object registry for tracking allocations
 static std::unordered_set<void *> allocated_objects;
+
+// Global built-ins registry
+static std::unordered_map<std::string, uint64_t> global_builtins;
+static bool global_builtins_initialized = false;
 
 static const char *getString(Value v) {
   if (!v.isObj())
@@ -286,9 +291,48 @@ uint64_t elx_call_function(uint64_t func_bits, uint64_t *args, int arg_count) {
 }
 
 void elx_cleanup_all_objects() {
-  // Free all tracked objects
-  for (void *obj : allocated_objects) {
-    free(obj);
+  // Free all tracked objects except global built-ins
+  std::unordered_set<void *> builtin_objects;
+
+  // Collect built-in objects that should not be freed
+  for (const auto &pair : global_builtins) {
+    Value v = Value::fromBits(pair.second);
+    if (v.isObj()) {
+      builtin_objects.insert(v.asObj());
+    }
   }
-  allocated_objects.clear();
+
+  // Free non-builtin objects
+  for (void *obj : allocated_objects) {
+    if (builtin_objects.find(obj) == builtin_objects.end()) {
+      free(obj);
+    }
+  }
+
+  // Clear the registry but keep built-ins alive
+  allocated_objects = builtin_objects;
+}
+
+void elx_initialize_global_builtins() {
+  if (global_builtins_initialized) {
+    return; // Already initialized
+  }
+
+  // Initialize clock function - create the actual function object
+  auto clock_obj =
+      elx_allocate_function("clock", 0, reinterpret_cast<void *>(&elx_clock));
+  global_builtins["clock"] = clock_obj;
+
+  global_builtins_initialized = true;
+}
+
+uint64_t elx_get_global_builtin(const char *name) {
+  elx_initialize_global_builtins(); // Ensure builtins are initialized
+
+  auto it = global_builtins.find(std::string(name));
+  if (it != global_builtins.end()) {
+    return it->second;
+  }
+
+  return Value::nil().getBits(); // Return nil if not found
 }

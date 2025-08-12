@@ -64,6 +64,16 @@ llvm::Expected<std::unique_ptr<EloxirJIT>> EloxirJIT::Create() {
       llvm::orc::ExecutorAddr::fromPtr(&elx_call_function),
       llvm::JITSymbolFlags::Exported);
 
+  // Global built-ins functions
+  runtimeSymbols[mangle("elx_get_global_builtin")] =
+      llvm::orc::ExecutorSymbolDef(
+          llvm::orc::ExecutorAddr::fromPtr(&elx_get_global_builtin),
+          llvm::JITSymbolFlags::Exported);
+  runtimeSymbols[mangle("elx_initialize_global_builtins")] =
+      llvm::orc::ExecutorSymbolDef(
+          llvm::orc::ExecutorAddr::fromPtr(&elx_initialize_global_builtins),
+          llvm::JITSymbolFlags::Exported);
+
   llvm::cantFail(j->jit->getMainJITDylib().define(
       llvm::orc::absoluteSymbols(runtimeSymbols)));
 

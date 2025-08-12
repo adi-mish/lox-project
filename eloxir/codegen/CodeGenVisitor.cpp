@@ -14,7 +14,7 @@ static constexpr uint64_t MASK_TAG = 0x7ULL << 48;
 
 CodeGenVisitor::CodeGenVisitor(llvm::Module &m)
     : builder(m.getContext()), ctx(m.getContext()), mod(m), value(nullptr),
-      currentFunction(nullptr), builtinsInitialized(false) {
+      currentFunction(nullptr) {
   // Declare external runtime fns
   llvm::FunctionType *printFnTy =
       llvm::FunctionType::get(llvmValueTy(), {llvmValueTy()}, false);
@@ -55,6 +55,16 @@ CodeGenVisitor::CodeGenVisitor(llvm::Module &m)
        llvm::Type::getInt32Ty(ctx)},
       false);
   mod.getOrInsertFunction("elx_call_function", callFuncTy);
+
+  // Global built-ins functions
+  llvm::FunctionType *getBuiltinTy = llvm::FunctionType::get(
+      llvmValueTy(), {llvm::PointerType::get(llvm::Type::getInt8Ty(ctx), 0)},
+      false);
+  mod.getOrInsertFunction("elx_get_global_builtin", getBuiltinTy);
+
+  llvm::FunctionType *initBuiltinsTy =
+      llvm::FunctionType::get(llvm::Type::getVoidTy(ctx), {}, false);
+  mod.getOrInsertFunction("elx_initialize_global_builtins", initBuiltinsTy);
 
   // Built-ins will be initialized when first generating code
 }
@@ -504,12 +514,6 @@ void CodeGenVisitor::visitUnaryExpr(Unary *e) {
 void CodeGenVisitor::visitVariableExpr(Variable *e) {
   const std::string &varName = e->name.getLexeme();
 
-  // Initialize built-ins if not already done
-  if (!builtinsInitialized) {
-    initializeBuiltins();
-    builtinsInitialized = true;
-  }
-
   // Check locals first
   auto it = locals.find(varName);
   if (it != locals.end()) {
@@ -529,7 +533,51 @@ void CodeGenVisitor::visitVariableExpr(Variable *e) {
     return;
   }
 
-  // Not found - emit runtime error
+  // Check if it's a global built-in
+  auto getBuiltinFn = mod.getFunction("elx_get_global_builtin");
+  if (getBuiltinFn) {
+    auto nameStr = builder.CreateGlobalStringPtr(varName, "builtin_name");
+    auto builtinValue =
+        builder.CreateCall(getBuiltinFn, {nameStr}, "builtin_check");
+
+    // Check if the returned value is not nil (indicating the built-in was
+    // found)
+    auto nilValue = nilConst();
+    auto isNotNil = builder.CreateICmpNE(builtinValue, nilValue, "is_builtin");
+
+    auto fn = builder.GetInsertBlock()->getParent();
+    auto foundBuiltinBB = llvm::BasicBlock::Create(ctx, "found_builtin", fn);
+    auto notFoundBB = llvm::BasicBlock::Create(ctx, "not_found", fn);
+    auto contBB = llvm::BasicBlock::Create(ctx, "var.cont", fn);
+
+    builder.CreateCondBr(isNotNil, foundBuiltinBB, notFoundBB);
+
+    // Found built-in: use the returned value
+    builder.SetInsertPoint(foundBuiltinBB);
+    auto foundValue = builtinValue;
+    builder.CreateBr(contBB);
+
+    // Not found: emit error and return nil
+    builder.SetInsertPoint(notFoundBB);
+    auto errorMsg =
+        stringConst("Runtime error: Undefined variable '" + varName + "'.");
+    auto printFn = mod.getFunction("elx_print");
+    if (printFn) {
+      builder.CreateCall(printFn, {errorMsg});
+    }
+    auto notFoundValue = nilConst();
+    builder.CreateBr(contBB);
+
+    // Continuation block
+    builder.SetInsertPoint(contBB);
+    auto phi = builder.CreatePHI(llvmValueTy(), 2, "var_result");
+    phi->addIncoming(foundValue, foundBuiltinBB);
+    phi->addIncoming(notFoundValue, notFoundBB);
+    value = phi;
+    return;
+  }
+
+  // Variable not found anywhere - emit error
   auto printFn = mod.getFunction("elx_print");
   std::string errorMsg = "Runtime error: Undefined variable '" + varName + "'.";
   auto msgValue = stringConst(errorMsg);
@@ -892,25 +940,5 @@ void CodeGenVisitor::visitSetExpr(Set *e) { value = nilConst(); }
 void CodeGenVisitor::visitThisExpr(This *e) { value = nilConst(); }
 void CodeGenVisitor::visitSuperExpr(Super *e) { value = nilConst(); }
 void CodeGenVisitor::visitClassStmt(Class *s) {}
-
-void CodeGenVisitor::initializeBuiltins() {
-  // Create built-in function objects
-
-  // clock() function
-  auto clockNameStr = builder.CreateGlobalStringPtr("clock", "clock_name");
-  auto clockArityConst = llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0);
-
-  // Get the clock runtime function
-  auto clockRuntimeFn = mod.getFunction("elx_clock");
-  auto clockPtr = builder.CreateBitCast(
-      clockRuntimeFn, llvm::PointerType::get(llvm::Type::getInt8Ty(ctx), 0));
-
-  auto allocFn = mod.getFunction("elx_allocate_function");
-  auto clockObj = builder.CreateCall(
-      allocFn, {clockNameStr, clockArityConst, clockPtr}, "clock_obj");
-
-  // Store in globals
-  globals["clock"] = clockObj;
-}
 
 } // namespace eloxir
