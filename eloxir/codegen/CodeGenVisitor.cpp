@@ -516,7 +516,11 @@ void CodeGenVisitor::visitVariableExpr(Variable *e) {
     return;
   }
 
-  // Not found
+  // Not found - emit runtime error
+  auto printFn = mod.getFunction("elx_print");
+  std::string errorMsg = "Runtime error: Undefined variable '" + varName + "'.";
+  auto msgValue = stringConst(errorMsg);
+  builder.CreateCall(printFn, {msgValue});
   value = nilConst();
 }
 

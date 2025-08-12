@@ -1,6 +1,7 @@
 #include "../codegen/CodeGenVisitor.h"
 #include "../frontend/Parser.h"
 #include "../jit/EloxirJIT.h"
+#include "../runtime/RuntimeAPI.h"
 #include <iostream>
 #include <llvm/Support/TargetSelect.h>
 #include <llvm/Transforms/Utils/Cloning.h>
@@ -55,6 +56,9 @@ int main() {
     using FnTy = eloxir::Value (*)();
     eloxir::Value result = reinterpret_cast<FnTy>(sym.getAddress())();
     /* do nothing - elx_print already printed */
+    
+    // Clean up temporary allocations between REPL iterations
+    elx_cleanup_all_objects();
   }
   return 0;
 }
