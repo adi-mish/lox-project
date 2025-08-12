@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <cstring>
+#include <iostream>
 
 namespace eloxir {
 
@@ -28,8 +29,21 @@ public:
     return Value{QNAN | (static_cast<uint64_t>(Tag::NIL) << 48)};
   }
   static Value object(void *p) {
-    return Value{QNAN | (static_cast<uint64_t>(Tag::OBJ) << 48) |
-                 reinterpret_cast<uint64_t>(p)};
+    // For now, let's use a simple approach that doesn't truncate pointers
+    // We store the pointer directly in the NaN payload if it fits in 48 bits
+    uint64_t ptr_value = reinterpret_cast<uint64_t>(p);
+    // Check if pointer fits in 48 bits
+    if (ptr_value <= 0xFFFFFFFFFFFFULL) {
+      return Value{QNAN | (static_cast<uint64_t>(Tag::OBJ) << 48) | ptr_value};
+    } else {
+      // For pointers that don't fit, we need a different strategy
+      // For now, this is a critical error that should be handled differently
+      // In a production system, we'd use a pointer table or different encoding
+      std::cerr << "Critical error: pointer value " << std::hex << ptr_value
+                << " does not fit in 48-bit NaN-boxing scheme\n";
+      return Value{QNAN | (static_cast<uint64_t>(Tag::OBJ) << 48) |
+                   (ptr_value & 0xFFFFFFFFFFFFULL)};
+    }
   }
   static Value fromBits(uint64_t bits) { return Value{bits}; }
 
@@ -57,8 +71,10 @@ public:
   bool isNil() const { return tag() == Tag::NIL; }
   bool isObj() const { return tag() == Tag::OBJ; }
   void *asObj() const {
-    // Extract the lower 48 bits as the pointer
-    return reinterpret_cast<void *>(bits & 0xFFFFFFFFFFFFULL);
+    // For objects, we need to reconstruct the full pointer
+    // Extract the lower 48 bits and extend to full pointer
+    uint64_t ptr_bits = bits & 0xFFFFFFFFFFFFULL;
+    return reinterpret_cast<void *>(ptr_bits);
   }
 
   uint64_t getBits() const { return bits; }

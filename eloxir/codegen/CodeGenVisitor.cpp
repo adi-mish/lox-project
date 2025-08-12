@@ -544,9 +544,49 @@ void CodeGenVisitor::visitLogicalExpr(Logical *e) {
 }
 
 void CodeGenVisitor::visitCallExpr(Call *e) {
-  // For now, just return nil to avoid segfault while we debug
-  // TODO: Implement proper function calls
-  value = nilConst();
+  // Evaluate the callee expression
+  e->callee->accept(this);
+  llvm::Value *callee = value;
+
+  // Evaluate all arguments
+  std::vector<llvm::Value *> args;
+  for (auto &arg : e->arguments) {
+    arg->accept(this);
+    args.push_back(value);
+  }
+
+  // Create an array to pass arguments to runtime function
+  llvm::Function *callFn = mod.getFunction("elx_call_function");
+  if (!callFn) {
+    value = nilConst();
+    return;
+  }
+
+  if (args.empty()) {
+    // No arguments case
+    llvm::Value *nullPtr = llvm::ConstantPointerNull::get(
+        llvm::PointerType::get(llvmValueTy(), 0));
+    llvm::Value *argCount =
+        llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0);
+    value = builder.CreateCall(callFn, {callee, nullPtr, argCount});
+  } else {
+    // Create an array on the stack for arguments
+    llvm::Value *argArray = builder.CreateAlloca(
+        llvmValueTy(),
+        llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), args.size()),
+        "args");
+
+    // Store each argument in the array
+    for (size_t i = 0; i < args.size(); ++i) {
+      llvm::Value *idx = llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), i);
+      llvm::Value *elemPtr = builder.CreateGEP(llvmValueTy(), argArray, idx);
+      builder.CreateStore(args[i], elemPtr);
+    }
+
+    llvm::Value *argCount =
+        llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), args.size());
+    value = builder.CreateCall(callFn, {callee, argArray, argCount});
+  }
 }
 
 // --------- Stmt visitors -------------------------------------------------
@@ -732,9 +772,24 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
   auto funcObj =
       builder.CreateCall(allocFn, {nameStr, arityConst, funcPtr}, "funcobj");
 
-  // Store the function object in locals for variable access
-  locals[funcName] = funcObj;
-  globals[funcName] = funcObj; // Also store in globals for persistence
+  // Store the function object in globals for access across expressions
+  globals[funcName] = funcObj;
+
+  // Also create a local variable for the current scope if we're in a function
+  if (currentFunction && builder.GetInsertBlock()) {
+    auto fn = builder.GetInsertBlock()->getParent();
+    auto &entry = fn->getEntryBlock();
+    llvm::IRBuilder<> entryBuilder(entry.getFirstNonPHI());
+    auto slot =
+        entryBuilder.CreateAlloca(llvmValueTy(), nullptr, funcName.c_str());
+    builder.CreateStore(funcObj, slot);
+    locals[funcName] = slot;
+  } else {
+    // At global scope, store directly
+    locals[funcName] = funcObj;
+    directValues.insert(funcName);
+  }
+
   value = funcObj;
 }
 void CodeGenVisitor::visitReturnStmt(Return *s) {

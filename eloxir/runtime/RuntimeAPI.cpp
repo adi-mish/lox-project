@@ -207,22 +207,54 @@ uint64_t elx_call_function(uint64_t func_bits, uint64_t *args, int arg_count) {
   ObjFunction *func = getFunction(func_val);
 
   if (!func) {
-    // Not a function
+    // Not a function - this should be a runtime error
+    std::cerr << "Runtime error: attempted to call non-function value\n";
     return Value::nil().getBits();
   }
 
   if (arg_count != func->arity) {
-    // Wrong number of arguments - should be a runtime error
-    // For now, return nil
+    // Wrong number of arguments - runtime error
+    std::cerr << "Runtime error: function '"
+              << (func->name ? func->name : "<anonymous>") << "' expects "
+              << func->arity << " arguments but got " << arg_count << "\n";
     return Value::nil().getBits();
   }
 
   // Call the LLVM function
   if (func->llvm_function) {
-    // For now, assume all functions take no arguments and return uint64_t
-    typedef uint64_t (*FunctionPtr)();
-    FunctionPtr fn = reinterpret_cast<FunctionPtr>(func->llvm_function);
-    return fn();
+    // For now, we support functions with different arities by casting to
+    // appropriate function pointers
+    switch (arg_count) {
+    case 0: {
+      typedef uint64_t (*FunctionPtr0)();
+      FunctionPtr0 fn = reinterpret_cast<FunctionPtr0>(func->llvm_function);
+      return fn();
+    }
+    case 1: {
+      typedef uint64_t (*FunctionPtr1)(uint64_t);
+      FunctionPtr1 fn = reinterpret_cast<FunctionPtr1>(func->llvm_function);
+      return fn(args[0]);
+    }
+    case 2: {
+      typedef uint64_t (*FunctionPtr2)(uint64_t, uint64_t);
+      FunctionPtr2 fn = reinterpret_cast<FunctionPtr2>(func->llvm_function);
+      return fn(args[0], args[1]);
+    }
+    case 3: {
+      typedef uint64_t (*FunctionPtr3)(uint64_t, uint64_t, uint64_t);
+      FunctionPtr3 fn = reinterpret_cast<FunctionPtr3>(func->llvm_function);
+      return fn(args[0], args[1], args[2]);
+    }
+    case 4: {
+      typedef uint64_t (*FunctionPtr4)(uint64_t, uint64_t, uint64_t, uint64_t);
+      FunctionPtr4 fn = reinterpret_cast<FunctionPtr4>(func->llvm_function);
+      return fn(args[0], args[1], args[2], args[3]);
+    }
+    default:
+      std::cerr << "Runtime error: functions with more than 4 arguments are "
+                   "not yet supported\n";
+      return Value::nil().getBits();
+    }
   }
 
   return Value::nil().getBits();
