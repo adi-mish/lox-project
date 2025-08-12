@@ -7,7 +7,7 @@
 namespace eloxir {
 
 // Object header for heap-allocated objects
-enum class ObjType { STRING };
+enum class ObjType { STRING, FUNCTION };
 
 struct Obj {
   ObjType type;
@@ -17,6 +17,13 @@ struct ObjString {
   Obj obj;
   int length;
   char chars[]; // flexible array member
+};
+
+struct ObjFunction {
+  Obj obj;
+  int arity;
+  const char *name;
+  void *llvm_function; // pointer to compiled LLVM function
 };
 
 } // namespace eloxir
@@ -31,4 +38,9 @@ uint64_t elx_allocate_string(const char *chars, int length);
 void elx_free_object(uint64_t obj_bits);
 uint64_t elx_concatenate_strings(uint64_t a_bits, uint64_t b_bits);
 int elx_strings_equal(uint64_t a_bits, uint64_t b_bits);
+
+// Function functions
+uint64_t elx_allocate_function(const char *name, int arity,
+                               void *llvm_function);
+uint64_t elx_call_function(uint64_t func_bits, uint64_t *args, int arg_count);
 }

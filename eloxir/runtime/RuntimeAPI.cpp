@@ -20,6 +20,19 @@ static const char *getString(Value v) {
   return str->chars;
 }
 
+static ObjFunction *getFunction(Value v) {
+  if (!v.isObj())
+    return nullptr;
+  void *obj_ptr = v.asObj();
+  if (obj_ptr == nullptr)
+    return nullptr;
+
+  ObjFunction *func = static_cast<ObjFunction *>(obj_ptr);
+  if (func->obj.type != ObjType::FUNCTION)
+    return nullptr;
+  return func;
+}
+
 uint64_t elx_print(uint64_t bits) {
   Value v = Value::fromBits(bits);
   switch (v.tag()) {
@@ -33,11 +46,35 @@ uint64_t elx_print(uint64_t bits) {
     std::cout << "nil";
     break;
   case Tag::OBJ: {
-    const char *str = getString(v);
-    if (str) {
-      std::cout << str;
-    } else {
+    void *obj_ptr = v.asObj();
+    if (!obj_ptr) {
       std::cout << "<obj>";
+      break;
+    }
+
+    Obj *obj = static_cast<Obj *>(obj_ptr);
+    switch (obj->type) {
+    case ObjType::STRING: {
+      const char *str = getString(v);
+      if (str) {
+        std::cout << str;
+      } else {
+        std::cout << "<string>";
+      }
+      break;
+    }
+    case ObjType::FUNCTION: {
+      ObjFunction *func = getFunction(v);
+      if (func && func->name) {
+        std::cout << "<fn " << func->name << ">";
+      } else {
+        std::cout << "<function>";
+      }
+      break;
+    }
+    default:
+      std::cout << "<obj>";
+      break;
     }
     break;
   }
@@ -130,4 +167,63 @@ int elx_strings_equal(uint64_t a_bits, uint64_t b_bits) {
     return 0;
 
   return std::memcmp(str_a->chars, str_b->chars, str_a->length) == 0 ? 1 : 0;
+}
+
+uint64_t elx_allocate_function(const char *name, int arity,
+                               void *llvm_function) {
+  // Allocate memory for the function object
+  size_t name_len = 0;
+  if (name) {
+    // Calculate string length manually
+    const char *p = name;
+    while (*p) {
+      name_len++;
+      p++;
+    }
+  }
+  size_t size = sizeof(ObjFunction) + name_len + 1; // +1 for null terminator
+  ObjFunction *func = static_cast<ObjFunction *>(malloc(size));
+  if (!func) {
+    return Value::nil().getBits();
+  }
+
+  func->obj.type = ObjType::FUNCTION;
+  func->arity = arity;
+  func->llvm_function = llvm_function;
+
+  // Copy the name after the function struct
+  char *name_storage = reinterpret_cast<char *>(func + 1);
+  if (name) {
+    std::memcpy(name_storage, name, name_len);
+  }
+  name_storage[name_len] = '\0';
+  func->name = name_storage;
+
+  return Value::object(func).getBits();
+}
+
+uint64_t elx_call_function(uint64_t func_bits, uint64_t *args, int arg_count) {
+  Value func_val = Value::fromBits(func_bits);
+  ObjFunction *func = getFunction(func_val);
+
+  if (!func) {
+    // Not a function
+    return Value::nil().getBits();
+  }
+
+  if (arg_count != func->arity) {
+    // Wrong number of arguments - should be a runtime error
+    // For now, return nil
+    return Value::nil().getBits();
+  }
+
+  // Call the LLVM function
+  if (func->llvm_function) {
+    // For now, assume all functions take no arguments and return uint64_t
+    typedef uint64_t (*FunctionPtr)();
+    FunctionPtr fn = reinterpret_cast<FunctionPtr>(func->llvm_function);
+    return fn();
+  }
+
+  return Value::nil().getBits();
 }

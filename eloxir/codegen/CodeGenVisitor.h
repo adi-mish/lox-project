@@ -7,6 +7,7 @@
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/Module.h>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace eloxir {
 
@@ -16,6 +17,15 @@ class CodeGenVisitor : public ExprVisitor, public StmtVisitor {
   llvm::Module &mod;
   // current lexical scope:
   std::unordered_map<std::string, llvm::Value *> locals;
+  // track which locals are direct values (like parameters) vs alloca'd
+  std::unordered_set<std::string> directValues;
+  // global variables (including functions)
+  std::unordered_map<std::string, llvm::Value *> globals;
+  // function table for user-defined functions
+  std::unordered_map<std::string, llvm::Function *> functions;
+  // current function being compiled (for return statements)
+  llvm::Function *currentFunction;
+  bool builtinsInitialized;
 
 public:
   CodeGenVisitor(llvm::Module &m);
@@ -71,6 +81,9 @@ private:
   llvm::Value *checkBothNumbers(llvm::Value *L, llvm::Value *R,
                                 llvm::BasicBlock *&successBB,
                                 llvm::BasicBlock *&errorBB); // returns i1
+
+  // Helper method to create built-in function objects
+  void initializeBuiltins();
 };
 
 } // namespace eloxir

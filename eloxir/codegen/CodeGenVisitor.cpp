@@ -13,7 +13,8 @@ static constexpr uint64_t QNAN = 0x7ff8000000000000ULL;
 static constexpr uint64_t MASK_TAG = 0x7ULL << 48;
 
 CodeGenVisitor::CodeGenVisitor(llvm::Module &m)
-    : builder(m.getContext()), ctx(m.getContext()), mod(m), value(nullptr) {
+    : builder(m.getContext()), ctx(m.getContext()), mod(m), value(nullptr),
+      currentFunction(nullptr), builtinsInitialized(false) {
   // Declare external runtime fns
   llvm::FunctionType *printFnTy =
       llvm::FunctionType::get(llvmValueTy(), {llvmValueTy()}, false);
@@ -38,6 +39,24 @@ CodeGenVisitor::CodeGenVisitor(llvm::Module &m)
   llvm::FunctionType *strEqualTy = llvm::FunctionType::get(
       llvm::Type::getInt32Ty(ctx), {llvmValueTy(), llvmValueTy()}, false);
   mod.getOrInsertFunction("elx_strings_equal", strEqualTy);
+
+  // Function functions
+  llvm::FunctionType *allocFuncTy = llvm::FunctionType::get(
+      llvmValueTy(),
+      {llvm::PointerType::get(llvm::Type::getInt8Ty(ctx), 0),
+       llvm::Type::getInt32Ty(ctx),
+       llvm::PointerType::get(llvm::Type::getInt8Ty(ctx), 0)},
+      false);
+  mod.getOrInsertFunction("elx_allocate_function", allocFuncTy);
+
+  llvm::FunctionType *callFuncTy = llvm::FunctionType::get(
+      llvmValueTy(),
+      {llvmValueTy(), llvm::PointerType::get(llvmValueTy(), 0),
+       llvm::Type::getInt32Ty(ctx)},
+      false);
+  mod.getOrInsertFunction("elx_call_function", callFuncTy);
+
+  // Built-ins will be initialized when first generating code
 }
 
 llvm::Type *CodeGenVisitor::llvmValueTy() const {
@@ -437,13 +456,35 @@ void CodeGenVisitor::visitUnaryExpr(Unary *e) {
 }
 
 void CodeGenVisitor::visitVariableExpr(Variable *e) {
-  auto it = locals.find(e->name.getLexeme());
-  if (it == locals.end()) {
-    value = nilConst();
+  const std::string &varName = e->name.getLexeme();
+
+  // Initialize built-ins if not already done
+  if (!builtinsInitialized) {
+    initializeBuiltins();
+    builtinsInitialized = true;
+  }
+
+  // Check locals first
+  auto it = locals.find(varName);
+  if (it != locals.end()) {
+    // Check if this is a direct value (like a parameter) or needs to be loaded
+    if (directValues.count(varName)) {
+      value = it->second; // Direct value, no load needed
+    } else {
+      value = builder.CreateLoad(llvmValueTy(), it->second, varName.c_str());
+    }
     return;
   }
-  value = builder.CreateLoad(llvmValueTy(), it->second,
-                             e->name.getLexeme().c_str());
+
+  // Check globals
+  auto globalIt = globals.find(varName);
+  if (globalIt != globals.end()) {
+    value = globalIt->second;
+    return;
+  }
+
+  // Not found
+  value = nilConst();
 }
 
 void CodeGenVisitor::visitAssignExpr(Assign *e) {
@@ -503,7 +544,8 @@ void CodeGenVisitor::visitLogicalExpr(Logical *e) {
 }
 
 void CodeGenVisitor::visitCallExpr(Call *e) {
-  // Not on the critical path -> return nil for now
+  // For now, just return nil to avoid segfault while we debug
+  // TODO: Implement proper function calls
   value = nilConst();
 }
 
@@ -618,12 +660,115 @@ void CodeGenVisitor::visitWhileStmt(While *s) {
   value = nilConst();
 }
 
-void CodeGenVisitor::visitFunctionStmt(Function *s) { value = nilConst(); }
-void CodeGenVisitor::visitReturnStmt(Return *s) { value = nilConst(); }
+void CodeGenVisitor::visitFunctionStmt(Function *s) {
+  const std::string &funcName = s->name.getLexeme();
+  int arity = s->params.size();
+
+  // Create function type (all parameters and return value are Value types)
+  std::vector<llvm::Type *> paramTypes(arity, llvmValueTy());
+  llvm::FunctionType *funcType =
+      llvm::FunctionType::get(llvmValueTy(), paramTypes, false);
+
+  // Create the LLVM function
+  llvm::Function *llvmFunc = llvm::Function::Create(
+      funcType, llvm::Function::ExternalLinkage, funcName, &mod);
+
+  // Store in function table
+  functions[funcName] = llvmFunc;
+
+  // Save current state
+  llvm::Function *prevFunction = currentFunction;
+  auto prevLocals = locals;
+  llvm::BasicBlock *prevBB = builder.GetInsertBlock();
+
+  // Set up new function
+  currentFunction = llvmFunc;
+  locals.clear();
+  directValues.clear();
+
+  // Create entry block
+  llvm::BasicBlock *entryBB = llvm::BasicBlock::Create(ctx, "entry", llvmFunc);
+  builder.SetInsertPoint(entryBB);
+
+  // Add parameters to local scope as direct values
+  auto argIt = llvmFunc->arg_begin();
+  for (size_t i = 0; i < s->params.size(); ++i, ++argIt) {
+    const std::string &paramName = s->params[i].getLexeme();
+    argIt->setName(paramName);
+    locals[paramName] = &*argIt;
+    directValues.insert(paramName); // Mark as direct value
+  }
+
+  // Generate function body
+  s->body->accept(this);
+
+  // If no explicit return, return nil
+  if (!builder.GetInsertBlock()->getTerminator()) {
+    builder.CreateRet(nilConst());
+  }
+
+  // Verify the function
+  if (llvm::verifyFunction(*llvmFunc, &llvm::errs())) {
+    llvm::errs() << "Function verification failed for: " << funcName << "\n";
+    llvmFunc->eraseFromParent();
+    functions.erase(funcName);
+  }
+
+  // Restore previous state
+  currentFunction = prevFunction;
+  locals = std::move(prevLocals);
+  if (prevBB) {
+    builder.SetInsertPoint(prevBB);
+  }
+
+  // Create a function object value and store it in the variable with the
+  // function name
+  auto nameStr = builder.CreateGlobalStringPtr(funcName, "fname");
+  auto arityConst = llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), arity);
+  auto funcPtr = builder.CreateBitCast(
+      llvmFunc, llvm::PointerType::get(llvm::Type::getInt8Ty(ctx), 0));
+
+  auto allocFn = mod.getFunction("elx_allocate_function");
+  auto funcObj =
+      builder.CreateCall(allocFn, {nameStr, arityConst, funcPtr}, "funcobj");
+
+  // Store the function object in locals for variable access
+  locals[funcName] = funcObj;
+  globals[funcName] = funcObj; // Also store in globals for persistence
+  value = funcObj;
+}
+void CodeGenVisitor::visitReturnStmt(Return *s) {
+  if (s->value) {
+    s->value->accept(this);
+    builder.CreateRet(value);
+  } else {
+    builder.CreateRet(nilConst());
+  }
+}
 void CodeGenVisitor::visitGetExpr(Get *e) { value = nilConst(); }
 void CodeGenVisitor::visitSetExpr(Set *e) { value = nilConst(); }
 void CodeGenVisitor::visitThisExpr(This *e) { value = nilConst(); }
 void CodeGenVisitor::visitSuperExpr(Super *e) { value = nilConst(); }
 void CodeGenVisitor::visitClassStmt(Class *s) {}
+
+void CodeGenVisitor::initializeBuiltins() {
+  // Create built-in function objects
+
+  // clock() function
+  auto clockNameStr = builder.CreateGlobalStringPtr("clock", "clock_name");
+  auto clockArityConst = llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0);
+
+  // Get the clock runtime function
+  auto clockRuntimeFn = mod.getFunction("elx_clock");
+  auto clockPtr = builder.CreateBitCast(
+      clockRuntimeFn, llvm::PointerType::get(llvm::Type::getInt8Ty(ctx), 0));
+
+  auto allocFn = mod.getFunction("elx_allocate_function");
+  auto clockObj = builder.CreateCall(
+      allocFn, {clockNameStr, clockArityConst, clockPtr}, "clock_obj");
+
+  // Store in globals
+  globals["clock"] = clockObj;
+}
 
 } // namespace eloxir
