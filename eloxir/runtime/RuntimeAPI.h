@@ -35,6 +35,10 @@ uint64_t elx_clock(); // seconds since epoch
 
 // String functions
 uint64_t elx_allocate_string(const char *chars, int length);
+uint64_t elx_intern_string(const char *chars,
+                           int length); // Global string interning
+uint64_t elx_debug_string_address(
+    uint64_t str_bits); // Debug: print string object address
 void elx_free_object(uint64_t obj_bits);
 uint64_t elx_concatenate_strings(uint64_t a_bits, uint64_t b_bits);
 int elx_strings_equal(uint64_t a_bits, uint64_t b_bits);

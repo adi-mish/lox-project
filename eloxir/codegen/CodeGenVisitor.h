@@ -23,8 +23,6 @@ class CodeGenVisitor : public ExprVisitor, public StmtVisitor {
   std::unordered_map<std::string, llvm::Function *> functions;
   // current function being compiled (for return statements)
   llvm::Function *currentFunction;
-  // String interning map to avoid duplicate string objects
-  std::unordered_map<std::string, llvm::Value *> internedStrings;
 
 public:
   CodeGenVisitor(llvm::Module &m);

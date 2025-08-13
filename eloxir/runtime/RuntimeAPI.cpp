@@ -16,6 +16,9 @@ static std::unordered_set<void *> allocated_objects;
 static std::unordered_map<std::string, uint64_t> global_builtins;
 static bool global_builtins_initialized = false;
 
+// Global string interning table
+static std::unordered_map<std::string, uint64_t> global_interned_strings;
+
 static const char *getString(Value v) {
   if (!v.isObj())
     return nullptr;
@@ -99,6 +102,38 @@ uint64_t elx_clock() {
   using namespace std::chrono;
   auto secs = duration<double>(system_clock::now().time_since_epoch()).count();
   return Value::number(secs).getBits();
+}
+
+uint64_t elx_debug_string_address(uint64_t str_bits) {
+  Value v = Value::fromBits(str_bits);
+  if (v.isObj()) {
+    void *obj_ptr = v.asObj();
+    ObjString *str = static_cast<ObjString *>(obj_ptr);
+    if (str && str->obj.type == ObjType::STRING) {
+      std::cout << "String \"" << str->chars << "\" at address: " << obj_ptr
+                << std::endl;
+    }
+  }
+  return str_bits; // Pass through the value
+}
+
+uint64_t elx_intern_string(const char *chars, int length) {
+  // Create a std::string for lookup in the intern table
+  std::string str(chars, length);
+
+  // Check if this string is already interned globally
+  auto intern_it = global_interned_strings.find(str);
+  if (intern_it != global_interned_strings.end()) {
+    return intern_it->second; // Return the existing interned string
+  }
+
+  // If not found, create a new string object
+  uint64_t new_string = elx_allocate_string(chars, length);
+
+  // Add it to the global intern table
+  global_interned_strings[str] = new_string;
+
+  return new_string;
 }
 
 uint64_t elx_allocate_string(const char *chars, int length) {
@@ -291,26 +326,34 @@ uint64_t elx_call_function(uint64_t func_bits, uint64_t *args, int arg_count) {
 }
 
 void elx_cleanup_all_objects() {
-  // Free all tracked objects except global built-ins
-  std::unordered_set<void *> builtin_objects;
+  // Free all tracked objects except global built-ins and interned strings
+  std::unordered_set<void *> persistent_objects;
 
   // Collect built-in objects that should not be freed
   for (const auto &pair : global_builtins) {
     Value v = Value::fromBits(pair.second);
     if (v.isObj()) {
-      builtin_objects.insert(v.asObj());
+      persistent_objects.insert(v.asObj());
     }
   }
 
-  // Free non-builtin objects
+  // Collect interned strings that should not be freed
+  for (const auto &pair : global_interned_strings) {
+    Value v = Value::fromBits(pair.second);
+    if (v.isObj()) {
+      persistent_objects.insert(v.asObj());
+    }
+  }
+
+  // Free non-persistent objects
   for (void *obj : allocated_objects) {
-    if (builtin_objects.find(obj) == builtin_objects.end()) {
+    if (persistent_objects.find(obj) == persistent_objects.end()) {
       free(obj);
     }
   }
 
-  // Clear the registry but keep built-ins alive
-  allocated_objects = builtin_objects;
+  // Clear the registry but keep persistent objects alive
+  allocated_objects = persistent_objects;
 }
 
 void elx_initialize_global_builtins() {

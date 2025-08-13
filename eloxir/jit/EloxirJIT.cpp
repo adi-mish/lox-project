@@ -47,6 +47,13 @@ llvm::Expected<std::unique_ptr<EloxirJIT>> EloxirJIT::Create() {
   runtimeSymbols[mangle("elx_allocate_string")] = llvm::orc::ExecutorSymbolDef(
       llvm::orc::ExecutorAddr::fromPtr(&elx_allocate_string),
       llvm::JITSymbolFlags::Exported);
+  runtimeSymbols[mangle("elx_intern_string")] = llvm::orc::ExecutorSymbolDef(
+      llvm::orc::ExecutorAddr::fromPtr(&elx_intern_string),
+      llvm::JITSymbolFlags::Exported);
+  runtimeSymbols[mangle("elx_debug_string_address")] =
+      llvm::orc::ExecutorSymbolDef(
+          llvm::orc::ExecutorAddr::fromPtr(&elx_debug_string_address),
+          llvm::JITSymbolFlags::Exported);
   runtimeSymbols[mangle("elx_concatenate_strings")] =
       llvm::orc::ExecutorSymbolDef(
           llvm::orc::ExecutorAddr::fromPtr(&elx_concatenate_strings),

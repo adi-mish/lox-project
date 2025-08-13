@@ -31,6 +31,7 @@ CodeGenVisitor::CodeGenVisitor(llvm::Module &m)
        llvm::Type::getInt32Ty(ctx)},
       false);
   mod.getOrInsertFunction("elx_allocate_string", allocStringTy);
+  mod.getOrInsertFunction("elx_intern_string", allocStringTy);
 
   llvm::FunctionType *concatTy = llvm::FunctionType::get(
       llvmValueTy(), {llvmValueTy(), llvmValueTy()}, false);
@@ -177,29 +178,20 @@ llvm::Value *CodeGenVisitor::isString(llvm::Value *v) {
 }
 
 llvm::Value *CodeGenVisitor::stringConst(const std::string &str) {
-  // Check if this string has already been interned
-  auto internIt = internedStrings.find(str);
-  if (internIt != internedStrings.end()) {
-    return internIt->second; // Return existing string object
-  }
-
-  // Create a new string object
+  // Use global string interning instead of local interning
   auto strConstant = builder.CreateGlobalStringPtr(str, "str");
   auto lengthConst =
       llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), str.length());
 
-  // Call elx_allocate_string
-  auto allocFn = mod.getFunction("elx_allocate_string");
-  if (!allocFn) {
+  // Call elx_intern_string for global interning
+  auto internFn = mod.getFunction("elx_intern_string");
+  if (!internFn) {
     // Fallback to nil if function not found
     return nilConst();
   }
 
   auto strObj =
-      builder.CreateCall(allocFn, {strConstant, lengthConst}, "strobj");
-
-  // Intern the string for future use
-  internedStrings[str] = strObj;
+      builder.CreateCall(internFn, {strConstant, lengthConst}, "strobj");
 
   return strObj;
 }
