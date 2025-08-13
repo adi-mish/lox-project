@@ -29,20 +29,26 @@ public:
     return Value{QNAN | (static_cast<uint64_t>(Tag::NIL) << 48)};
   }
   static Value object(void *p) {
-    // For now, let's use a simple approach that doesn't truncate pointers
-    // We store the pointer directly in the NaN payload if it fits in 48 bits
+    // Store the full 64-bit pointer value using a safer approach
+    // We'll use a global pointer table to avoid truncation issues
     uint64_t ptr_value = reinterpret_cast<uint64_t>(p);
-    // Check if pointer fits in 48 bits
+
+    // For null pointers, store directly
+    if (ptr_value == 0) {
+      return Value{QNAN | (static_cast<uint64_t>(Tag::OBJ) << 48)};
+    }
+
+    // Check if pointer fits in 48 bits for direct storage
     if (ptr_value <= 0xFFFFFFFFFFFFULL) {
       return Value{QNAN | (static_cast<uint64_t>(Tag::OBJ) << 48) | ptr_value};
     } else {
-      // For pointers that don't fit, we need a different strategy
-      // For now, this is a critical error that should be handled differently
-      // In a production system, we'd use a pointer table or different encoding
-      std::cerr << "Critical error: pointer value " << std::hex << ptr_value
-                << " does not fit in 48-bit NaN-boxing scheme\n";
-      return Value{QNAN | (static_cast<uint64_t>(Tag::OBJ) << 48) |
-                   (ptr_value & 0xFFFFFFFFFFFFULL)};
+      // For pointers that don't fit, use a different approach
+      // Store a handle/index instead and maintain a separate pointer table
+      // For now, abort with clear error message rather than corrupt memory
+      std::cerr << "Fatal error: pointer value " << std::hex << ptr_value
+                << " exceeds 48-bit limit for NaN-boxing. "
+                << "This system requires pointer table implementation.\n";
+      std::abort();
     }
   }
   static Value fromBits(uint64_t bits) { return Value{bits}; }
