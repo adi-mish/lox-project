@@ -55,4 +55,12 @@ void elx_cleanup_all_objects(); // Clean up all tracked objects
 // Global built-ins management
 uint64_t elx_get_global_builtin(const char *name);
 void elx_initialize_global_builtins();
+
+// Global environment for cross-line persistence
+void elx_set_global_variable(const char *name, uint64_t value);
+uint64_t elx_get_global_variable(const char *name);
+int elx_has_global_variable(const char *name);
+void elx_set_global_function(const char *name, uint64_t func_obj);
+uint64_t elx_get_global_function(const char *name);
+int elx_has_global_function(const char *name);
 }

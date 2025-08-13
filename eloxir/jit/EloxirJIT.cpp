@@ -84,6 +84,32 @@ llvm::Expected<std::unique_ptr<EloxirJIT>> EloxirJIT::Create() {
           llvm::orc::ExecutorAddr::fromPtr(&elx_initialize_global_builtins),
           llvm::JITSymbolFlags::Exported);
 
+  // Global environment functions for cross-line persistence
+  runtimeSymbols[mangle("elx_set_global_variable")] =
+      llvm::orc::ExecutorSymbolDef(
+          llvm::orc::ExecutorAddr::fromPtr(&elx_set_global_variable),
+          llvm::JITSymbolFlags::Exported);
+  runtimeSymbols[mangle("elx_get_global_variable")] =
+      llvm::orc::ExecutorSymbolDef(
+          llvm::orc::ExecutorAddr::fromPtr(&elx_get_global_variable),
+          llvm::JITSymbolFlags::Exported);
+  runtimeSymbols[mangle("elx_has_global_variable")] =
+      llvm::orc::ExecutorSymbolDef(
+          llvm::orc::ExecutorAddr::fromPtr(&elx_has_global_variable),
+          llvm::JITSymbolFlags::Exported);
+  runtimeSymbols[mangle("elx_set_global_function")] =
+      llvm::orc::ExecutorSymbolDef(
+          llvm::orc::ExecutorAddr::fromPtr(&elx_set_global_function),
+          llvm::JITSymbolFlags::Exported);
+  runtimeSymbols[mangle("elx_get_global_function")] =
+      llvm::orc::ExecutorSymbolDef(
+          llvm::orc::ExecutorAddr::fromPtr(&elx_get_global_function),
+          llvm::JITSymbolFlags::Exported);
+  runtimeSymbols[mangle("elx_has_global_function")] =
+      llvm::orc::ExecutorSymbolDef(
+          llvm::orc::ExecutorAddr::fromPtr(&elx_has_global_function),
+          llvm::JITSymbolFlags::Exported);
+
   llvm::cantFail(j->jit->getMainJITDylib().define(
       llvm::orc::absoluteSymbols(runtimeSymbols)));
 

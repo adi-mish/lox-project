@@ -19,6 +19,10 @@ static bool global_builtins_initialized = false;
 // Global string interning table
 static std::unordered_map<std::string, uint64_t> global_interned_strings;
 
+// Global environment for cross-line persistence
+static std::unordered_map<std::string, uint64_t> global_variables;
+static std::unordered_map<std::string, uint64_t> global_functions;
+
 static const char *getString(Value v) {
   if (!v.isObj())
     return nullptr;
@@ -430,4 +434,37 @@ uint64_t elx_get_global_builtin(const char *name) {
   }
 
   return Value::nil().getBits(); // Return nil if not found
+}
+
+// Global environment functions for cross-line persistence
+void elx_set_global_variable(const char *name, uint64_t value) {
+  global_variables[std::string(name)] = value;
+}
+
+uint64_t elx_get_global_variable(const char *name) {
+  auto it = global_variables.find(std::string(name));
+  if (it != global_variables.end()) {
+    return it->second;
+  }
+  return Value::nil().getBits(); // Return nil if not found
+}
+
+int elx_has_global_variable(const char *name) {
+  return global_variables.find(std::string(name)) != global_variables.end() ? 1 : 0;
+}
+
+void elx_set_global_function(const char *name, uint64_t func_obj) {
+  global_functions[std::string(name)] = func_obj;
+}
+
+uint64_t elx_get_global_function(const char *name) {
+  auto it = global_functions.find(std::string(name));
+  if (it != global_functions.end()) {
+    return it->second;
+  }
+  return Value::nil().getBits(); // Return nil if not found
+}
+
+int elx_has_global_function(const char *name) {
+  return global_functions.find(std::string(name)) != global_functions.end() ? 1 : 0;
 }
