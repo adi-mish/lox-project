@@ -23,6 +23,10 @@ static std::unordered_map<std::string, uint64_t> global_interned_strings;
 static std::unordered_map<std::string, uint64_t> global_variables;
 static std::unordered_map<std::string, uint64_t> global_functions;
 
+// Runtime error state
+static bool runtime_error_flag = false;
+static std::string runtime_error_message;
+
 static const char *getString(Value v) {
   if (!v.isObj())
     return nullptr;
@@ -39,9 +43,17 @@ static const char *getString(Value v) {
 static ObjFunction *getFunction(Value v) {
   if (!v.isObj())
     return nullptr;
+
   void *obj_ptr = v.asObj();
   if (obj_ptr == nullptr)
     return nullptr;
+
+  // Add bounds checking for the allocated objects
+  if (allocated_objects.find(obj_ptr) == allocated_objects.end()) {
+    std::cerr << "ERROR: Object pointer " << obj_ptr
+              << " not found in allocated objects!" << std::endl;
+    return nullptr;
+  }
 
   ObjFunction *func = static_cast<ObjFunction *>(obj_ptr);
   if (func->obj.type != ObjType::FUNCTION)
@@ -273,33 +285,41 @@ uint64_t elx_allocate_function(const char *name, int arity,
 }
 
 uint64_t elx_call_function(uint64_t func_bits, uint64_t *args, int arg_count) {
+  // Clear any previous runtime errors
+  elx_clear_runtime_error();
+
   Value func_val = Value::fromBits(func_bits);
   ObjFunction *func = getFunction(func_val);
 
   if (!func) {
-    // Not a function - this should be a runtime error
-    std::string error_msg =
-        "Runtime error: Can only call functions and classes.";
-    auto error_str = elx_allocate_string(error_msg.c_str(), error_msg.length());
-    elx_print(error_str);
+    elx_runtime_error("Can only call functions and classes.");
     return Value::nil().getBits();
   }
 
   if (arg_count != func->arity) {
-    // Wrong number of arguments - runtime error
-    std::string error_msg =
-        "Runtime error: Expected " + std::to_string(func->arity) +
-        " arguments but got " + std::to_string(arg_count) + ".";
-    auto error_str = elx_allocate_string(error_msg.c_str(), error_msg.length());
-    elx_print(error_str);
+    std::string error_msg = "Expected " + std::to_string(func->arity) +
+                            " arguments but got " + std::to_string(arg_count) +
+                            ".";
+    elx_runtime_error(error_msg.c_str());
     return Value::nil().getBits();
   }
 
-  // Call the LLVM function using a more flexible approach
-  if (func->llvm_function) {
-    // Use assembly or a more flexible calling convention
-    // For now, let's support up to 8 arguments (doubled from 4)
-    // This could be extended further or use a completely dynamic approach
+  // Validate argument count against Lox limit
+  if (arg_count > 255) {
+    std::string error_msg = "Function arity (" + std::to_string(arg_count) +
+                            ") exceeds Lox limit of 255 parameters.";
+    elx_runtime_error(error_msg.c_str());
+    return Value::nil().getBits();
+  }
+
+  if (!func->llvm_function) {
+    elx_runtime_error("Function has no implementation.");
+    return Value::nil().getBits();
+  }
+
+  // Use a more flexible calling mechanism that supports up to 16 arguments
+  // For functions with more arguments, we'd need libffi or similar
+  try {
     switch (arg_count) {
     case 0: {
       typedef uint64_t (*FunctionPtr0)();
@@ -351,29 +371,93 @@ uint64_t elx_call_function(uint64_t func_bits, uint64_t *args, int arg_count) {
       return fn(args[0], args[1], args[2], args[3], args[4], args[5], args[6],
                 args[7]);
     }
+    case 9: {
+      typedef uint64_t (*FunctionPtr9)(uint64_t, uint64_t, uint64_t, uint64_t,
+                                       uint64_t, uint64_t, uint64_t, uint64_t,
+                                       uint64_t);
+      FunctionPtr9 fn = reinterpret_cast<FunctionPtr9>(func->llvm_function);
+      return fn(args[0], args[1], args[2], args[3], args[4], args[5], args[6],
+                args[7], args[8]);
+    }
+    case 10: {
+      typedef uint64_t (*FunctionPtr10)(uint64_t, uint64_t, uint64_t, uint64_t,
+                                        uint64_t, uint64_t, uint64_t, uint64_t,
+                                        uint64_t, uint64_t);
+      FunctionPtr10 fn = reinterpret_cast<FunctionPtr10>(func->llvm_function);
+      return fn(args[0], args[1], args[2], args[3], args[4], args[5], args[6],
+                args[7], args[8], args[9]);
+    }
+    case 11: {
+      typedef uint64_t (*FunctionPtr11)(uint64_t, uint64_t, uint64_t, uint64_t,
+                                        uint64_t, uint64_t, uint64_t, uint64_t,
+                                        uint64_t, uint64_t, uint64_t);
+      FunctionPtr11 fn = reinterpret_cast<FunctionPtr11>(func->llvm_function);
+      return fn(args[0], args[1], args[2], args[3], args[4], args[5], args[6],
+                args[7], args[8], args[9], args[10]);
+    }
+    case 12: {
+      typedef uint64_t (*FunctionPtr12)(uint64_t, uint64_t, uint64_t, uint64_t,
+                                        uint64_t, uint64_t, uint64_t, uint64_t,
+                                        uint64_t, uint64_t, uint64_t, uint64_t);
+      FunctionPtr12 fn = reinterpret_cast<FunctionPtr12>(func->llvm_function);
+      return fn(args[0], args[1], args[2], args[3], args[4], args[5], args[6],
+                args[7], args[8], args[9], args[10], args[11]);
+    }
+    case 13: {
+      typedef uint64_t (*FunctionPtr13)(
+          uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
+          uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+      FunctionPtr13 fn = reinterpret_cast<FunctionPtr13>(func->llvm_function);
+      return fn(args[0], args[1], args[2], args[3], args[4], args[5], args[6],
+                args[7], args[8], args[9], args[10], args[11], args[12]);
+    }
+    case 14: {
+      typedef uint64_t (*FunctionPtr14)(
+          uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
+          uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+      FunctionPtr14 fn = reinterpret_cast<FunctionPtr14>(func->llvm_function);
+      return fn(args[0], args[1], args[2], args[3], args[4], args[5], args[6],
+                args[7], args[8], args[9], args[10], args[11], args[12],
+                args[13]);
+    }
+    case 15: {
+      typedef uint64_t (*FunctionPtr15)(uint64_t, uint64_t, uint64_t, uint64_t,
+                                        uint64_t, uint64_t, uint64_t, uint64_t,
+                                        uint64_t, uint64_t, uint64_t, uint64_t,
+                                        uint64_t, uint64_t, uint64_t);
+      FunctionPtr15 fn = reinterpret_cast<FunctionPtr15>(func->llvm_function);
+      return fn(args[0], args[1], args[2], args[3], args[4], args[5], args[6],
+                args[7], args[8], args[9], args[10], args[11], args[12],
+                args[13], args[14]);
+    }
+    case 16: {
+      typedef uint64_t (*FunctionPtr16)(uint64_t, uint64_t, uint64_t, uint64_t,
+                                        uint64_t, uint64_t, uint64_t, uint64_t,
+                                        uint64_t, uint64_t, uint64_t, uint64_t,
+                                        uint64_t, uint64_t, uint64_t, uint64_t);
+      FunctionPtr16 fn = reinterpret_cast<FunctionPtr16>(func->llvm_function);
+      return fn(args[0], args[1], args[2], args[3], args[4], args[5], args[6],
+                args[7], args[8], args[9], args[10], args[11], args[12],
+                args[13], args[14], args[15]);
+    }
     default: {
-      // For functions with more than 8 arguments, we need a more sophisticated
-      // approach We can use libffi or inline assembly to make truly dynamic
-      // calls For now, let's at least provide a more informative error
-      std::string error_msg;
-      if (arg_count <= 255) { // Lox supports up to 255 parameters
-        error_msg = "Runtime error: Functions with " +
-                    std::to_string(arg_count) +
-                    " arguments are not yet supported. Maximum supported: 8.";
-      } else {
-        error_msg = "Runtime error: Function arity (" +
-                    std::to_string(arg_count) +
-                    ") exceeds Lox limit of 255 parameters.";
-      }
-      auto error_str =
-          elx_allocate_string(error_msg.c_str(), error_msg.length());
-      elx_print(error_str);
+      // For functions with more than 16 arguments, we need libffi or similar
+      std::string error_msg =
+          "Functions with " + std::to_string(arg_count) +
+          " arguments are not yet supported. Maximum supported: 16.";
+      elx_runtime_error(error_msg.c_str());
       return Value::nil().getBits();
     }
     }
+  } catch (const std::exception &e) {
+    std::string error_msg =
+        "Exception during function call: " + std::string(e.what());
+    elx_runtime_error(error_msg.c_str());
+    return Value::nil().getBits();
+  } catch (...) {
+    elx_runtime_error("Unknown exception during function call.");
+    return Value::nil().getBits();
   }
-
-  return Value::nil().getBits();
 }
 
 void elx_cleanup_all_objects() {
@@ -450,7 +534,8 @@ uint64_t elx_get_global_variable(const char *name) {
 }
 
 int elx_has_global_variable(const char *name) {
-  return global_variables.find(std::string(name)) != global_variables.end() ? 1 : 0;
+  return global_variables.find(std::string(name)) != global_variables.end() ? 1
+                                                                            : 0;
 }
 
 void elx_set_global_function(const char *name, uint64_t func_obj) {
@@ -466,5 +551,40 @@ uint64_t elx_get_global_function(const char *name) {
 }
 
 int elx_has_global_function(const char *name) {
-  return global_functions.find(std::string(name)) != global_functions.end() ? 1 : 0;
+  return global_functions.find(std::string(name)) != global_functions.end() ? 1
+                                                                            : 0;
+}
+
+// Error handling functions
+void elx_runtime_error(const char *message) {
+  runtime_error_flag = true;
+  runtime_error_message = std::string(message);
+  std::cerr << "Runtime error: " << message << std::endl;
+}
+
+int elx_has_runtime_error() { return runtime_error_flag ? 1 : 0; }
+
+void elx_clear_runtime_error() {
+  runtime_error_flag = false;
+  runtime_error_message.clear();
+}
+
+// Safe arithmetic operations
+uint64_t elx_safe_divide(uint64_t a_bits, uint64_t b_bits) {
+  Value a = Value::fromBits(a_bits);
+  Value b = Value::fromBits(b_bits);
+
+  if (!a.isNum() || !b.isNum()) {
+    elx_runtime_error("Operands must be numbers.");
+    return Value::nil().getBits();
+  }
+
+  double divisor = b.asNum();
+  if (divisor == 0.0) {
+    elx_runtime_error("Division by zero.");
+    return Value::nil().getBits();
+  }
+
+  double result = a.asNum() / divisor;
+  return Value::number(result).getBits();
 }

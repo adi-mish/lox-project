@@ -71,24 +71,48 @@ CodeGenVisitor::CodeGenVisitor(llvm::Module &m)
   auto i8PtrTy = llvm::PointerType::get(llvm::Type::getInt8Ty(ctx), 0);
   auto i32Ty = llvm::Type::getInt32Ty(ctx);
   auto voidTy = llvm::Type::getVoidTy(ctx);
-  
-  llvm::FunctionType *hasGlobalVarTy = llvm::FunctionType::get(i32Ty, {i8PtrTy}, false);
+
+  llvm::FunctionType *hasGlobalVarTy =
+      llvm::FunctionType::get(i32Ty, {i8PtrTy}, false);
   mod.getOrInsertFunction("elx_has_global_variable", hasGlobalVarTy);
-  
-  llvm::FunctionType *getGlobalVarTy = llvm::FunctionType::get(llvmValueTy(), {i8PtrTy}, false);
+
+  llvm::FunctionType *getGlobalVarTy =
+      llvm::FunctionType::get(llvmValueTy(), {i8PtrTy}, false);
   mod.getOrInsertFunction("elx_get_global_variable", getGlobalVarTy);
-  
-  llvm::FunctionType *setGlobalVarTy = llvm::FunctionType::get(voidTy, {i8PtrTy, llvmValueTy()}, false);
+
+  llvm::FunctionType *setGlobalVarTy =
+      llvm::FunctionType::get(voidTy, {i8PtrTy, llvmValueTy()}, false);
   mod.getOrInsertFunction("elx_set_global_variable", setGlobalVarTy);
-  
-  llvm::FunctionType *hasGlobalFuncTy = llvm::FunctionType::get(i32Ty, {i8PtrTy}, false);
+
+  llvm::FunctionType *hasGlobalFuncTy =
+      llvm::FunctionType::get(i32Ty, {i8PtrTy}, false);
   mod.getOrInsertFunction("elx_has_global_function", hasGlobalFuncTy);
-  
-  llvm::FunctionType *getGlobalFuncTy = llvm::FunctionType::get(llvmValueTy(), {i8PtrTy}, false);
+
+  llvm::FunctionType *getGlobalFuncTy =
+      llvm::FunctionType::get(llvmValueTy(), {i8PtrTy}, false);
   mod.getOrInsertFunction("elx_get_global_function", getGlobalFuncTy);
-  
-  llvm::FunctionType *setGlobalFuncTy = llvm::FunctionType::get(voidTy, {i8PtrTy, llvmValueTy()}, false);
+
+  llvm::FunctionType *setGlobalFuncTy =
+      llvm::FunctionType::get(voidTy, {i8PtrTy, llvmValueTy()}, false);
   mod.getOrInsertFunction("elx_set_global_function", setGlobalFuncTy);
+
+  // Runtime error functions
+  llvm::FunctionType *runtimeErrorTy =
+      llvm::FunctionType::get(voidTy, {i8PtrTy}, false);
+  mod.getOrInsertFunction("elx_runtime_error", runtimeErrorTy);
+
+  llvm::FunctionType *hasRuntimeErrorTy =
+      llvm::FunctionType::get(i32Ty, {}, false);
+  mod.getOrInsertFunction("elx_has_runtime_error", hasRuntimeErrorTy);
+
+  llvm::FunctionType *clearRuntimeErrorTy =
+      llvm::FunctionType::get(voidTy, {}, false);
+  mod.getOrInsertFunction("elx_clear_runtime_error", clearRuntimeErrorTy);
+
+  // Safe arithmetic functions
+  llvm::FunctionType *safeDivideTy = llvm::FunctionType::get(
+      llvmValueTy(), {llvmValueTy(), llvmValueTy()}, false);
+  mod.getOrInsertFunction("elx_safe_divide", safeDivideTy);
 
   // Built-ins will be initialized when first generating code
 }
@@ -415,9 +439,16 @@ void CodeGenVisitor::visitBinaryExpr(Binary *e) {
   case TokenType::STAR:
     res = fromDouble(builder.CreateFMul(Ld, Rd, "mul"));
     break;
-  case TokenType::SLASH:
-    res = fromDouble(builder.CreateFDiv(Ld, Rd, "div"));
+  case TokenType::SLASH: {
+    // Use safe division that checks for division by zero
+    auto safeDivFn = mod.getFunction("elx_safe_divide");
+    if (safeDivFn) {
+      res = builder.CreateCall(safeDivFn, {L, R}, "safe_div");
+    } else {
+      res = fromDouble(builder.CreateFDiv(Ld, Rd, "div"));
+    }
     break;
+  }
 
   // Use ordered comparisons to handle NaN properly
   // In Lox, all comparisons with NaN should return false
@@ -541,93 +572,106 @@ void CodeGenVisitor::visitVariableExpr(Variable *e) {
     return;
   }
 
-  // Check globals
+  // Check globals (current module scope)
   auto globalIt = globals.find(varName);
   if (globalIt != globals.end()) {
     value = globalIt->second;
     return;
   }
 
-  // Check global environment (persistent across REPL lines)
+  // Check persistent global variables
   auto hasGlobalVarFn = mod.getFunction("elx_has_global_variable");
   auto getGlobalVarFn = mod.getFunction("elx_get_global_variable");
-  auto hasGlobalFuncFn = mod.getFunction("elx_has_global_function");
-  auto getGlobalFuncFn = mod.getFunction("elx_get_global_function");
-  auto getBuiltinFn = mod.getFunction("elx_get_global_builtin");
-  
-  if (hasGlobalVarFn && getGlobalVarFn && hasGlobalFuncFn && getGlobalFuncFn && getBuiltinFn) {
+  if (hasGlobalVarFn && getGlobalVarFn) {
     auto nameStr = builder.CreateGlobalStringPtr(varName, "var_name");
-    
-    auto fn = builder.GetInsertBlock()->getParent();
-    auto checkVarBB = llvm::BasicBlock::Create(ctx, "check_global_var", fn);
-    auto checkFuncBB = llvm::BasicBlock::Create(ctx, "check_global_func", fn);
-    auto checkBuiltinBB = llvm::BasicBlock::Create(ctx, "check_builtin", fn);
-    auto notFoundBB = llvm::BasicBlock::Create(ctx, "not_found", fn);
-    auto contBB = llvm::BasicBlock::Create(ctx, "var_cont", fn);
+    auto hasVar =
+        builder.CreateCall(hasGlobalVarFn, {nameStr}, "has_global_var");
+    auto zero = llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0);
+    auto hasVarBool = builder.CreateICmpNE(hasVar, zero, "has_var_bool");
 
-    // Check global variables
-    builder.CreateBr(checkVarBB);
-    builder.SetInsertPoint(checkVarBB);
-    auto hasVar = builder.CreateCall(hasGlobalVarFn, {nameStr}, "has_global_var");
-    auto hasVarBool = builder.CreateICmpNE(hasVar, builder.getInt32(0), "has_var_bool");
-    auto foundVarBB = llvm::BasicBlock::Create(ctx, "found_global_var", fn);
+    auto fn = builder.GetInsertBlock()->getParent();
+    auto foundVarBB = llvm::BasicBlock::Create(ctx, "found_var", fn);
+    auto checkFuncBB = llvm::BasicBlock::Create(ctx, "check_func", fn);
+    auto contBB = llvm::BasicBlock::Create(ctx, "cont", fn);
+
     builder.CreateCondBr(hasVarBool, foundVarBB, checkFuncBB);
 
     // Found global variable
     builder.SetInsertPoint(foundVarBB);
-    auto globalVar = builder.CreateCall(getGlobalVarFn, {nameStr}, "global_var");
+    auto varValue = builder.CreateCall(getGlobalVarFn, {nameStr}, "global_var");
     builder.CreateBr(contBB);
 
     // Check global functions
     builder.SetInsertPoint(checkFuncBB);
-    auto hasFunc = builder.CreateCall(hasGlobalFuncFn, {nameStr}, "has_global_func");
-    auto hasFuncBool = builder.CreateICmpNE(hasFunc, builder.getInt32(0), "has_func_bool");
-    auto foundFuncBB = llvm::BasicBlock::Create(ctx, "found_global_func", fn);
-    builder.CreateCondBr(hasFuncBool, foundFuncBB, checkBuiltinBB);
+    auto hasGlobalFuncFn = mod.getFunction("elx_has_global_function");
+    auto getGlobalFuncFn = mod.getFunction("elx_get_global_function");
+    if (hasGlobalFuncFn && getGlobalFuncFn) {
+      auto hasFunc =
+          builder.CreateCall(hasGlobalFuncFn, {nameStr}, "has_global_func");
+      auto hasFuncBool = builder.CreateICmpNE(hasFunc, zero, "has_func_bool");
 
-    // Found global function
-    builder.SetInsertPoint(foundFuncBB);
-    auto globalFunc = builder.CreateCall(getGlobalFuncFn, {nameStr}, "global_func");
-    builder.CreateBr(contBB);
+      auto foundFuncBB = llvm::BasicBlock::Create(ctx, "found_func", fn);
+      auto checkBuiltinBB = llvm::BasicBlock::Create(ctx, "check_builtin", fn);
 
-    // Check built-ins
-    builder.SetInsertPoint(checkBuiltinBB);
-    auto builtinValue = builder.CreateCall(getBuiltinFn, {nameStr}, "builtin_check");
-    auto nilValue = nilConst();
-    auto isNotNil = builder.CreateICmpNE(builtinValue, nilValue, "is_builtin");
-    auto foundBuiltinBB = llvm::BasicBlock::Create(ctx, "found_builtin", fn);
-    builder.CreateCondBr(isNotNil, foundBuiltinBB, notFoundBB);
+      builder.CreateCondBr(hasFuncBool, foundFuncBB, checkBuiltinBB);
 
-    // Found built-in
-    builder.SetInsertPoint(foundBuiltinBB);
-    builder.CreateBr(contBB);
+      // Found global function
+      builder.SetInsertPoint(foundFuncBB);
+      auto funcValue =
+          builder.CreateCall(getGlobalFuncFn, {nameStr}, "global_func");
+      builder.CreateBr(contBB);
 
-    // Not found - emit error
-    builder.SetInsertPoint(notFoundBB);
-    auto errorMsg = stringConst("Runtime error: Undefined variable '" + varName + "'.");
-    auto printFn = mod.getFunction("elx_print");
-    if (printFn) {
-      builder.CreateCall(printFn, {errorMsg});
+      // Check builtins
+      builder.SetInsertPoint(checkBuiltinBB);
+      auto getBuiltinFn = mod.getFunction("elx_get_global_builtin");
+      if (getBuiltinFn) {
+        auto builtinValue =
+            builder.CreateCall(getBuiltinFn, {nameStr}, "builtin_check");
+        auto nilValue = nilConst();
+        auto isNotNil =
+            builder.CreateICmpNE(builtinValue, nilValue, "is_builtin");
+
+        auto foundBuiltinBB =
+            llvm::BasicBlock::Create(ctx, "found_builtin", fn);
+        auto notFoundBB = llvm::BasicBlock::Create(ctx, "not_found", fn);
+
+        builder.CreateCondBr(isNotNil, foundBuiltinBB, notFoundBB);
+
+        // Found builtin
+        builder.SetInsertPoint(foundBuiltinBB);
+        builder.CreateBr(contBB);
+
+        // Variable not found - runtime error
+        builder.SetInsertPoint(notFoundBB);
+        auto printFn = mod.getFunction("elx_print");
+        if (printFn) {
+          std::string errorMsg =
+              "Runtime error: Undefined variable '" + varName + "'.";
+          auto msgValue = stringConst(errorMsg);
+          builder.CreateCall(printFn, {msgValue});
+        }
+        auto notFoundValue = nilConst();
+        builder.CreateBr(contBB);
+
+        // Merge all paths
+        builder.SetInsertPoint(contBB);
+        auto phi = builder.CreatePHI(llvmValueTy(), 5, "var_result");
+        phi->addIncoming(varValue, foundVarBB);
+        phi->addIncoming(funcValue, foundFuncBB);
+        phi->addIncoming(builtinValue, foundBuiltinBB);
+        phi->addIncoming(notFoundValue, notFoundBB);
+        value = phi;
+        return;
+      }
     }
-    auto notFoundValue = nilConst();
-    builder.CreateBr(contBB);
-
-    // Continuation block with PHI
-    builder.SetInsertPoint(contBB);
-    auto phi = builder.CreatePHI(llvmValueTy(), 4, "var_result");
-    phi->addIncoming(globalVar, foundVarBB);
-    phi->addIncoming(globalFunc, foundFuncBB);
-    phi->addIncoming(builtinValue, foundBuiltinBB);
-    phi->addIncoming(notFoundValue, notFoundBB);
-    value = phi;
-    return;
   }
 
-  // Fallback if functions aren't available
+  // Fallback - return nil and print error
   auto printFn = mod.getFunction("elx_print");
-  std::string errorMsg = "Runtime error: Undefined variable '" + varName + "'.";
-  auto msgValue = stringConst(errorMsg);
   if (printFn) {
+    std::string errorMsg =
+        "Runtime error: Undefined variable '" + varName + "'.";
+    auto msgValue = stringConst(errorMsg);
     builder.CreateCall(printFn, {msgValue});
   }
   value = nilConst();
@@ -670,8 +714,10 @@ void CodeGenVisitor::visitAssignExpr(Assign *e) {
   auto setGlobalVarFn = mod.getFunction("elx_set_global_variable");
   if (hasGlobalVarFn && setGlobalVarFn) {
     auto nameStr = builder.CreateGlobalStringPtr(varName, "var_name");
-    auto hasVar = builder.CreateCall(hasGlobalVarFn, {nameStr}, "has_global_var");
-    auto hasVarBool = builder.CreateICmpNE(hasVar, builder.getInt32(0), "has_var_bool");
+    auto hasVar =
+        builder.CreateCall(hasGlobalVarFn, {nameStr}, "has_global_var");
+    auto hasVarBool =
+        builder.CreateICmpNE(hasVar, builder.getInt32(0), "has_var_bool");
 
     auto fn = builder.GetInsertBlock()->getParent();
     auto assignGlobalBB = llvm::BasicBlock::Create(ctx, "assign_global", fn);
@@ -682,14 +728,16 @@ void CodeGenVisitor::visitAssignExpr(Assign *e) {
 
     // Assign to global variable
     builder.SetInsertPoint(assignGlobalBB);
-    builder.CreateCall(setGlobalVarFn, {nameStr, assignValue}, "set_global_var");
+    builder.CreateCall(setGlobalVarFn, {nameStr, assignValue},
+                       "set_global_var");
     builder.CreateBr(contBB);
 
     // Variable not found - error
     builder.SetInsertPoint(errorBB);
     auto printFn = mod.getFunction("elx_print");
     if (printFn) {
-      auto errorMsg = stringConst("Runtime error: Undefined variable '" + varName + "'.");
+      auto errorMsg =
+          stringConst("Runtime error: Undefined variable '" + varName + "'.");
       builder.CreateCall(printFn, {errorMsg}, "print_error");
     }
     builder.CreateBr(contBB);
@@ -811,30 +859,36 @@ void CodeGenVisitor::visitPrintStmt(Print *s) {
 }
 
 void CodeGenVisitor::visitVarStmt(Var *s) {
-  if (s->initializer)
+  // Evaluate initializer or use nil
+  if (s->initializer) {
     s->initializer->accept(this);
-  else
+  } else {
     value = nilConst();
+  }
 
   const std::string &varName = s->name.getLexeme();
   llvm::Value *initValue = value;
 
-  // Check if we're at global scope (no current function context means top-level)
+  // Determine if we're at global scope
   auto fn = builder.GetInsertBlock()->getParent();
-  bool isGlobal = (fn->getName().str().find("__expr") == 0); // REPL expression functions
+  bool isGlobal =
+      (currentFunction == nullptr ||
+       fn->getName().str().find("__expr") == 0); // REPL expression functions
 
   if (isGlobal) {
+    // Store in current module globals
+    globals[varName] = initValue;
+    directValues.insert(varName);
+
     // Store in persistent global environment for cross-line access
     auto setGlobalVarFn = mod.getFunction("elx_set_global_variable");
     if (setGlobalVarFn) {
       auto nameStr = builder.CreateGlobalStringPtr(varName, "var_name");
-      builder.CreateCall(setGlobalVarFn, {nameStr, initValue}, "set_global_var");
+      builder.CreateCall(setGlobalVarFn,
+                         {nameStr, initValue}); // Remove invalid name
     }
-    
-    // Also store in local globals map for current module
-    globals[varName] = initValue;
   } else {
-    // Local variable - create alloca in function
+    // Local variable - create alloca in function entry block
     auto &entry = fn->getEntryBlock();
     auto insertPoint = entry.getFirstNonPHI();
     llvm::IRBuilder<> save(&entry, insertPoint ? insertPoint->getIterator()
@@ -842,6 +896,7 @@ void CodeGenVisitor::visitVarStmt(Var *s) {
     auto slot = save.CreateAlloca(llvmValueTy(), nullptr, varName.c_str());
     builder.CreateStore(initValue, slot);
     locals[varName] = slot;
+    // Don't add to directValues since this needs to be loaded
   }
 }
 
@@ -859,72 +914,61 @@ void CodeGenVisitor::visitIfStmt(If *s) {
 
   auto fn = builder.GetInsertBlock()->getParent();
   auto thenBB = llvm::BasicBlock::Create(ctx, "if.then", fn);
-  auto elseBB = llvm::BasicBlock::Create(ctx, "if.else");
-  auto mergeBB = llvm::BasicBlock::Create(ctx, "if.end");
+  auto elseBB = llvm::BasicBlock::Create(ctx, "if.else",
+                                         fn); // Add to function immediately
+  auto mergeBB = llvm::BasicBlock::Create(ctx, "if.end",
+                                          fn); // Add to function immediately
 
-  // Treat non-false/nil as true (reuse same truthiness as in !)
-  auto tag = tagOf(cond);
-  auto boolTag = llvm::ConstantInt::get(
-      llvmValueTy(), (static_cast<uint64_t>(Tag::BOOL) << 48));
-  auto nilTag = llvm::ConstantInt::get(llvmValueTy(),
-                                       (static_cast<uint64_t>(Tag::NIL) << 48));
-  auto isBool = builder.CreateICmpEQ(tag, boolTag);
-  auto isNil = builder.CreateICmpEQ(tag, nilTag);
-  auto lowBit = builder.CreateTrunc(
-      builder.CreateAnd(cond, llvm::ConstantInt::get(llvmValueTy(), 1)),
-      builder.getInt1Ty());
-  auto isFalseBool = builder.CreateAnd(
-      isBool, builder.CreateICmpEQ(lowBit, builder.getFalse()));
-  auto isFalse = builder.CreateOr(isFalseBool, isNil);
-  auto condI1 = builder.CreateNot(isFalse, "ifcond");
-
+  // Convert condition to boolean
+  auto condI1 = isTruthy(cond);
   builder.CreateCondBr(condI1, thenBB, elseBB);
 
+  // Generate then branch
   builder.SetInsertPoint(thenBB);
   s->thenBranch->accept(this);
-  builder.CreateBr(mergeBB);
+  // Only create branch if block doesn't already have a terminator
+  if (!builder.GetInsertBlock()->getTerminator()) {
+    builder.CreateBr(mergeBB);
+  }
 
+  // Generate else branch
   builder.SetInsertPoint(elseBB);
-  if (s->elseBranch)
+  if (s->elseBranch) {
     s->elseBranch->accept(this);
-  builder.CreateBr(mergeBB);
+  }
+  // Only create branch if block doesn't already have a terminator
+  if (!builder.GetInsertBlock()->getTerminator()) {
+    builder.CreateBr(mergeBB);
+  }
 
   builder.SetInsertPoint(mergeBB);
-  // No result for statements.
   value = nilConst();
 }
 
 void CodeGenVisitor::visitWhileStmt(While *s) {
   auto fn = builder.GetInsertBlock()->getParent();
   auto condBB = llvm::BasicBlock::Create(ctx, "while.cond", fn);
-  auto bodyBB = llvm::BasicBlock::Create(ctx, "while.body");
-  auto endBB = llvm::BasicBlock::Create(ctx, "while.end");
+  auto bodyBB = llvm::BasicBlock::Create(ctx, "while.body",
+                                         fn); // Add to function immediately
+  auto endBB = llvm::BasicBlock::Create(ctx, "while.end",
+                                        fn); // Add to function immediately
 
   builder.CreateBr(condBB);
 
   builder.SetInsertPoint(condBB);
   s->condition->accept(this);
   llvm::Value *cond = value;
-  // truthiness as before
-  auto tag = tagOf(cond);
-  auto boolTag = llvm::ConstantInt::get(
-      llvmValueTy(), (static_cast<uint64_t>(Tag::BOOL) << 48));
-  auto nilTag = llvm::ConstantInt::get(llvmValueTy(),
-                                       (static_cast<uint64_t>(Tag::NIL) << 48));
-  auto isBool = builder.CreateICmpEQ(tag, boolTag);
-  auto isNil = builder.CreateICmpEQ(tag, nilTag);
-  auto lowBit = builder.CreateTrunc(
-      builder.CreateAnd(cond, llvm::ConstantInt::get(llvmValueTy(), 1)),
-      builder.getInt1Ty());
-  auto isFalseBool = builder.CreateAnd(
-      isBool, builder.CreateICmpEQ(lowBit, builder.getFalse()));
-  auto isFalse = builder.CreateOr(isFalseBool, isNil);
-  auto condI1 = builder.CreateNot(isFalse, "whilecond");
+
+  // Use the simplified truthiness check
+  auto condI1 = isTruthy(cond);
   builder.CreateCondBr(condI1, bodyBB, endBB);
 
   builder.SetInsertPoint(bodyBB);
   s->body->accept(this);
-  builder.CreateBr(condBB);
+  // Only create branch if block doesn't already have a terminator
+  if (!builder.GetInsertBlock()->getTerminator()) {
+    builder.CreateBr(condBB);
+  }
 
   builder.SetInsertPoint(endBB);
   value = nilConst();
@@ -933,6 +977,15 @@ void CodeGenVisitor::visitWhileStmt(While *s) {
 void CodeGenVisitor::visitFunctionStmt(Function *s) {
   const std::string &baseFuncName = s->name.getLexeme();
   int arity = s->params.size();
+
+  // Validate function arity (Lox limit is 255)
+  if (arity > 255) {
+    std::cerr << "Error: Function '" << baseFuncName
+              << "' has too many parameters (" << arity
+              << "). Maximum is 255.\n";
+    value = nilConst();
+    return;
+  }
 
   // Make function names unique to avoid JIT symbol conflicts
   static int functionCounter = 0;
@@ -948,20 +1001,18 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
   llvm::Function *llvmFunc = llvm::Function::Create(
       funcType, llvm::Function::ExternalLinkage, funcName, &mod);
 
-  // Store in function table using the unique name
-  functions[baseFuncName] = llvmFunc;
-
-  // Save current state
+  // Save current state before switching to function context
   llvm::Function *prevFunction = currentFunction;
   auto prevLocals = locals;
+  auto prevDirectValues = directValues;
   llvm::BasicBlock *prevBB = builder.GetInsertBlock();
 
-  // Set up new function
+  // Set up new function context
   currentFunction = llvmFunc;
   locals.clear();
   directValues.clear();
 
-  // Create entry block
+  // Create entry block and set up parameters
   llvm::BasicBlock *entryBB = llvm::BasicBlock::Create(ctx, "entry", llvmFunc);
   builder.SetInsertPoint(entryBB);
 
@@ -971,65 +1022,91 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
     const std::string &paramName = s->params[i].getLexeme();
     argIt->setName(paramName);
     locals[paramName] = &*argIt;
-    directValues.insert(paramName); // Mark as direct value
+    directValues.insert(paramName); // Mark as direct value (no alloca needed)
   }
 
   // Generate function body
-  s->body->accept(this);
+  try {
+    s->body->accept(this);
 
-  // If no explicit return, return nil
-  if (!builder.GetInsertBlock()->getTerminator()) {
-    builder.CreateRet(nilConst());
+    // If no explicit return and no terminator, return nil
+    if (!builder.GetInsertBlock()->getTerminator()) {
+      builder.CreateRet(nilConst());
+    }
+  } catch (const std::exception &e) {
+    std::cerr << "Error generating function body for '" << baseFuncName
+              << "': " << e.what() << "\n";
+    // Clean up and restore state
+    llvmFunc->eraseFromParent();
+    currentFunction = prevFunction;
+    locals = std::move(prevLocals);
+    directValues = std::move(prevDirectValues);
+    if (prevBB) {
+      builder.SetInsertPoint(prevBB);
+    }
+    value = nilConst();
+    return;
   }
 
   // Verify the function
   if (llvm::verifyFunction(*llvmFunc, &llvm::errs())) {
-    llvm::errs() << "Function verification failed for: " << baseFuncName
-                 << "\n";
+    std::cerr << "LLVM verification failed for function: " << baseFuncName
+              << "\n";
     llvmFunc->eraseFromParent();
-    functions.erase(baseFuncName);
+    // Restore state
+    currentFunction = prevFunction;
+    locals = std::move(prevLocals);
+    directValues = std::move(prevDirectValues);
+    if (prevBB) {
+      builder.SetInsertPoint(prevBB);
+    }
+    value = nilConst();
+    return;
   }
 
   // Restore previous state
   currentFunction = prevFunction;
   locals = std::move(prevLocals);
+  directValues = std::move(prevDirectValues);
   if (prevBB) {
     builder.SetInsertPoint(prevBB);
   }
 
-  // Create a function object value and store it in the variable with the
-  // function name (use original name, not unique name)
+  // Store the function in the global function table using base name
+  functions[baseFuncName] = llvmFunc;
+
+  // Create a function object value
   auto nameStr = builder.CreateGlobalStringPtr(baseFuncName, "fname");
   auto arityConst = llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), arity);
   auto funcPtr = builder.CreateBitCast(
       llvmFunc, llvm::PointerType::get(llvm::Type::getInt8Ty(ctx), 0));
 
   auto allocFn = mod.getFunction("elx_allocate_function");
+  if (!allocFn) {
+    std::cerr << "Error: elx_allocate_function not found\n";
+    value = nilConst();
+    return;
+  }
+
   auto funcObj =
       builder.CreateCall(allocFn, {nameStr, arityConst, funcPtr}, "funcobj");
 
-  // Check if we're at global scope for persistent storage
-  bool isGlobal = (currentFunction == nullptr || 
-                  (currentFunction && currentFunction->getName().str().find("__expr") == 0));
-
-  if (isGlobal) {
-    // Store in persistent global environment for cross-line access
-    auto setGlobalFuncFn = mod.getFunction("elx_set_global_function");
-    if (setGlobalFuncFn) {
-      auto funcNameStr = builder.CreateGlobalStringPtr(baseFuncName, "func_name");
-      builder.CreateCall(setGlobalFuncFn, {funcNameStr, funcObj}, "set_global_func");
-    }
+  // Store in persistent global environment for cross-line access
+  auto setGlobalFuncFn = mod.getFunction("elx_set_global_function");
+  if (setGlobalFuncFn) {
+    auto funcNameStr = builder.CreateGlobalStringPtr(baseFuncName, "func_name");
+    builder.CreateCall(setGlobalFuncFn,
+                       {funcNameStr, funcObj}); // Remove invalid name
   }
 
-  // Store the function object in globals for access across expressions
-  // Use the original function name for lookup
+  // Store the function object in globals for access within current module
   globals[baseFuncName] = funcObj;
 
-  // Also create a local variable for the current scope if we're in a function
+  // Store in local scope if we're inside another function
   if (currentFunction && builder.GetInsertBlock()) {
     auto fn = builder.GetInsertBlock()->getParent();
     auto &entry = fn->getEntryBlock();
-    llvm::IRBuilder<> entryBuilder(entry.getFirstNonPHI());
+    llvm::IRBuilder<> entryBuilder(&entry, entry.begin());
     auto slot =
         entryBuilder.CreateAlloca(llvmValueTy(), nullptr, baseFuncName.c_str());
     builder.CreateStore(funcObj, slot);
@@ -1050,6 +1127,7 @@ void CodeGenVisitor::visitReturnStmt(Return *s) {
     builder.CreateRet(nilConst());
   }
 }
+
 void CodeGenVisitor::visitGetExpr(Get *e) { value = nilConst(); }
 void CodeGenVisitor::visitSetExpr(Set *e) { value = nilConst(); }
 void CodeGenVisitor::visitThisExpr(This *e) { value = nilConst(); }

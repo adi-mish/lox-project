@@ -63,4 +63,12 @@ int elx_has_global_variable(const char *name);
 void elx_set_global_function(const char *name, uint64_t func_obj);
 uint64_t elx_get_global_function(const char *name);
 int elx_has_global_function(const char *name);
+
+// Error handling
+void elx_runtime_error(const char *message);
+int elx_has_runtime_error();
+void elx_clear_runtime_error();
+
+// Safe arithmetic operations
+uint64_t elx_safe_divide(uint64_t a_bits, uint64_t b_bits);
 }
