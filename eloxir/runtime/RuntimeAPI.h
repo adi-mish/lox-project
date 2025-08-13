@@ -31,7 +31,8 @@ struct ObjFunction {
 extern "C" {
 // Called from generated IR - use uint64_t for C compatibility
 uint64_t elx_print(uint64_t v);
-uint64_t elx_clock(); // seconds since epoch
+uint64_t elx_clock();    // seconds since epoch
+uint64_t elx_readLine(); // read a line from stdin
 
 // String functions
 uint64_t elx_allocate_string(const char *chars, int length);

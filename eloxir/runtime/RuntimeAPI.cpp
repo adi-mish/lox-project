@@ -104,6 +104,15 @@ uint64_t elx_clock() {
   return Value::number(secs).getBits();
 }
 
+uint64_t elx_readLine() {
+  std::string line;
+  if (std::getline(std::cin, line)) {
+    return elx_intern_string(line.c_str(), line.length());
+  } else {
+    return Value::nil().getBits();
+  }
+}
+
 uint64_t elx_debug_string_address(uint64_t str_bits) {
   Value v = Value::fromBits(str_bits);
   if (v.isObj()) {
@@ -282,10 +291,11 @@ uint64_t elx_call_function(uint64_t func_bits, uint64_t *args, int arg_count) {
     return Value::nil().getBits();
   }
 
-  // Call the LLVM function
+  // Call the LLVM function using a more flexible approach
   if (func->llvm_function) {
-    // For now, we support functions with different arities by casting to
-    // appropriate function pointers
+    // Use assembly or a more flexible calling convention
+    // For now, let's support up to 8 arguments (doubled from 4)
+    // This could be extended further or use a completely dynamic approach
     switch (arg_count) {
     case 0: {
       typedef uint64_t (*FunctionPtr0)();
@@ -312,13 +322,50 @@ uint64_t elx_call_function(uint64_t func_bits, uint64_t *args, int arg_count) {
       FunctionPtr4 fn = reinterpret_cast<FunctionPtr4>(func->llvm_function);
       return fn(args[0], args[1], args[2], args[3]);
     }
-    default:
-      std::string error_msg = "Runtime error: Functions with more than 4 "
-                              "arguments are not yet supported.";
+    case 5: {
+      typedef uint64_t (*FunctionPtr5)(uint64_t, uint64_t, uint64_t, uint64_t,
+                                       uint64_t);
+      FunctionPtr5 fn = reinterpret_cast<FunctionPtr5>(func->llvm_function);
+      return fn(args[0], args[1], args[2], args[3], args[4]);
+    }
+    case 6: {
+      typedef uint64_t (*FunctionPtr6)(uint64_t, uint64_t, uint64_t, uint64_t,
+                                       uint64_t, uint64_t);
+      FunctionPtr6 fn = reinterpret_cast<FunctionPtr6>(func->llvm_function);
+      return fn(args[0], args[1], args[2], args[3], args[4], args[5]);
+    }
+    case 7: {
+      typedef uint64_t (*FunctionPtr7)(uint64_t, uint64_t, uint64_t, uint64_t,
+                                       uint64_t, uint64_t, uint64_t);
+      FunctionPtr7 fn = reinterpret_cast<FunctionPtr7>(func->llvm_function);
+      return fn(args[0], args[1], args[2], args[3], args[4], args[5], args[6]);
+    }
+    case 8: {
+      typedef uint64_t (*FunctionPtr8)(uint64_t, uint64_t, uint64_t, uint64_t,
+                                       uint64_t, uint64_t, uint64_t, uint64_t);
+      FunctionPtr8 fn = reinterpret_cast<FunctionPtr8>(func->llvm_function);
+      return fn(args[0], args[1], args[2], args[3], args[4], args[5], args[6],
+                args[7]);
+    }
+    default: {
+      // For functions with more than 8 arguments, we need a more sophisticated
+      // approach We can use libffi or inline assembly to make truly dynamic
+      // calls For now, let's at least provide a more informative error
+      std::string error_msg;
+      if (arg_count <= 255) { // Lox supports up to 255 parameters
+        error_msg = "Runtime error: Functions with " +
+                    std::to_string(arg_count) +
+                    " arguments are not yet supported. Maximum supported: 8.";
+      } else {
+        error_msg = "Runtime error: Function arity (" +
+                    std::to_string(arg_count) +
+                    ") exceeds Lox limit of 255 parameters.";
+      }
       auto error_str =
           elx_allocate_string(error_msg.c_str(), error_msg.length());
       elx_print(error_str);
       return Value::nil().getBits();
+    }
     }
   }
 
@@ -365,6 +412,11 @@ void elx_initialize_global_builtins() {
   auto clock_obj =
       elx_allocate_function("clock", 0, reinterpret_cast<void *>(&elx_clock));
   global_builtins["clock"] = clock_obj;
+
+  // Initialize readLine function - create the actual function object
+  auto readLine_obj = elx_allocate_function(
+      "readLine", 0, reinterpret_cast<void *>(&elx_readLine));
+  global_builtins["readLine"] = readLine_obj;
 
   global_builtins_initialized = true;
 }

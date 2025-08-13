@@ -42,6 +42,9 @@ llvm::Expected<std::unique_ptr<EloxirJIT>> EloxirJIT::Create() {
   runtimeSymbols[mangle("elx_clock")] =
       llvm::orc::ExecutorSymbolDef(llvm::orc::ExecutorAddr::fromPtr(&elx_clock),
                                    llvm::JITSymbolFlags::Exported);
+  runtimeSymbols[mangle("elx_readLine")] = llvm::orc::ExecutorSymbolDef(
+      llvm::orc::ExecutorAddr::fromPtr(&elx_readLine),
+      llvm::JITSymbolFlags::Exported);
 
   // String functions
   runtimeSymbols[mangle("elx_allocate_string")] = llvm::orc::ExecutorSymbolDef(
