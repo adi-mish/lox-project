@@ -81,6 +81,9 @@ private:
   llvm::Value *checkBothNumbers(llvm::Value *L, llvm::Value *R,
                                 llvm::BasicBlock *&successBB,
                                 llvm::BasicBlock *&errorBB); // returns i1
+
+  // Error propagation helper
+  void checkRuntimeError(llvm::Value *returnValue = nullptr);
 };
 
 } // namespace eloxir

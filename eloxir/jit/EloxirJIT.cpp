@@ -110,6 +110,24 @@ llvm::Expected<std::unique_ptr<EloxirJIT>> EloxirJIT::Create() {
           llvm::orc::ExecutorAddr::fromPtr(&elx_has_global_function),
           llvm::JITSymbolFlags::Exported);
 
+  // Error handling functions
+  runtimeSymbols[mangle("elx_runtime_error")] = llvm::orc::ExecutorSymbolDef(
+      llvm::orc::ExecutorAddr::fromPtr(&elx_runtime_error),
+      llvm::JITSymbolFlags::Exported);
+  runtimeSymbols[mangle("elx_has_runtime_error")] =
+      llvm::orc::ExecutorSymbolDef(
+          llvm::orc::ExecutorAddr::fromPtr(&elx_has_runtime_error),
+          llvm::JITSymbolFlags::Exported);
+  runtimeSymbols[mangle("elx_clear_runtime_error")] =
+      llvm::orc::ExecutorSymbolDef(
+          llvm::orc::ExecutorAddr::fromPtr(&elx_clear_runtime_error),
+          llvm::JITSymbolFlags::Exported);
+
+  // Safe arithmetic functions
+  runtimeSymbols[mangle("elx_safe_divide")] = llvm::orc::ExecutorSymbolDef(
+      llvm::orc::ExecutorAddr::fromPtr(&elx_safe_divide),
+      llvm::JITSymbolFlags::Exported);
+
   llvm::cantFail(j->jit->getMainJITDylib().define(
       llvm::orc::absoluteSymbols(runtimeSymbols)));
 

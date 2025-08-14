@@ -397,6 +397,21 @@ void CodeGenVisitor::visitBinaryExpr(Binary *e) {
     builder.SetInsertPoint(isStrConcatBB);
     auto concatFn = mod.getFunction("elx_concatenate_strings");
     auto strResult = builder.CreateCall(concatFn, {L, R}, "concat");
+
+    // Check for runtime error after concatenation
+    llvm::Function *hasErrorFn = mod.getFunction("elx_has_runtime_error");
+    llvm::Value *finalStrResult = strResult;
+    if (hasErrorFn) {
+      auto hasError = builder.CreateCall(hasErrorFn, {}, "has_error");
+      auto hasErrorBool = builder.CreateICmpNE(
+          hasError, llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0),
+          "error_check");
+
+      // If there's an error, use nil instead of the result
+      finalStrResult = builder.CreateSelect(hasErrorBool, nilConst(), strResult,
+                                            "safe_concat");
+    }
+
     builder.CreateBr(contBB);
 
     // Type error
@@ -415,7 +430,7 @@ void CodeGenVisitor::visitBinaryExpr(Binary *e) {
     builder.SetInsertPoint(contBB);
     auto phi = builder.CreatePHI(llvmValueTy(), 3, "plus.res");
     phi->addIncoming(numResult, isNumAddBB);
-    phi->addIncoming(strResult, isStrConcatBB);
+    phi->addIncoming(finalStrResult, isStrConcatBB);
     phi->addIncoming(errorResult, errorBB);
     value = phi;
     return;
@@ -444,6 +459,18 @@ void CodeGenVisitor::visitBinaryExpr(Binary *e) {
     auto safeDivFn = mod.getFunction("elx_safe_divide");
     if (safeDivFn) {
       res = builder.CreateCall(safeDivFn, {L, R}, "safe_div");
+      // Check for division by zero error after safe divide
+      llvm::Function *hasErrorFn = mod.getFunction("elx_has_runtime_error");
+      if (hasErrorFn) {
+        auto hasError = builder.CreateCall(hasErrorFn, {}, "has_error");
+        auto hasErrorBool = builder.CreateICmpNE(
+            hasError, llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0),
+            "error_check");
+
+        // If there's an error, use nil instead of the result
+        res = builder.CreateSelect(hasErrorBool, nilConst(), res,
+                                   "safe_div_result");
+      }
     } else {
       res = fromDouble(builder.CreateFDiv(Ld, Rd, "div"));
     }
@@ -827,6 +854,7 @@ void CodeGenVisitor::visitCallExpr(Call *e) {
     llvm::Value *argCount =
         llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0);
     value = builder.CreateCall(callFn, {callee, nullPtr, argCount});
+    checkRuntimeError(value);
   } else {
     // Create an array on the stack for arguments
     llvm::Value *argArray = builder.CreateAlloca(
@@ -844,6 +872,7 @@ void CodeGenVisitor::visitCallExpr(Call *e) {
     llvm::Value *argCount =
         llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), args.size());
     value = builder.CreateCall(callFn, {callee, argArray, argCount});
+    checkRuntimeError(value);
   }
 }
 
@@ -1133,5 +1162,31 @@ void CodeGenVisitor::visitSetExpr(Set *e) { value = nilConst(); }
 void CodeGenVisitor::visitThisExpr(This *e) { value = nilConst(); }
 void CodeGenVisitor::visitSuperExpr(Super *e) { value = nilConst(); }
 void CodeGenVisitor::visitClassStmt(Class *s) {}
+
+void CodeGenVisitor::checkRuntimeError(llvm::Value *returnValue) {
+  // Check if there's a runtime error and return nil if so
+  llvm::Function *hasErrorFn = mod.getFunction("elx_has_runtime_error");
+  if (!hasErrorFn) {
+    if (returnValue)
+      value = returnValue;
+    return; // No error checking infrastructure available
+  }
+
+  // Check for runtime error
+  auto hasError = builder.CreateCall(hasErrorFn, {}, "has_error");
+  auto hasErrorBool = builder.CreateICmpNE(
+      hasError, llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0),
+      "error_check");
+
+  // Use select to return nil if there's an error, otherwise return the original
+  // value
+  if (returnValue) {
+    value = builder.CreateSelect(hasErrorBool, nilConst(), returnValue,
+                                 "error_safe_value");
+  } else {
+    // For void operations, just check but don't change value
+    // The error will be caught at the REPL level
+  }
+}
 
 } // namespace eloxir
