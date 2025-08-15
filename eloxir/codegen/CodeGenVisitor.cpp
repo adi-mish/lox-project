@@ -905,16 +905,22 @@ void CodeGenVisitor::visitVarStmt(Var *s) {
        fn->getName().str().find("__expr") == 0); // REPL expression functions
 
   if (isGlobal) {
-    // Store in current module globals
-    globals[varName] = initValue;
-    directValues.insert(varName);
+    // For global variables, create an alloca so they can be modified
+    auto fn = builder.GetInsertBlock()->getParent();
+    auto &entry = fn->getEntryBlock();
+    auto insertPoint = entry.getFirstNonPHI();
+    llvm::IRBuilder<> save(&entry, insertPoint ? insertPoint->getIterator()
+                                               : entry.begin());
+    auto slot = save.CreateAlloca(llvmValueTy(), nullptr, varName.c_str());
+    builder.CreateStore(initValue, slot);
+    locals[varName] = slot;
+    // Don't add to directValues since this needs to be loaded
 
-    // Store in persistent global environment for cross-line access
+    // Also store in persistent global environment for cross-line access
     auto setGlobalVarFn = mod.getFunction("elx_set_global_variable");
     if (setGlobalVarFn) {
       auto nameStr = builder.CreateGlobalStringPtr(varName, "var_name");
-      builder.CreateCall(setGlobalVarFn,
-                         {nameStr, initValue}); // Remove invalid name
+      builder.CreateCall(setGlobalVarFn, {nameStr, initValue});
     }
   } else {
     // Local variable - create alloca in function entry block
