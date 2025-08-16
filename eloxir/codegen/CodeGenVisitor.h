@@ -38,6 +38,9 @@ public:
   // Access to globals for REPL persistence
   std::unordered_map<std::string, llvm::Value *> globals;
 
+  // Helper for forward function declarations
+  void declareFunctionSignature(Function *s);
+
   // == Expr nodes ==================================================
   void visitBinaryExpr(Binary *e) override;
   void visitGroupingExpr(Grouping *e) override;

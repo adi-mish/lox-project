@@ -78,7 +78,7 @@ void runFile(const std::string &filename) {
     fileCG.getBuilder().SetInsertPoint(
         BasicBlock::Create(fileCtx, "entry", fn));
 
-    // Generate code for all statements
+    // Generate code for all statements with two-pass approach for functions
     llvm::Value *lastValue = nullptr;
 
     // Create a nil literal to get a nil constant
@@ -86,6 +86,14 @@ void runFile(const std::string &filename) {
     nilLiteral->accept(&fileCG);
     lastValue = fileCG.value; // This will be nil
 
+    // Pass 1: Declare all function signatures
+    for (auto &stmt : stmts) {
+      if (auto funcStmt = dynamic_cast<eloxir::Function *>(stmt.get())) {
+        fileCG.declareFunctionSignature(funcStmt);
+      }
+    }
+
+    // Pass 2: Process all statements (including function bodies)
     for (auto &stmt : stmts) {
       stmt->accept(&fileCG);
       if (fileCG.value != nullptr) {

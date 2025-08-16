@@ -606,6 +606,19 @@ void CodeGenVisitor::visitVariableExpr(Variable *e) {
     return;
   }
 
+  // Check if this is a declared function that hasn't been fully processed yet
+  auto funcIt = functions.find(varName);
+  if (funcIt != functions.end()) {
+    // Check if we already have a function object in globals
+    auto globalFuncIt = globals.find(varName);
+    if (globalFuncIt != globals.end()) {
+      value = globalFuncIt->second;
+      return;
+    }
+    // Function is declared but object not created yet - this should not happen
+    // in our two-pass approach, but fall through to runtime lookup
+  }
+
   // Check persistent global variables
   auto hasGlobalVarFn = mod.getFunction("elx_has_global_variable");
   auto getGlobalVarFn = mod.getFunction("elx_get_global_variable");
@@ -936,10 +949,26 @@ void CodeGenVisitor::visitVarStmt(Var *s) {
 }
 
 void CodeGenVisitor::visitBlockStmt(Block *s) {
-  // Simple block: push/pop scope in locals map
+  // Two-pass approach to handle forward function references:
+  // Pass 1: Declare all function signatures in this block
+  // Pass 2: Process all statements (including function bodies)
+
+  // Save current locals scope
   auto before = locals;
-  for (auto &st : s->statements)
-    st->accept(this);
+
+  // Pass 1: Find all function declarations and create their signatures
+  for (auto &stmt : s->statements) {
+    if (auto funcStmt = dynamic_cast<Function *>(stmt.get())) {
+      declareFunctionSignature(funcStmt);
+    }
+  }
+
+  // Pass 2: Process all statements normally
+  for (auto &stmt : s->statements) {
+    stmt->accept(this);
+  }
+
+  // Restore previous locals scope
   locals = std::move(before);
 }
 
@@ -1009,8 +1038,14 @@ void CodeGenVisitor::visitWhileStmt(While *s) {
   value = nilConst();
 }
 
-void CodeGenVisitor::visitFunctionStmt(Function *s) {
+void CodeGenVisitor::declareFunctionSignature(Function *s) {
   const std::string &baseFuncName = s->name.getLexeme();
+
+  // Check if function is already declared
+  if (functions.find(baseFuncName) != functions.end()) {
+    return; // Already declared
+  }
+
   int arity = s->params.size();
 
   // Validate function arity (Lox limit is 255)
@@ -1018,7 +1053,6 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
     std::cerr << "Error: Function '" << baseFuncName
               << "' has too many parameters (" << arity
               << "). Maximum is 255.\n";
-    value = nilConst();
     return;
   }
 
@@ -1032,9 +1066,36 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
   llvm::FunctionType *funcType =
       llvm::FunctionType::get(llvmValueTy(), paramTypes, false);
 
-  // Create the LLVM function
+  // Create the LLVM function declaration
   llvm::Function *llvmFunc = llvm::Function::Create(
       funcType, llvm::Function::ExternalLinkage, funcName, &mod);
+
+  // Store the function in the global function table using base name
+  functions[baseFuncName] = llvmFunc;
+}
+
+void CodeGenVisitor::visitFunctionStmt(Function *s) {
+  const std::string &baseFuncName = s->name.getLexeme();
+
+  // Get the already-declared function (from declareFunctionSignature)
+  auto it = functions.find(baseFuncName);
+  llvm::Function *llvmFunc;
+
+  if (it != functions.end()) {
+    // Function was already declared - reuse it
+    llvmFunc = it->second;
+  } else {
+    // Fallback: declare it now (for cases where visitFunctionStmt is called
+    // directly)
+    declareFunctionSignature(s);
+    llvmFunc = functions[baseFuncName];
+  }
+
+  // Skip if function body is already defined
+  if (!llvmFunc->empty()) {
+    value = nilConst();
+    return;
+  }
 
   // Save current state before switching to function context
   llvm::Function *prevFunction = currentFunction;
@@ -1073,6 +1134,7 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
               << "': " << e.what() << "\n";
     // Clean up and restore state
     llvmFunc->eraseFromParent();
+    functions.erase(baseFuncName); // Remove from functions map
     currentFunction = prevFunction;
     locals = std::move(prevLocals);
     directValues = std::move(prevDirectValues);
@@ -1088,6 +1150,8 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
     std::cerr << "LLVM verification failed for function: " << baseFuncName
               << "\n";
     llvmFunc->eraseFromParent();
+    // Remove from functions map since verification failed
+    functions.erase(baseFuncName);
     // Restore state
     currentFunction = prevFunction;
     locals = std::move(prevLocals);
@@ -1099,8 +1163,8 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
     return;
   }
 
-  // Store the function in the global function table using base name
-  functions[baseFuncName] = llvmFunc;
+  // Function is already in the functions map from declareFunctionSignature
+  // No need to add it again
 
   // Restore previous state BEFORE creating function objects
   currentFunction = prevFunction;
@@ -1111,6 +1175,7 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
   }
 
   // Create a function object value in the correct context
+  int arity = s->params.size(); // Get arity from the function statement
   auto nameStr = builder.CreateGlobalStringPtr(baseFuncName, "fname");
   auto arityConst = llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), arity);
   auto funcPtr = builder.CreateBitCast(
