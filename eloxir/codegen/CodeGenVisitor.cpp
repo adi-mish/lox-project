@@ -609,14 +609,59 @@ void CodeGenVisitor::visitVariableExpr(Variable *e) {
   // Check if this is a declared function that hasn't been fully processed yet
   auto funcIt = functions.find(varName);
   if (funcIt != functions.end()) {
-    // Check if we already have a function object in globals
-    auto globalFuncIt = globals.find(varName);
-    if (globalFuncIt != globals.end()) {
-      value = globalFuncIt->second;
+    // For forward-declared functions, we need to look them up at runtime
+    // This is because function objects can't be created at compile time without
+    // causing cross-function reference issues in LLVM IR
+
+    // Check persistent global functions first
+    auto hasGlobalFuncFn = mod.getFunction("elx_has_global_function");
+    auto getGlobalFuncFn = mod.getFunction("elx_get_global_function");
+    if (hasGlobalFuncFn && getGlobalFuncFn) {
+      auto nameStr = builder.CreateGlobalStringPtr(varName, "func_name");
+      auto hasFunc =
+          builder.CreateCall(hasGlobalFuncFn, {nameStr}, "has_global_func");
+      auto zero = llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0);
+      auto hasFuncBool = builder.CreateICmpNE(hasFunc, zero, "has_func_bool");
+
+      auto fn = builder.GetInsertBlock()->getParent();
+      auto foundFuncBB = llvm::BasicBlock::Create(ctx, "found_func", fn);
+      auto notFoundBB = llvm::BasicBlock::Create(ctx, "not_found", fn);
+      auto contBB = llvm::BasicBlock::Create(ctx, "cont", fn);
+
+      builder.CreateCondBr(hasFuncBool, foundFuncBB, notFoundBB);
+
+      // Found global function
+      builder.SetInsertPoint(foundFuncBB);
+      auto funcValue =
+          builder.CreateCall(getGlobalFuncFn, {nameStr}, "global_func");
+      builder.CreateBr(contBB);
+
+      // Function not found - runtime error
+      builder.SetInsertPoint(notFoundBB);
+      auto printFn = mod.getFunction("elx_print");
+      if (printFn) {
+        std::string errorMsg =
+            "Runtime error: Undefined function '" + varName + "'.";
+        auto msgValue = stringConst(errorMsg);
+        builder.CreateCall(printFn, {msgValue});
+      }
+      auto notFoundValue = nilConst();
+      builder.CreateBr(contBB);
+
+      // Merge paths
+      builder.SetInsertPoint(contBB);
+      auto phi = builder.CreatePHI(llvmValueTy(), 2, "func_result");
+      phi->addIncoming(funcValue, foundFuncBB);
+      phi->addIncoming(notFoundValue, notFoundBB);
+      value = phi;
       return;
     }
-    // Function is declared but object not created yet - this should not happen
-    // in our two-pass approach, but fall through to runtime lookup
+
+    // Fallback error
+    std::cerr << "Error: Function '" << varName
+              << "' declared but runtime lookup unavailable\n";
+    value = nilConst();
+    return;
   }
 
   // Check persistent global variables
@@ -1072,6 +1117,100 @@ void CodeGenVisitor::declareFunctionSignature(Function *s) {
 
   // Store the function in the global function table using base name
   functions[baseFuncName] = llvmFunc;
+
+  // Track function for later object creation
+  pendingFunctions.push_back({baseFuncName, arity});
+}
+
+llvm::Value *CodeGenVisitor::createFunctionObject(const std::string &funcName,
+                                                  llvm::Function *llvmFunc,
+                                                  int arity) {
+  // If we're currently inside a function, we cannot create function objects
+  // as it creates cross-function IR references. Return nil and defer creation.
+  if (currentFunction != nullptr) {
+    return nilConst();
+  }
+
+  auto nameStr = builder.CreateGlobalStringPtr(funcName, "fname");
+  auto arityConst = llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), arity);
+  auto funcPtr = builder.CreateBitCast(
+      llvmFunc, llvm::PointerType::get(llvm::Type::getInt8Ty(ctx), 0));
+
+  auto allocFn = mod.getFunction("elx_allocate_function");
+  if (!allocFn) {
+    std::cerr << "    Error: elx_allocate_function not found\n";
+    return nilConst();
+  }
+
+  auto funcObj =
+      builder.CreateCall(allocFn, {nameStr, arityConst, funcPtr}, "funcobj");
+
+  // Store in globals map for immediate access during compilation
+  globals[funcName] = funcObj;
+
+  // Store in persistent global environment for cross-line access
+  auto setGlobalFuncFn = mod.getFunction("elx_set_global_function");
+  if (setGlobalFuncFn) {
+    auto funcNameStr = builder.CreateGlobalStringPtr(funcName, "func_name");
+    builder.CreateCall(setGlobalFuncFn, {funcNameStr, funcObj});
+  } else {
+    std::cerr << "    Warning: elx_set_global_function not found\n";
+  }
+
+  return funcObj;
+}
+
+void CodeGenVisitor::createGlobalFunctionObjects() {
+  if (pendingFunctions.empty()) {
+    return; // No functions to process
+  }
+
+  // Create a temporary global initialization function to hold the object
+  // creation code
+  auto voidTy = llvm::Type::getVoidTy(ctx);
+  auto initFnTy = llvm::FunctionType::get(voidTy, {}, false);
+  auto initFn = llvm::Function::Create(
+      initFnTy, llvm::Function::ExternalLinkage, "__global_init", &mod);
+  auto entryBB = llvm::BasicBlock::Create(ctx, "entry", initFn);
+
+  // Save current state and switch to the init function
+  llvm::Function *prevFunction = currentFunction;
+  llvm::BasicBlock *prevBB = builder.GetInsertBlock();
+
+  currentFunction = nullptr; // We're at global scope now
+  builder.SetInsertPoint(entryBB);
+
+  // Only create objects for pending functions that don't already exist
+  for (const auto &pending : pendingFunctions) {
+    const std::string &funcName = pending.first;
+    int arity = pending.second;
+
+    // Skip if already created
+    if (globals.find(funcName) != globals.end()) {
+      continue;
+    }
+
+    // Find the LLVM function
+    auto funcIt = functions.find(funcName);
+    if (funcIt == functions.end()) {
+      continue; // Function not found, skip
+    }
+
+    llvm::Function *llvmFunc = funcIt->second;
+    createFunctionObject(funcName, llvmFunc, arity);
+  }
+
+  // Finish the init function
+  builder.CreateRetVoid();
+
+  // Restore previous state
+  currentFunction = prevFunction;
+  if (prevBB) {
+    builder.SetInsertPoint(prevBB);
+  }
+
+  // Clear pending functions
+  pendingFunctions.clear();
 }
 
 void CodeGenVisitor::visitFunctionStmt(Function *s) {
@@ -1166,7 +1305,7 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
   // Function is already in the functions map from declareFunctionSignature
   // No need to add it again
 
-  // Restore previous state BEFORE creating function objects
+  // Restore previous state BEFORE working with function objects
   currentFunction = prevFunction;
   locals = std::move(prevLocals);
   directValues = std::move(prevDirectValues);
@@ -1174,50 +1313,11 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
     builder.SetInsertPoint(prevBB);
   }
 
-  // Create a function object value in the correct context
-  int arity = s->params.size(); // Get arity from the function statement
-  auto nameStr = builder.CreateGlobalStringPtr(baseFuncName, "fname");
-  auto arityConst = llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), arity);
-  auto funcPtr = builder.CreateBitCast(
-      llvmFunc, llvm::PointerType::get(llvm::Type::getInt8Ty(ctx), 0));
+  // Mark this function as pending for object creation
+  pendingFunctions.push_back(
+      {baseFuncName, static_cast<int>(s->params.size())});
 
-  auto allocFn = mod.getFunction("elx_allocate_function");
-  if (!allocFn) {
-    std::cerr << "Error: elx_allocate_function not found\n";
-    value = nilConst();
-    return;
-  }
-
-  auto funcObj =
-      builder.CreateCall(allocFn, {nameStr, arityConst, funcPtr}, "funcobj");
-
-  // Store in persistent global environment for cross-line access
-  auto setGlobalFuncFn = mod.getFunction("elx_set_global_function");
-  if (setGlobalFuncFn) {
-    auto funcNameStr = builder.CreateGlobalStringPtr(baseFuncName, "func_name");
-    builder.CreateCall(setGlobalFuncFn,
-                       {funcNameStr, funcObj}); // Remove invalid name
-  }
-
-  // Store the function object in globals for access within current module
-  globals[baseFuncName] = funcObj;
-
-  // Store in local scope if we're inside another function
-  if (currentFunction && builder.GetInsertBlock()) {
-    auto fn = builder.GetInsertBlock()->getParent();
-    auto &entry = fn->getEntryBlock();
-    llvm::IRBuilder<> entryBuilder(&entry, entry.begin());
-    auto slot =
-        entryBuilder.CreateAlloca(llvmValueTy(), nullptr, baseFuncName.c_str());
-    builder.CreateStore(funcObj, slot);
-    locals[baseFuncName] = slot;
-  } else {
-    // At global scope, store directly
-    locals[baseFuncName] = funcObj;
-    directValues.insert(baseFuncName);
-  }
-
-  value = funcObj;
+  value = nilConst();
 }
 void CodeGenVisitor::visitReturnStmt(Return *s) {
   if (s->value) {

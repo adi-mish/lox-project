@@ -24,6 +24,9 @@ class CodeGenVisitor : public ExprVisitor, public StmtVisitor {
   // current function being compiled (for return statements)
   llvm::Function *currentFunction;
 
+  // Deferred function objects to create in global context
+  std::vector<std::pair<std::string, int>> pendingFunctions; // name, arity
+
 public:
   CodeGenVisitor(llvm::Module &m);
 
@@ -40,6 +43,13 @@ public:
 
   // Helper for forward function declarations
   void declareFunctionSignature(Function *s);
+
+  // Helper to create function object from LLVM function
+  llvm::Value *createFunctionObject(const std::string &funcName,
+                                    llvm::Function *llvmFunc, int arity);
+
+  // Helper to create global function objects outside of function contexts
+  void createGlobalFunctionObjects();
 
   // == Expr nodes ==================================================
   void visitBinaryExpr(Binary *e) override;

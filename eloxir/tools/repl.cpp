@@ -110,8 +110,19 @@ void runFile(const std::string &filename) {
       return;
     }
 
+    // After the main function is complete, create function objects at global
+    // scope The builder is now outside any function
+    fileCG.createGlobalFunctionObjects();
+
     cantFail(jit->addModule(orc::ThreadSafeModule(
         std::move(fileMod), std::make_unique<LLVMContext>())));
+
+    // First, run the global initialization function if it exists
+    auto initSymOpt = jit->lookup("__global_init");
+    if (initSymOpt) {
+      using InitFnTy = void (*)();
+      reinterpret_cast<InitFnTy>(initSymOpt->getAddress())();
+    }
 
     auto sym = cantFail(jit->lookup("main"));
     using FnTy = eloxir::Value (*)();
