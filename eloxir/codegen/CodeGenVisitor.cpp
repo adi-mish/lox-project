@@ -1099,7 +1099,10 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
     return;
   }
 
-  // Restore previous state
+  // Store the function in the global function table using base name
+  functions[baseFuncName] = llvmFunc;
+
+  // Restore previous state BEFORE creating function objects
   currentFunction = prevFunction;
   locals = std::move(prevLocals);
   directValues = std::move(prevDirectValues);
@@ -1107,10 +1110,7 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
     builder.SetInsertPoint(prevBB);
   }
 
-  // Store the function in the global function table using base name
-  functions[baseFuncName] = llvmFunc;
-
-  // Create a function object value
+  // Create a function object value in the correct context
   auto nameStr = builder.CreateGlobalStringPtr(baseFuncName, "fname");
   auto arityConst = llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), arity);
   auto funcPtr = builder.CreateBitCast(
