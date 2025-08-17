@@ -838,30 +838,11 @@ void CodeGenVisitor::visitAssignExpr(Assign *e) {
     }
     builder.CreateStore(assignValue, localIt->second);
 
-    // Also check if this is a global variable and update the persistent global
-    // system
-    auto hasGlobalVarFn = mod.getFunction("elx_has_global_variable");
+    // Always try to update the persistent global system for all variables
     auto setGlobalVarFn = mod.getFunction("elx_set_global_variable");
-    if (hasGlobalVarFn && setGlobalVarFn) {
+    if (setGlobalVarFn) {
       auto nameStr = builder.CreateGlobalStringPtr(varName, "var_name");
-      auto hasVar =
-          builder.CreateCall(hasGlobalVarFn, {nameStr}, "has_global_var");
-      auto hasVarBool =
-          builder.CreateICmpNE(hasVar, builder.getInt32(0), "has_var_bool");
-
-      auto fn = builder.GetInsertBlock()->getParent();
-      auto updateGlobalBB = llvm::BasicBlock::Create(ctx, "update_global", fn);
-      auto contBB = llvm::BasicBlock::Create(ctx, "cont", fn);
-
-      builder.CreateCondBr(hasVarBool, updateGlobalBB, contBB);
-
-      // Update global variable
-      builder.SetInsertPoint(updateGlobalBB);
       builder.CreateCall(setGlobalVarFn, {nameStr, assignValue});
-      builder.CreateBr(contBB);
-
-      // Continue
-      builder.SetInsertPoint(contBB);
     }
 
     value = assignValue; // Assignment returns the assigned value
