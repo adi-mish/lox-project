@@ -91,6 +91,15 @@ CodeGenVisitor::CodeGenVisitor(llvm::Module &m)
       false);
   mod.getOrInsertFunction("elx_call_closure", callClosureTy);
 
+  // Type checking functions
+  llvm::FunctionType *isClosureTy = llvm::FunctionType::get(
+      llvm::Type::getInt32Ty(ctx), {llvmValueTy()}, false);
+  mod.getOrInsertFunction("elx_is_closure", isClosureTy);
+
+  llvm::FunctionType *isFunctionTy = llvm::FunctionType::get(
+      llvm::Type::getInt32Ty(ctx), {llvmValueTy()}, false);
+  mod.getOrInsertFunction("elx_is_function", isFunctionTy);
+
   // Global built-ins functions
   llvm::FunctionType *getBuiltinTy = llvm::FunctionType::get(
       llvmValueTy(), {llvm::PointerType::get(llvm::Type::getInt8Ty(ctx), 0)},
@@ -1357,6 +1366,22 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
     upvalues = resolver_upvalues->at(s);
   }
 
+  // Filter out function parameters from upvalues (resolver bug workaround)
+  std::vector<std::string> filtered_upvalues;
+  for (const auto &upvalue_name : upvalues) {
+    bool is_parameter = false;
+    for (const auto &param : s->params) {
+      if (param.getLexeme() == upvalue_name) {
+        is_parameter = true;
+        break;
+      }
+    }
+    if (!is_parameter) {
+      filtered_upvalues.push_back(upvalue_name);
+    }
+  }
+  upvalues = filtered_upvalues;
+
   // Get the already-declared function (from declareFunctionSignature)
   auto it = functions.find(baseFuncName);
   llvm::Function *llvmFunc;
@@ -1525,6 +1550,16 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
     // Use the pre-created closure value
     value = closureValue;
   }
+
+  // Store the function/closure in locals (function declarations should behave
+  // like variable declarations)
+  if (value != nilConst()) {
+    // Create an alloca for the function variable
+    auto funcAlloca =
+        builder.CreateAlloca(llvmValueTy(), nullptr, baseFuncName);
+    builder.CreateStore(value, funcAlloca);
+    locals[baseFuncName] = funcAlloca;
+  }
 }
 void CodeGenVisitor::visitReturnStmt(Return *s) {
   if (s->value) {
@@ -1593,6 +1628,8 @@ CodeGenVisitor::createClosureObject(llvm::Function *func,
 
   // 3. Capture each upvalue
   for (int i = 0; i < static_cast<int>(upvalues.size()); i++) {
+    std::cerr << "DEBUG: createClosureObject calling captureUpvalue for '"
+              << upvalues[i] << "'" << std::endl;
     auto upvalue_value = captureUpvalue(upvalues[i]);
     auto set_upvalue_fn = mod.getFunction("elx_set_closure_upvalue");
     auto index = llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), i);
@@ -1652,13 +1689,10 @@ llvm::Value *CodeGenVisitor::createDeferredClosureWithCapturedUpvalues(
 
 llvm::Value *CodeGenVisitor::createDeferredClosure(
     llvm::Function *func, const std::vector<std::string> &upvalues, int arity) {
-  // Create the function object using the actual LLVM function arity
-  // (which includes the upvalue array parameter if upvalues exist)
-  int llvm_arity = arity + (upvalues.empty() ? 0 : 1);
-
+  // Create the function object using the original Lox arity
+  // The upvalue array parameter is an implementation detail
   auto nameStr = builder.CreateGlobalStringPtr("", "fname");
-  auto arityConst =
-      llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), llvm_arity);
+  auto arityConst = llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), arity);
   auto funcPtr = builder.CreateBitCast(
       func, llvm::PointerType::get(llvm::Type::getInt8Ty(ctx), 0));
 
@@ -1800,11 +1834,25 @@ llvm::Value *CodeGenVisitor::captureUpvalue(const std::string &name) {
     return builder.CreateCall(alloc_upvalue_fn, {value_ptr});
   }
 
-  // Variable not found - create a null upvalue (should not happen with correct
-  // resolver)
-  auto null_ptr =
-      llvm::ConstantPointerNull::get(llvm::PointerType::get(llvmValueTy(), 0));
-  return builder.CreateCall(alloc_upvalue_fn, {null_ptr});
+  // Variable not found - this should not happen with correct resolver
+  // But if it does, we should not create an upvalue for a non-existent variable
+  // Instead, skip this upvalue (this will result in the closure having fewer
+  // upvalues than expected)
+  std::cerr << "WARNING: Variable '" << name
+            << "' not found for upvalue capture, creating nil upvalue"
+            << std::endl;
+
+  // Return a nil upvalue that points to a nil value
+  auto size = llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx), 8);
+  auto heap_ptr = builder.CreateCall(mallocFn, {size});
+  auto value_ptr =
+      builder.CreateBitCast(heap_ptr, llvm::PointerType::get(llvmValueTy(), 0));
+
+  // Store nil in the heap location
+  builder.CreateStore(nilConst(), value_ptr);
+
+  // Create upvalue pointing to the heap location with nil
+  return builder.CreateCall(alloc_upvalue_fn, {value_ptr});
 }
 
 } // namespace eloxir

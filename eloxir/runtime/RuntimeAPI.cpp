@@ -819,13 +819,15 @@ uint64_t elx_call_closure(uint64_t closure_bits, uint64_t *args,
 int elx_is_function(uint64_t value_bits) {
   Value v = Value::fromBits(value_bits);
   ObjFunction *func = getFunction(v);
-  return func != nullptr ? 1 : 0;
+  bool result = func != nullptr;
+  return result ? 1 : 0;
 }
 
 int elx_is_closure(uint64_t value_bits) {
   Value v = Value::fromBits(value_bits);
   ObjClosure *closure = getClosure(v);
-  return closure != nullptr ? 1 : 0;
+  bool result = closure != nullptr;
+  return result ? 1 : 0;
 }
 
 void elx_cleanup_all_objects() {
