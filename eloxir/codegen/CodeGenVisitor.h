@@ -54,6 +54,10 @@ public:
   // Access to globals for REPL persistence
   std::unordered_map<std::string, llvm::Value *> globals;
 
+  // Track which variables are global (to distinguish from truly local
+  // variables)
+  std::unordered_set<std::string> globalVariables;
+
   // Helper for forward function declarations
   void declareFunctionSignature(Function *s);
 

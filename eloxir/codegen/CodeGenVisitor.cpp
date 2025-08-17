@@ -630,7 +630,17 @@ void CodeGenVisitor::visitUnaryExpr(Unary *e) {
 void CodeGenVisitor::visitVariableExpr(Variable *e) {
   const std::string &varName = e->name.getLexeme();
 
-  // Check locals first
+  // For global variables, always check the persistent global system first
+  if (globalVariables.count(varName)) {
+    auto getGlobalVarFn = mod.getFunction("elx_get_global_variable");
+    if (getGlobalVarFn) {
+      auto nameStr = builder.CreateGlobalStringPtr(varName, "var_name");
+      value = builder.CreateCall(getGlobalVarFn, {nameStr}, "global_var");
+      return;
+    }
+  }
+
+  // Check locals first (for truly local variables)
   auto it = locals.find(varName);
   if (it != locals.end()) {
     // Check if this is a direct value (like a parameter) or needs to be loaded
@@ -824,7 +834,36 @@ void CodeGenVisitor::visitAssignExpr(Assign *e) {
 
   const std::string &varName = e->name.getLexeme();
 
-  // Check locals first
+  // For global variables, always update both local storage and global system
+  if (globalVariables.count(varName)) {
+    // Update local storage if it exists
+    auto localIt = locals.find(varName);
+    if (localIt != locals.end()) {
+      if (directValues.count(varName)) {
+        // This is a parameter or direct value - we need to create storage for
+        // it
+        auto fn = builder.GetInsertBlock()->getParent();
+        auto &entry = fn->getEntryBlock();
+        llvm::IRBuilder<> save(entry.getFirstNonPHI());
+        auto slot = save.CreateAlloca(llvmValueTy(), nullptr, varName.c_str());
+        locals[varName] = slot;
+        directValues.erase(varName);
+      }
+      builder.CreateStore(assignValue, localIt->second);
+    }
+
+    // Always update the persistent global system for global variables
+    auto setGlobalVarFn = mod.getFunction("elx_set_global_variable");
+    if (setGlobalVarFn) {
+      auto nameStr = builder.CreateGlobalStringPtr(varName, "var_name");
+      builder.CreateCall(setGlobalVarFn, {nameStr, assignValue});
+    }
+
+    value = assignValue; // Assignment returns the assigned value
+    return;
+  }
+
+  // Check locals for truly local variables
   auto localIt = locals.find(varName);
   if (localIt != locals.end()) {
     if (directValues.count(varName)) {
@@ -837,14 +876,6 @@ void CodeGenVisitor::visitAssignExpr(Assign *e) {
       directValues.erase(varName);
     }
     builder.CreateStore(assignValue, localIt->second);
-
-    // Always try to update the persistent global system for all variables
-    auto setGlobalVarFn = mod.getFunction("elx_set_global_variable");
-    if (setGlobalVarFn) {
-      auto nameStr = builder.CreateGlobalStringPtr(varName, "var_name");
-      builder.CreateCall(setGlobalVarFn, {nameStr, assignValue});
-    }
-
     value = assignValue; // Assignment returns the assigned value
     return;
   }
@@ -1110,6 +1141,9 @@ void CodeGenVisitor::visitVarStmt(Var *s) {
     builder.CreateStore(initValue, slot);
     locals[varName] = slot;
     // Don't add to directValues since this needs to be loaded
+
+    // Track this as a global variable
+    globalVariables.insert(varName);
 
     // Also store in persistent global environment for cross-line access
     auto setGlobalVarFn = mod.getFunction("elx_set_global_variable");
