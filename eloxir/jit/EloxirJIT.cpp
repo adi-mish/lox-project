@@ -74,6 +74,38 @@ llvm::Expected<std::unique_ptr<EloxirJIT>> EloxirJIT::Create() {
       llvm::orc::ExecutorAddr::fromPtr(&elx_call_function),
       llvm::JITSymbolFlags::Exported);
 
+  // Closure and upvalue functions
+  runtimeSymbols[mangle("elx_allocate_closure")] = llvm::orc::ExecutorSymbolDef(
+      llvm::orc::ExecutorAddr::fromPtr(&elx_allocate_closure),
+      llvm::JITSymbolFlags::Exported);
+  runtimeSymbols[mangle("elx_allocate_upvalue")] = llvm::orc::ExecutorSymbolDef(
+      llvm::orc::ExecutorAddr::fromPtr(&elx_allocate_upvalue),
+      llvm::JITSymbolFlags::Exported);
+  runtimeSymbols[mangle("elx_set_closure_upvalue")] =
+      llvm::orc::ExecutorSymbolDef(
+          llvm::orc::ExecutorAddr::fromPtr(&elx_set_closure_upvalue),
+          llvm::JITSymbolFlags::Exported);
+  runtimeSymbols[mangle("elx_get_upvalue_value")] =
+      llvm::orc::ExecutorSymbolDef(
+          llvm::orc::ExecutorAddr::fromPtr(&elx_get_upvalue_value),
+          llvm::JITSymbolFlags::Exported);
+  runtimeSymbols[mangle("elx_set_upvalue_value")] =
+      llvm::orc::ExecutorSymbolDef(
+          llvm::orc::ExecutorAddr::fromPtr(&elx_set_upvalue_value),
+          llvm::JITSymbolFlags::Exported);
+  runtimeSymbols[mangle("elx_close_upvalues")] = llvm::orc::ExecutorSymbolDef(
+      llvm::orc::ExecutorAddr::fromPtr(&elx_close_upvalues),
+      llvm::JITSymbolFlags::Exported);
+  runtimeSymbols[mangle("elx_call_closure")] = llvm::orc::ExecutorSymbolDef(
+      llvm::orc::ExecutorAddr::fromPtr(&elx_call_closure),
+      llvm::JITSymbolFlags::Exported);
+  runtimeSymbols[mangle("elx_is_function")] = llvm::orc::ExecutorSymbolDef(
+      llvm::orc::ExecutorAddr::fromPtr(&elx_is_function),
+      llvm::JITSymbolFlags::Exported);
+  runtimeSymbols[mangle("elx_is_closure")] = llvm::orc::ExecutorSymbolDef(
+      llvm::orc::ExecutorAddr::fromPtr(&elx_is_closure),
+      llvm::JITSymbolFlags::Exported);
+
   // Global built-ins functions
   runtimeSymbols[mangle("elx_get_global_builtin")] =
       llvm::orc::ExecutorSymbolDef(

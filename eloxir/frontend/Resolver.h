@@ -46,7 +46,14 @@ private:
   enum class FunctionType { NONE, FUNCTION, INITIALIZER, METHOD };
   enum class ClassType { NONE, CLASS, SUBCLASS };
 
+  struct FunctionInfo {
+    FunctionType type;
+    std::vector<std::string> upvalues; // Names of captured variables
+    std::unordered_map<std::string, int> upvalue_indices;
+  };
+
   std::vector<std::unordered_map<std::string, bool>> scopes;
+  std::stack<FunctionInfo> function_stack;
   FunctionType currentFunction = FunctionType::NONE;
   ClassType currentClass = ClassType::NONE;
 
@@ -58,6 +65,15 @@ private:
   void resolve(Expr *expr);
   void resolveFunction(Function *function, FunctionType type);
   void resolveLocal(Expr *expr, const Token &name);
+
+  // Upvalue support
+  void addUpvalue(const std::string &name);
+  int resolveUpvalue(Function *function, const Token &name);
+
+public:
+  // Access to upvalue information for code generation
+  std::unordered_map<const Function *, std::vector<std::string>>
+      function_upvalues;
 };
 
 } // namespace eloxir

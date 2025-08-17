@@ -37,15 +37,59 @@ void Resolver::resolveLocal(Expr *expr, const Token &name) {
   for (int i = static_cast<int>(scopes.size()) - 1; i >= 0; --i) {
     if (scopes[i].count(name.getLexeme())) {
       locals[expr] = static_cast<int>(scopes.size()) - 1 - i;
+
+      // Check if this is an upvalue (accessed from enclosing scope)
+      if (i < static_cast<int>(scopes.size()) - 1 && !function_stack.empty()) {
+        // Variable found in enclosing scope - this is an upvalue!
+        addUpvalue(name.getLexeme());
+      }
       return;
     }
   }
   // global variable, leave unresolved
 }
 
+void Resolver::addUpvalue(const std::string &name) {
+  if (function_stack.empty()) {
+    return; // Not in a function
+  }
+
+  FunctionInfo &current_func = function_stack.top();
+
+  // Check if upvalue already exists
+  if (current_func.upvalue_indices.find(name) !=
+      current_func.upvalue_indices.end()) {
+    return; // Already captured
+  }
+
+  // Add new upvalue
+  int index = static_cast<int>(current_func.upvalues.size());
+  current_func.upvalues.push_back(name);
+  current_func.upvalue_indices[name] = index;
+}
+
+int Resolver::resolveUpvalue(Function *function, const Token &name) {
+  if (function_stack.empty()) {
+    return -1; // Not an upvalue
+  }
+
+  FunctionInfo &current_func = function_stack.top();
+  auto it = current_func.upvalue_indices.find(name.getLexeme());
+  if (it != current_func.upvalue_indices.end()) {
+    return it->second;
+  }
+
+  return -1; // Not an upvalue
+}
+
 void Resolver::resolveFunction(Function *function, FunctionType type) {
   FunctionType enclosing = currentFunction;
   currentFunction = type;
+
+  // Push new function context
+  FunctionInfo func_info;
+  func_info.type = type;
+  function_stack.push(func_info);
 
   beginScope();
   for (const auto &param : function->params) {
@@ -54,6 +98,11 @@ void Resolver::resolveFunction(Function *function, FunctionType type) {
   }
   resolve(function->body.get());
   endScope();
+
+  // Pop function context and store upvalue info
+  FunctionInfo completed_func = function_stack.top();
+  function_stack.pop();
+  function_upvalues[function] = completed_func.upvalues;
 
   currentFunction = enclosing;
 }

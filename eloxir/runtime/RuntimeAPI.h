@@ -7,7 +7,7 @@
 namespace eloxir {
 
 // Object header for heap-allocated objects
-enum class ObjType { STRING, FUNCTION };
+enum class ObjType { STRING, FUNCTION, CLOSURE, UPVALUE };
 
 struct Obj {
   ObjType type;
@@ -24,6 +24,20 @@ struct ObjFunction {
   int arity;
   const char *name;
   void *llvm_function; // pointer to compiled LLVM function
+};
+
+struct ObjUpvalue {
+  Obj obj;
+  uint64_t *location;      // Points to the actual variable
+  uint64_t closed;         // Value when upvalue is closed
+  struct ObjUpvalue *next; // For tracking open upvalues
+};
+
+struct ObjClosure {
+  Obj obj;
+  ObjFunction *function;
+  ObjUpvalue **upvalues; // Array of captured upvalues
+  int upvalue_count;
 };
 
 } // namespace eloxir
@@ -48,6 +62,18 @@ int elx_strings_equal(uint64_t a_bits, uint64_t b_bits);
 uint64_t elx_allocate_function(const char *name, int arity,
                                void *llvm_function);
 uint64_t elx_call_function(uint64_t func_bits, uint64_t *args, int arg_count);
+int elx_is_function(uint64_t value_bits);
+
+// Closure and upvalue functions
+uint64_t elx_allocate_upvalue(uint64_t *slot);
+uint64_t elx_allocate_closure(uint64_t function_bits, int upvalue_count);
+void elx_set_closure_upvalue(uint64_t closure_bits, int index,
+                             uint64_t upvalue_bits);
+uint64_t elx_get_upvalue_value(uint64_t upvalue_bits);
+void elx_set_upvalue_value(uint64_t upvalue_bits, uint64_t value);
+void elx_close_upvalues(uint64_t *last_local);
+uint64_t elx_call_closure(uint64_t closure_bits, uint64_t *args, int arg_count);
+int elx_is_closure(uint64_t value_bits);
 
 // Memory management
 void elx_cleanup_all_objects(); // Clean up all tracked objects

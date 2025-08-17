@@ -6,6 +6,7 @@
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/Module.h>
+#include <stack>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -23,6 +24,18 @@ class CodeGenVisitor : public ExprVisitor, public StmtVisitor {
   std::unordered_map<std::string, llvm::Function *> functions;
   // current function being compiled (for return statements)
   llvm::Function *currentFunction;
+
+  // Function context for closure support
+  struct FunctionContext {
+    llvm::Function *llvm_function;
+    std::unordered_map<std::string, llvm::Value *> locals;
+    std::unordered_set<std::string> direct_values;
+    std::vector<std::string> upvalues; // Names of captured variables
+    std::unordered_map<std::string, int> upvalue_indices;
+    llvm::Value *upvalue_array; // Array parameter for upvalues
+  };
+
+  std::stack<FunctionContext> function_stack;
 
   // Deferred function objects to create in global context
   std::vector<std::pair<std::string, int>> pendingFunctions; // name, arity
@@ -47,6 +60,31 @@ public:
   // Helper to create function object from LLVM function
   llvm::Value *createFunctionObject(const std::string &funcName,
                                     llvm::Function *llvmFunc, int arity);
+
+  // Closure support helpers
+  bool isUpvalue(const std::string &name);
+  llvm::Value *createClosureObject(llvm::Function *func,
+                                   const std::vector<std::string> &upvalues);
+  llvm::Value *createDeferredClosure(llvm::Function *func,
+                                     const std::vector<std::string> &upvalues,
+                                     int arity);
+  llvm::Value *createDeferredClosureWithCapturedUpvalues(
+      llvm::Function *func, const std::vector<std::string> &upvalues,
+      const std::unordered_map<std::string, llvm::Value *> &capturedUpvalues,
+      int arity);
+  llvm::Value *accessUpvalue(const std::string &name, int index);
+  llvm::Value *captureUpvalue(const std::string &name);
+
+  // Access to resolver upvalue information
+  const std::unordered_map<const Function *, std::vector<std::string>>
+      *resolver_upvalues;
+
+public:
+  void setResolverUpvalues(
+      const std::unordered_map<const Function *, std::vector<std::string>>
+          *upvalues) {
+    resolver_upvalues = upvalues;
+  }
 
   // Helper to create global function objects outside of function contexts
   void createGlobalFunctionObjects();

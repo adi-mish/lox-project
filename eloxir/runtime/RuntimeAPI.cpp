@@ -61,6 +61,48 @@ static ObjFunction *getFunction(Value v) {
   return func;
 }
 
+static ObjClosure *getClosure(Value v) {
+  if (!v.isObj())
+    return nullptr;
+
+  void *obj_ptr = v.asObj();
+  if (obj_ptr == nullptr)
+    return nullptr;
+
+  // Add bounds checking for the allocated objects
+  if (allocated_objects.find(obj_ptr) == allocated_objects.end()) {
+    std::cerr << "ERROR: Object pointer " << obj_ptr
+              << " not found in allocated objects!" << std::endl;
+    return nullptr;
+  }
+
+  ObjClosure *closure = static_cast<ObjClosure *>(obj_ptr);
+  if (closure->obj.type != ObjType::CLOSURE)
+    return nullptr;
+  return closure;
+}
+
+static ObjUpvalue *getUpvalue(Value v) {
+  if (!v.isObj())
+    return nullptr;
+
+  void *obj_ptr = v.asObj();
+  if (obj_ptr == nullptr)
+    return nullptr;
+
+  // Add bounds checking for the allocated objects
+  if (allocated_objects.find(obj_ptr) == allocated_objects.end()) {
+    std::cerr << "ERROR: Object pointer " << obj_ptr
+              << " not found in allocated objects!" << std::endl;
+    return nullptr;
+  }
+
+  ObjUpvalue *upvalue = static_cast<ObjUpvalue *>(obj_ptr);
+  if (upvalue->obj.type != ObjType::UPVALUE)
+    return nullptr;
+  return upvalue;
+}
+
 uint64_t elx_print(uint64_t bits) {
   Value v = Value::fromBits(bits);
   switch (v.tag()) {
@@ -111,6 +153,19 @@ uint64_t elx_print(uint64_t bits) {
       } else {
         std::cout << "<function>";
       }
+      break;
+    }
+    case ObjType::CLOSURE: {
+      ObjClosure *closure = getClosure(v);
+      if (closure && closure->function && closure->function->name) {
+        std::cout << "<closure " << closure->function->name << ">";
+      } else {
+        std::cout << "<closure>";
+      }
+      break;
+    }
+    case ObjType::UPVALUE: {
+      std::cout << "<upvalue>";
       break;
     }
     default:
@@ -471,6 +526,306 @@ uint64_t elx_call_function(uint64_t func_bits, uint64_t *args, int arg_count) {
     elx_runtime_error("Unknown exception during function call.");
     return Value::nil().getBits();
   }
+}
+
+// Global open upvalues list for proper closure behavior
+static ObjUpvalue *open_upvalues = nullptr;
+
+uint64_t elx_allocate_upvalue(uint64_t *slot) {
+  // Check if we already have an upvalue for this slot
+  ObjUpvalue *prev_upvalue = nullptr;
+  ObjUpvalue *upvalue = open_upvalues;
+
+  while (upvalue != nullptr && upvalue->location > slot) {
+    prev_upvalue = upvalue;
+    upvalue = upvalue->next;
+  }
+
+  if (upvalue != nullptr && upvalue->location == slot) {
+    // Reuse existing upvalue
+    return Value::object(upvalue).getBits();
+  }
+
+  // Create new upvalue
+  ObjUpvalue *created_upvalue =
+      static_cast<ObjUpvalue *>(malloc(sizeof(ObjUpvalue)));
+  if (!created_upvalue) {
+    return Value::nil().getBits();
+  }
+
+  created_upvalue->obj.type = ObjType::UPVALUE;
+  created_upvalue->location = slot;
+  created_upvalue->closed = 0;
+  created_upvalue->next = upvalue;
+
+  // Insert into open upvalues list
+  if (prev_upvalue == nullptr) {
+    open_upvalues = created_upvalue;
+  } else {
+    prev_upvalue->next = created_upvalue;
+  }
+
+  // Track the allocation
+  allocated_objects.insert(created_upvalue);
+
+  return Value::object(created_upvalue).getBits();
+}
+
+uint64_t elx_allocate_closure(uint64_t function_bits, int upvalue_count) {
+  Value func_val = Value::fromBits(function_bits);
+  ObjFunction *function = getFunction(func_val);
+
+  if (!function) {
+    elx_runtime_error("Cannot create closure from non-function.");
+    return Value::nil().getBits();
+  }
+
+  // Allocate closure object with space for upvalue array
+  size_t size = sizeof(ObjClosure) + sizeof(ObjUpvalue *) * upvalue_count;
+  ObjClosure *closure = static_cast<ObjClosure *>(malloc(size));
+  if (!closure) {
+    return Value::nil().getBits();
+  }
+
+  closure->obj.type = ObjType::CLOSURE;
+  closure->function = function;
+  closure->upvalue_count = upvalue_count;
+
+  // Set upvalues array pointer to space after closure struct
+  if (upvalue_count > 0) {
+    closure->upvalues = reinterpret_cast<ObjUpvalue **>(closure + 1);
+    // Initialize to nullptr
+    for (int i = 0; i < upvalue_count; i++) {
+      closure->upvalues[i] = nullptr;
+    }
+  } else {
+    closure->upvalues = nullptr;
+  }
+
+  // Track the allocation
+  allocated_objects.insert(closure);
+
+  return Value::object(closure).getBits();
+}
+
+void elx_set_closure_upvalue(uint64_t closure_bits, int index,
+                             uint64_t upvalue_bits) {
+  Value closure_val = Value::fromBits(closure_bits);
+  ObjClosure *closure = getClosure(closure_val);
+
+  if (!closure) {
+    elx_runtime_error("Cannot set upvalue on non-closure.");
+    return;
+  }
+
+  if (index < 0 || index >= closure->upvalue_count) {
+    elx_runtime_error("Upvalue index out of bounds.");
+    return;
+  }
+
+  Value upvalue_val = Value::fromBits(upvalue_bits);
+  ObjUpvalue *upvalue = getUpvalue(upvalue_val);
+
+  if (!upvalue) {
+    elx_runtime_error("Cannot set non-upvalue as closure upvalue.");
+    return;
+  }
+
+  closure->upvalues[index] = upvalue;
+}
+
+uint64_t elx_get_upvalue_value(uint64_t upvalue_bits) {
+  Value upvalue_val = Value::fromBits(upvalue_bits);
+  ObjUpvalue *upvalue = getUpvalue(upvalue_val);
+
+  if (!upvalue) {
+    elx_runtime_error("Cannot get value from non-upvalue.");
+    return Value::nil().getBits();
+  }
+
+  if (upvalue->location != nullptr) {
+    // Upvalue is still open, return current value
+    return *(upvalue->location);
+  } else {
+    // Upvalue is closed, return stored value
+    return upvalue->closed;
+  }
+}
+
+void elx_set_upvalue_value(uint64_t upvalue_bits, uint64_t value) {
+  Value upvalue_val = Value::fromBits(upvalue_bits);
+  ObjUpvalue *upvalue = getUpvalue(upvalue_val);
+
+  if (!upvalue) {
+    elx_runtime_error("Cannot set value on non-upvalue.");
+    return;
+  }
+
+  if (upvalue->location != nullptr) {
+    // Upvalue is still open, set current value
+    *(upvalue->location) = value;
+  } else {
+    // Upvalue is closed, set stored value
+    upvalue->closed = value;
+  }
+}
+
+void elx_close_upvalues(uint64_t *last_local) {
+  while (open_upvalues != nullptr && open_upvalues->location >= last_local) {
+    ObjUpvalue *upvalue = open_upvalues;
+    upvalue->closed = *(upvalue->location);
+    upvalue->location = nullptr;
+    open_upvalues = upvalue->next;
+  }
+}
+
+uint64_t elx_call_closure(uint64_t closure_bits, uint64_t *args,
+                          int arg_count) {
+  // Clear any previous runtime errors
+  elx_clear_runtime_error();
+
+  Value closure_val = Value::fromBits(closure_bits);
+  ObjClosure *closure = getClosure(closure_val);
+
+  if (!closure) {
+    elx_runtime_error("Can only call functions and closures.");
+    return Value::nil().getBits();
+  }
+
+  ObjFunction *func = closure->function;
+  if (!func) {
+    elx_runtime_error("Closure has no function.");
+    return Value::nil().getBits();
+  }
+
+  if (arg_count != func->arity) {
+    std::string error_msg = "Expected " + std::to_string(func->arity) +
+                            " arguments but got " + std::to_string(arg_count) +
+                            ".";
+    elx_runtime_error(error_msg.c_str());
+    return Value::nil().getBits();
+  }
+
+  // Validate argument count against Lox limit
+  if (arg_count > 255) {
+    std::string error_msg = "Function arity (" + std::to_string(arg_count) +
+                            ") exceeds Lox limit of 255 parameters.";
+    elx_runtime_error(error_msg.c_str());
+    return Value::nil().getBits();
+  }
+
+  if (!func->llvm_function) {
+    elx_runtime_error("Closure function has no implementation.");
+    return Value::nil().getBits();
+  }
+
+  // Create upvalue array for function call
+  uint64_t *upvalue_args = nullptr;
+  if (closure->upvalue_count > 0) {
+    upvalue_args = static_cast<uint64_t *>(
+        malloc(sizeof(uint64_t) * closure->upvalue_count));
+    if (!upvalue_args) {
+      elx_runtime_error("Failed to allocate upvalue arguments.");
+      return Value::nil().getBits();
+    }
+
+    // Get current values of all upvalues
+    for (int i = 0; i < closure->upvalue_count; i++) {
+      if (closure->upvalues[i] != nullptr) {
+        upvalue_args[i] = elx_get_upvalue_value(
+            Value::object(closure->upvalues[i]).getBits());
+      } else {
+        upvalue_args[i] = Value::nil().getBits();
+      }
+    }
+  }
+
+  try {
+    uint64_t result;
+    // Call function with original args plus upvalues
+    // For now, support simple case - we'll need to extend this based on calling
+    // convention
+    switch (arg_count) {
+    case 0: {
+      if (closure->upvalue_count == 0) {
+        typedef uint64_t (*FunctionPtr0)();
+        FunctionPtr0 fn = reinterpret_cast<FunctionPtr0>(func->llvm_function);
+        result = fn();
+      } else {
+        typedef uint64_t (*FunctionPtrUpvalue0)(uint64_t *);
+        FunctionPtrUpvalue0 fn =
+            reinterpret_cast<FunctionPtrUpvalue0>(func->llvm_function);
+        result = fn(upvalue_args);
+      }
+      break;
+    }
+    case 1: {
+      if (closure->upvalue_count == 0) {
+        typedef uint64_t (*FunctionPtr1)(uint64_t);
+        FunctionPtr1 fn = reinterpret_cast<FunctionPtr1>(func->llvm_function);
+        result = fn(args[0]);
+      } else {
+        typedef uint64_t (*FunctionPtrUpvalue1)(uint64_t, uint64_t *);
+        FunctionPtrUpvalue1 fn =
+            reinterpret_cast<FunctionPtrUpvalue1>(func->llvm_function);
+        result = fn(args[0], upvalue_args);
+      }
+      break;
+    }
+    case 2: {
+      if (closure->upvalue_count == 0) {
+        typedef uint64_t (*FunctionPtr2)(uint64_t, uint64_t);
+        FunctionPtr2 fn = reinterpret_cast<FunctionPtr2>(func->llvm_function);
+        result = fn(args[0], args[1]);
+      } else {
+        typedef uint64_t (*FunctionPtrUpvalue2)(uint64_t, uint64_t, uint64_t *);
+        FunctionPtrUpvalue2 fn =
+            reinterpret_cast<FunctionPtrUpvalue2>(func->llvm_function);
+        result = fn(args[0], args[1], upvalue_args);
+      }
+      break;
+    }
+    default: {
+      // For now, just support simple functions
+      std::string error_msg = "Closures with " + std::to_string(arg_count) +
+                              " arguments are not yet fully supported.";
+      elx_runtime_error(error_msg.c_str());
+      result = Value::nil().getBits();
+    }
+    }
+
+    if (upvalue_args) {
+      free(upvalue_args);
+    }
+    return result;
+
+  } catch (const std::exception &e) {
+    if (upvalue_args) {
+      free(upvalue_args);
+    }
+    std::string error_msg =
+        "Exception during closure call: " + std::string(e.what());
+    elx_runtime_error(error_msg.c_str());
+    return Value::nil().getBits();
+  } catch (...) {
+    if (upvalue_args) {
+      free(upvalue_args);
+    }
+    elx_runtime_error("Unknown exception during closure call.");
+    return Value::nil().getBits();
+  }
+}
+
+int elx_is_function(uint64_t value_bits) {
+  Value v = Value::fromBits(value_bits);
+  ObjFunction *func = getFunction(v);
+  return func != nullptr ? 1 : 0;
+}
+
+int elx_is_closure(uint64_t value_bits) {
+  Value v = Value::fromBits(value_bits);
+  ObjClosure *closure = getClosure(v);
+  return closure != nullptr ? 1 : 0;
 }
 
 void elx_cleanup_all_objects() {

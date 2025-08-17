@@ -14,7 +14,7 @@ static constexpr uint64_t MASK_TAG = 0x7ULL << 48;
 
 CodeGenVisitor::CodeGenVisitor(llvm::Module &m)
     : builder(m.getContext()), ctx(m.getContext()), mod(m), value(nullptr),
-      currentFunction(nullptr) {
+      currentFunction(nullptr), resolver_upvalues(nullptr) {
   // Declare external runtime fns
   llvm::FunctionType *printFnTy =
       llvm::FunctionType::get(llvmValueTy(), {llvmValueTy()}, false);
@@ -56,6 +56,40 @@ CodeGenVisitor::CodeGenVisitor(llvm::Module &m)
        llvm::Type::getInt32Ty(ctx)},
       false);
   mod.getOrInsertFunction("elx_call_function", callFuncTy);
+
+  // Closure and upvalue functions
+  llvm::FunctionType *allocUpvalueTy = llvm::FunctionType::get(
+      llvmValueTy(), {llvm::PointerType::get(llvmValueTy(), 0)}, false);
+  mod.getOrInsertFunction("elx_allocate_upvalue", allocUpvalueTy);
+
+  llvm::FunctionType *allocClosureTy = llvm::FunctionType::get(
+      llvmValueTy(), {llvmValueTy(), llvm::Type::getInt32Ty(ctx)}, false);
+  mod.getOrInsertFunction("elx_allocate_closure", allocClosureTy);
+
+  llvm::FunctionType *setClosureUpvalueTy = llvm::FunctionType::get(
+      llvm::Type::getVoidTy(ctx),
+      {llvmValueTy(), llvm::Type::getInt32Ty(ctx), llvmValueTy()}, false);
+  mod.getOrInsertFunction("elx_set_closure_upvalue", setClosureUpvalueTy);
+
+  llvm::FunctionType *getUpvalueValueTy =
+      llvm::FunctionType::get(llvmValueTy(), {llvmValueTy()}, false);
+  mod.getOrInsertFunction("elx_get_upvalue_value", getUpvalueValueTy);
+
+  llvm::FunctionType *setUpvalueValueTy = llvm::FunctionType::get(
+      llvm::Type::getVoidTy(ctx), {llvmValueTy(), llvmValueTy()}, false);
+  mod.getOrInsertFunction("elx_set_upvalue_value", setUpvalueValueTy);
+
+  llvm::FunctionType *closeUpvaluesTy = llvm::FunctionType::get(
+      llvm::Type::getVoidTy(ctx), {llvm::PointerType::get(llvmValueTy(), 0)},
+      false);
+  mod.getOrInsertFunction("elx_close_upvalues", closeUpvaluesTy);
+
+  llvm::FunctionType *callClosureTy = llvm::FunctionType::get(
+      llvmValueTy(),
+      {llvmValueTy(), llvm::PointerType::get(llvmValueTy(), 0),
+       llvm::Type::getInt32Ty(ctx)},
+      false);
+  mod.getOrInsertFunction("elx_call_closure", callClosureTy);
 
   // Global built-ins functions
   llvm::FunctionType *getBuiltinTy = llvm::FunctionType::get(
@@ -599,6 +633,19 @@ void CodeGenVisitor::visitVariableExpr(Variable *e) {
     return;
   }
 
+  // Check if this is an upvalue
+  if (isUpvalue(varName)) {
+    if (!function_stack.empty()) {
+      const FunctionContext &current_ctx = function_stack.top();
+      auto upvalue_it = current_ctx.upvalue_indices.find(varName);
+      if (upvalue_it != current_ctx.upvalue_indices.end()) {
+        int upvalue_index = upvalue_it->second;
+        value = accessUpvalue(varName, upvalue_index);
+        return;
+      }
+    }
+  }
+
   // Check globals (current module scope)
   auto globalIt = globals.find(varName);
   if (globalIt != globals.end()) {
@@ -813,8 +860,7 @@ void CodeGenVisitor::visitAssignExpr(Assign *e) {
 
     // Assign to global variable
     builder.SetInsertPoint(assignGlobalBB);
-    builder.CreateCall(setGlobalVarFn, {nameStr, assignValue},
-                       "set_global_var");
+    builder.CreateCall(setGlobalVarFn, {nameStr, assignValue});
     builder.CreateBr(contBB);
 
     // Variable not found - error
@@ -898,24 +944,25 @@ void CodeGenVisitor::visitCallExpr(Call *e) {
     args.push_back(value);
   }
 
-  // Create an array to pass arguments to runtime function
-  llvm::Function *callFn = mod.getFunction("elx_call_function");
-  if (!callFn) {
+  // Get runtime functions
+  llvm::Function *callFuncFn = mod.getFunction("elx_call_function");
+  llvm::Function *callClosureFn = mod.getFunction("elx_call_closure");
+  llvm::Function *isClosureFn = mod.getFunction("elx_is_closure");
+  llvm::Function *isFunctionFn = mod.getFunction("elx_is_function");
+
+  if (!callFuncFn || !callClosureFn) {
     value = nilConst();
     return;
   }
 
-  if (args.empty()) {
-    // No arguments case
-    llvm::Value *nullPtr = llvm::ConstantPointerNull::get(
-        llvm::PointerType::get(llvmValueTy(), 0));
-    llvm::Value *argCount =
-        llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0);
-    value = builder.CreateCall(callFn, {callee, nullPtr, argCount});
-    checkRuntimeError(value);
-  } else {
+  // Create arguments array
+  llvm::Value *argArray = nullptr;
+  llvm::Value *argCount =
+      llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), args.size());
+
+  if (!args.empty()) {
     // Create an array on the stack for arguments
-    llvm::Value *argArray = builder.CreateAlloca(
+    argArray = builder.CreateAlloca(
         llvmValueTy(),
         llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), args.size()),
         "args");
@@ -926,12 +973,85 @@ void CodeGenVisitor::visitCallExpr(Call *e) {
       llvm::Value *elemPtr = builder.CreateGEP(llvmValueTy(), argArray, idx);
       builder.CreateStore(args[i], elemPtr);
     }
-
-    llvm::Value *argCount =
-        llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), args.size());
-    value = builder.CreateCall(callFn, {callee, argArray, argCount});
-    checkRuntimeError(value);
+  } else {
+    // No arguments case
+    argArray = llvm::ConstantPointerNull::get(
+        llvm::PointerType::get(llvmValueTy(), 0));
   }
+
+  // Determine call type based on callee type
+  auto fn = builder.GetInsertBlock()->getParent();
+  auto checkClosureBB = llvm::BasicBlock::Create(ctx, "check_closure", fn);
+  auto callClosureBB = llvm::BasicBlock::Create(ctx, "call_closure", fn);
+  auto checkFunctionBB = llvm::BasicBlock::Create(ctx, "check_function", fn);
+  auto callFunctionBB = llvm::BasicBlock::Create(ctx, "call_function", fn);
+  auto errorBB = llvm::BasicBlock::Create(ctx, "call_error", fn);
+  auto contBB = llvm::BasicBlock::Create(ctx, "cont", fn);
+
+  // First check if it's a closure
+  builder.CreateBr(checkClosureBB);
+
+  // Check closure
+  builder.SetInsertPoint(checkClosureBB);
+  llvm::Value *isClosureResult = nullptr;
+  if (isClosureFn) {
+    isClosureResult = builder.CreateCall(isClosureFn, {callee}, "is_closure");
+    auto zero = llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0);
+    auto isClosureBool =
+        builder.CreateICmpNE(isClosureResult, zero, "closure_check");
+    builder.CreateCondBr(isClosureBool, callClosureBB, checkFunctionBB);
+  } else {
+    // No type checking available, proceed to function check
+    builder.CreateBr(checkFunctionBB);
+  }
+
+  // Call as closure
+  builder.SetInsertPoint(callClosureBB);
+  llvm::Value *closureResult =
+      builder.CreateCall(callClosureFn, {callee, argArray, argCount});
+  builder.CreateBr(contBB);
+
+  // Check function
+  builder.SetInsertPoint(checkFunctionBB);
+  llvm::Value *isFunctionResult = nullptr;
+  if (isFunctionFn) {
+    isFunctionResult =
+        builder.CreateCall(isFunctionFn, {callee}, "is_function");
+    auto zero = llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0);
+    auto isFunctionBool =
+        builder.CreateICmpNE(isFunctionResult, zero, "function_check");
+    builder.CreateCondBr(isFunctionBool, callFunctionBB, errorBB);
+  } else {
+    // No type checking available, try function call anyway
+    builder.CreateBr(callFunctionBB);
+  }
+
+  // Call as function
+  builder.SetInsertPoint(callFunctionBB);
+  llvm::Value *funcResult =
+      builder.CreateCall(callFuncFn, {callee, argArray, argCount});
+  builder.CreateBr(contBB);
+
+  // Error case
+  builder.SetInsertPoint(errorBB);
+  llvm::Function *errorFn = mod.getFunction("elx_runtime_error");
+  if (errorFn) {
+    auto errorMsg = builder.CreateGlobalStringPtr(
+        "Can only call functions and closures.", "call_error_msg");
+    builder.CreateCall(errorFn, {errorMsg});
+  }
+  llvm::Value *errorResult = nilConst();
+  builder.CreateBr(contBB);
+
+  // Merge results
+  builder.SetInsertPoint(contBB);
+  auto phi = builder.CreatePHI(llvmValueTy(), 3, "call_result");
+  phi->addIncoming(closureResult, callClosureBB);
+  phi->addIncoming(funcResult, callFunctionBB);
+  phi->addIncoming(errorResult, errorBB);
+
+  value = phi;
+  checkRuntimeError(value);
 }
 
 // --------- Stmt visitors -------------------------------------------------
@@ -1101,6 +1221,13 @@ void CodeGenVisitor::declareFunctionSignature(Function *s) {
     return;
   }
 
+  // Get upvalues for this function from resolver
+  std::vector<std::string> upvalues;
+  if (resolver_upvalues &&
+      resolver_upvalues->find(s) != resolver_upvalues->end()) {
+    upvalues = resolver_upvalues->at(s);
+  }
+
   // Make function names unique to avoid JIT symbol conflicts
   static int functionCounter = 0;
   std::string funcName =
@@ -1108,6 +1235,13 @@ void CodeGenVisitor::declareFunctionSignature(Function *s) {
 
   // Create function type (all parameters and return value are Value types)
   std::vector<llvm::Type *> paramTypes(arity, llvmValueTy());
+
+  // Add upvalue array parameter if needed
+  if (!upvalues.empty()) {
+    paramTypes.push_back(
+        llvm::PointerType::get(llvmValueTy(), 0)); // upvalue array
+  }
+
   llvm::FunctionType *funcType =
       llvm::FunctionType::get(llvmValueTy(), paramTypes, false);
 
@@ -1216,6 +1350,13 @@ void CodeGenVisitor::createGlobalFunctionObjects() {
 void CodeGenVisitor::visitFunctionStmt(Function *s) {
   const std::string &baseFuncName = s->name.getLexeme();
 
+  // Get upvalues for this function from resolver
+  std::vector<std::string> upvalues;
+  if (resolver_upvalues &&
+      resolver_upvalues->find(s) != resolver_upvalues->end()) {
+    upvalues = resolver_upvalues->at(s);
+  }
+
   // Get the already-declared function (from declareFunctionSignature)
   auto it = functions.find(baseFuncName);
   llvm::Function *llvmFunc;
@@ -1225,14 +1366,20 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
     llvmFunc = it->second;
   } else {
     // Fallback: declare it now (for cases where visitFunctionStmt is called
-    // directly)
+    // directly) - need to modify signature for upvalues
     declareFunctionSignature(s);
     llvmFunc = functions[baseFuncName];
   }
 
   // Skip if function body is already defined
   if (!llvmFunc->empty()) {
-    value = nilConst();
+    // Create closure object instead of just nil
+    if (upvalues.empty()) {
+      value = createFunctionObject(baseFuncName, llvmFunc,
+                                   static_cast<int>(s->params.size()));
+    } else {
+      value = createClosureObject(llvmFunc, upvalues);
+    }
     return;
   }
 
@@ -1242,13 +1389,26 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
   auto prevDirectValues = directValues;
   llvm::BasicBlock *prevBB = builder.GetInsertBlock();
 
-  // Set up new function context
+  // Create new function context for closure support but DON'T switch yet
+  FunctionContext funcCtx;
+  funcCtx.llvm_function = llvmFunc;
+  funcCtx.upvalues = upvalues;
+  for (int i = 0; i < static_cast<int>(upvalues.size()); i++) {
+    funcCtx.upvalue_indices[upvalues[i]] = i;
+  }
+
+  // Set up the function signature to understand upvalue parameter
+  // but don't switch contexts yet
+  auto tempLocals = locals; // Save current locals
+  auto tempDirectValues = directValues;
+
   currentFunction = llvmFunc;
   locals.clear();
   directValues.clear();
 
-  // Create entry block and set up parameters
+  // Create entry block and set up parameters - but keep old locals for capture
   llvm::BasicBlock *entryBB = llvm::BasicBlock::Create(ctx, "entry", llvmFunc);
+  auto oldInsertPoint = builder.GetInsertBlock();
   builder.SetInsertPoint(entryBB);
 
   // Add parameters to local scope as direct values
@@ -1259,6 +1419,45 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
     locals[paramName] = &*argIt;
     directValues.insert(paramName); // Mark as direct value (no alloca needed)
   }
+
+  // Set up upvalue array parameter if needed
+  if (!upvalues.empty() && argIt != llvmFunc->arg_end()) {
+    argIt->setName("upvalues");
+    funcCtx.upvalue_array = &*argIt;
+  }
+
+  // Restore old insert point and locals temporarily for closure creation
+  builder.SetInsertPoint(oldInsertPoint);
+  locals = tempLocals;
+  directValues = tempDirectValues;
+
+  // Create closure while we still have access to outer scope
+  llvm::Value *closureValue;
+  if (!upvalues.empty()) {
+    closureValue = createDeferredClosure(llvmFunc, upvalues,
+                                         static_cast<int>(s->params.size()));
+  }
+
+  // Now fully switch to function context
+  currentFunction = llvmFunc;
+  locals.clear();
+  directValues.clear();
+  builder.SetInsertPoint(entryBB);
+
+  // Re-add parameters to local scope
+  argIt = llvmFunc->arg_begin();
+  for (size_t i = 0; i < s->params.size(); ++i, ++argIt) {
+    const std::string &paramName = s->params[i].getLexeme();
+    locals[paramName] = &*argIt;
+    directValues.insert(paramName);
+  }
+
+  // Set up upvalue array parameter if needed
+  if (!upvalues.empty() && argIt != llvmFunc->arg_end()) {
+    funcCtx.upvalue_array = &*argIt;
+  }
+
+  function_stack.push(funcCtx);
 
   // Generate function body
   try {
@@ -1274,6 +1473,7 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
     // Clean up and restore state
     llvmFunc->eraseFromParent();
     functions.erase(baseFuncName); // Remove from functions map
+    function_stack.pop();
     currentFunction = prevFunction;
     locals = std::move(prevLocals);
     directValues = std::move(prevDirectValues);
@@ -1292,6 +1492,7 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
     // Remove from functions map since verification failed
     functions.erase(baseFuncName);
     // Restore state
+    function_stack.pop();
     currentFunction = prevFunction;
     locals = std::move(prevLocals);
     directValues = std::move(prevDirectValues);
@@ -1306,6 +1507,7 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
   // No need to add it again
 
   // Restore previous state BEFORE working with function objects
+  function_stack.pop();
   currentFunction = prevFunction;
   locals = std::move(prevLocals);
   directValues = std::move(prevDirectValues);
@@ -1313,11 +1515,16 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
     builder.SetInsertPoint(prevBB);
   }
 
-  // Mark this function as pending for object creation
-  pendingFunctions.push_back(
-      {baseFuncName, static_cast<int>(s->params.size())});
-
-  value = nilConst();
+  // Create closure object or function object
+  if (upvalues.empty()) {
+    // Mark this function as pending for object creation
+    pendingFunctions.push_back(
+        {baseFuncName, static_cast<int>(s->params.size())});
+    value = nilConst();
+  } else {
+    // Use the pre-created closure value
+    value = closureValue;
+  }
 }
 void CodeGenVisitor::visitReturnStmt(Return *s) {
   if (s->value) {
@@ -1358,6 +1565,246 @@ void CodeGenVisitor::checkRuntimeError(llvm::Value *returnValue) {
     // For void operations, just check but don't change value
     // The error will be caught at the REPL level
   }
+}
+
+bool CodeGenVisitor::isUpvalue(const std::string &name) {
+  if (function_stack.empty()) {
+    return false;
+  }
+
+  const FunctionContext &current_ctx = function_stack.top();
+  return current_ctx.upvalue_indices.find(name) !=
+         current_ctx.upvalue_indices.end();
+}
+
+llvm::Value *
+CodeGenVisitor::createClosureObject(llvm::Function *func,
+                                    const std::vector<std::string> &upvalues) {
+  // 1. Create function object
+  auto func_obj = createFunctionObject(
+      "", func, func->arg_size() - (upvalues.empty() ? 0 : 1));
+
+  // 2. Allocate closure with upvalue slots
+  auto alloc_closure_fn = mod.getFunction("elx_allocate_closure");
+  auto upvalue_count =
+      llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), upvalues.size());
+  auto closure_obj =
+      builder.CreateCall(alloc_closure_fn, {func_obj, upvalue_count});
+
+  // 3. Capture each upvalue
+  for (int i = 0; i < static_cast<int>(upvalues.size()); i++) {
+    auto upvalue_value = captureUpvalue(upvalues[i]);
+    auto set_upvalue_fn = mod.getFunction("elx_set_closure_upvalue");
+    auto index = llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), i);
+    builder.CreateCall(set_upvalue_fn, {closure_obj, index, upvalue_value});
+  }
+
+  return closure_obj;
+}
+
+llvm::Value *CodeGenVisitor::createDeferredClosureWithCapturedUpvalues(
+    llvm::Function *func, const std::vector<std::string> &upvalues,
+    const std::unordered_map<std::string, llvm::Value *> &capturedUpvalues,
+    int arity) {
+  // Use the existing runtime API for closure creation with pre-captured upvalue
+  // values
+
+  // Build function object first
+  int llvm_arity = arity + (upvalues.empty() ? 0 : 1);
+
+  auto nameStr = builder.CreateGlobalStringPtr("", "fname");
+  auto arityConst =
+      llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), llvm_arity);
+  auto funcPtr = builder.CreateBitCast(
+      func, llvm::PointerType::get(llvm::Type::getInt8Ty(ctx), 0));
+
+  auto allocFn = mod.getFunction("elx_allocate_function");
+  auto func_obj = builder.CreateCall(allocFn, {nameStr, arityConst, funcPtr});
+
+  // Allocate closure with upvalue slots
+  auto alloc_closure_fn = mod.getFunction("elx_allocate_closure");
+  auto upvalue_count =
+      llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), upvalues.size());
+  auto closure_obj =
+      builder.CreateCall(alloc_closure_fn, {func_obj, upvalue_count});
+
+  // Set each upvalue using pre-captured values
+  for (int i = 0; i < static_cast<int>(upvalues.size()); i++) {
+    llvm::Value *upvalue_value;
+
+    // Use pre-captured upvalue if available
+    auto it = capturedUpvalues.find(upvalues[i]);
+    if (it != capturedUpvalues.end()) {
+      upvalue_value =
+          it->second; // This is already an upvalue object from captureUpvalue
+    } else {
+      // Fallback - this shouldn't happen if called correctly
+      upvalue_value = captureUpvalue(upvalues[i]);
+    }
+
+    auto set_upvalue_fn = mod.getFunction("elx_set_closure_upvalue");
+    auto index = llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), i);
+    builder.CreateCall(set_upvalue_fn, {closure_obj, index, upvalue_value});
+  }
+
+  return closure_obj;
+}
+
+llvm::Value *CodeGenVisitor::createDeferredClosure(
+    llvm::Function *func, const std::vector<std::string> &upvalues, int arity) {
+  // Create the function object using the actual LLVM function arity
+  // (which includes the upvalue array parameter if upvalues exist)
+  int llvm_arity = arity + (upvalues.empty() ? 0 : 1);
+
+  auto nameStr = builder.CreateGlobalStringPtr("", "fname");
+  auto arityConst =
+      llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), llvm_arity);
+  auto funcPtr = builder.CreateBitCast(
+      func, llvm::PointerType::get(llvm::Type::getInt8Ty(ctx), 0));
+
+  auto allocFn = mod.getFunction("elx_allocate_function");
+  // Fix parameter order: name, arity, function_pointer
+  auto func_obj = builder.CreateCall(allocFn, {nameStr, arityConst, funcPtr});
+
+  // Allocate closure with upvalue slots
+  auto alloc_closure_fn = mod.getFunction("elx_allocate_closure");
+  auto upvalue_count =
+      llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), upvalues.size());
+  auto closure_obj =
+      builder.CreateCall(alloc_closure_fn, {func_obj, upvalue_count});
+
+  // Capture each upvalue
+  for (int i = 0; i < static_cast<int>(upvalues.size()); i++) {
+    auto upvalue_value = captureUpvalue(upvalues[i]);
+    auto set_upvalue_fn = mod.getFunction("elx_set_closure_upvalue");
+    auto index = llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), i);
+    builder.CreateCall(set_upvalue_fn, {closure_obj, index, upvalue_value});
+  }
+
+  return closure_obj;
+}
+
+llvm::Value *CodeGenVisitor::accessUpvalue(const std::string &name, int index) {
+  if (function_stack.empty()) {
+    return nilConst();
+  }
+
+  const FunctionContext &current_ctx = function_stack.top();
+  if (!current_ctx.upvalue_array) {
+    return nilConst();
+  }
+
+  // The upvalue array contains VALUES (extracted by runtime), not upvalue
+  // objects Load specific upvalue value: upvalue_array[index]
+  auto index_val = llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), index);
+  auto upvalue_ptr =
+      builder.CreateGEP(llvmValueTy(), current_ctx.upvalue_array, index_val);
+  auto upvalue_value = builder.CreateLoad(llvmValueTy(), upvalue_ptr);
+
+  // Return the value directly
+  return upvalue_value;
+}
+
+llvm::Value *CodeGenVisitor::captureUpvalue(const std::string &name) {
+  auto alloc_upvalue_fn = mod.getFunction("elx_allocate_upvalue");
+
+  // Declare malloc function if not already available (used in multiple places)
+  llvm::Function *mallocFn = mod.getFunction("malloc");
+  if (!mallocFn) {
+    llvm::FunctionType *mallocType = llvm::FunctionType::get(
+        llvm::PointerType::get(llvm::Type::getInt8Ty(ctx), 0),
+        {llvm::Type::getInt64Ty(ctx)}, false);
+    mallocFn = llvm::Function::Create(
+        mallocType, llvm::Function::ExternalLinkage, "malloc", &mod);
+  }
+
+  // When creating a closure, we need to capture variables from the CURRENT
+  // scope (the enclosing scope where the closure is being created), not from
+  // the function being compiled.
+
+  // Check if the variable exists in the current local scope
+  if (locals.find(name) != locals.end()) {
+    auto var_alloca = locals[name];
+
+    // For both local variables and parameters, we need to create persistent
+    // heap storage to avoid dangling pointer issues when the scope exits
+    llvm::Value *current_value;
+
+    if (directValues.find(name) == directValues.end()) {
+      // This is a local variable (alloca), load the current value
+      current_value =
+          builder.CreateLoad(llvmValueTy(), var_alloca, name.c_str());
+    } else {
+      // This is a direct value (function parameter), use it directly
+      current_value = var_alloca;
+    }
+
+    // Create persistent heap storage for the value
+    auto size = llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx), 8);
+    auto heap_ptr = builder.CreateCall(mallocFn, {size});
+    auto value_ptr = builder.CreateBitCast(
+        heap_ptr, llvm::PointerType::get(llvmValueTy(), 0));
+
+    // Store the current value in the heap location
+    builder.CreateStore(current_value, value_ptr);
+
+    // Create upvalue pointing to the heap location
+    return builder.CreateCall(alloc_upvalue_fn, {value_ptr});
+  }
+
+  // Check if it's an upvalue in the current function context
+  if (!function_stack.empty()) {
+    const FunctionContext &current_ctx = function_stack.top();
+    auto upvalue_it = current_ctx.upvalue_indices.find(name);
+    if (upvalue_it != current_ctx.upvalue_indices.end() &&
+        current_ctx.upvalue_array) {
+      // Access upvalue from current function's upvalue array
+      int index = upvalue_it->second;
+      auto index_val =
+          llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), index);
+
+      // Get the current value from the upvalue array
+      auto upvalue_ptr = builder.CreateGEP(
+          llvmValueTy(), current_ctx.upvalue_array, index_val);
+      auto upvalue_value = builder.CreateLoad(llvmValueTy(), upvalue_ptr);
+
+      // Create heap storage for this value
+      auto size = llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx), 8);
+      auto heap_ptr = builder.CreateCall(mallocFn, {size});
+      auto value_ptr = builder.CreateBitCast(
+          heap_ptr, llvm::PointerType::get(llvmValueTy(), 0));
+
+      // Store the current value in the heap location
+      builder.CreateStore(upvalue_value, value_ptr);
+
+      // Create upvalue pointing to the heap location
+      return builder.CreateCall(alloc_upvalue_fn, {value_ptr});
+    }
+  }
+
+  // Check if it's a global variable
+  if (globals.find(name) != globals.end()) {
+    auto global_value = globals[name];
+
+    // For global variables, we also need to create persistent storage
+    // since globals[name] contains the value, not a pointer to storage
+    auto size = llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx), 8);
+    auto heap_ptr = builder.CreateCall(mallocFn, {size});
+    auto value_ptr = builder.CreateBitCast(
+        heap_ptr, llvm::PointerType::get(llvmValueTy(), 0));
+
+    // Store the global value in the heap location
+    builder.CreateStore(global_value, value_ptr);
+
+    // Create upvalue pointing to the heap location
+    return builder.CreateCall(alloc_upvalue_fn, {value_ptr});
+  }
+
+  // Variable not found - create a null upvalue (should not happen with correct
+  // resolver)
+  auto null_ptr =
+      llvm::ConstantPointerNull::get(llvm::PointerType::get(llvmValueTy(), 0));
+  return builder.CreateCall(alloc_upvalue_fn, {null_ptr});
 }
 
 } // namespace eloxir

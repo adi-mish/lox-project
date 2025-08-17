@@ -1,5 +1,6 @@
 #include "../codegen/CodeGenVisitor.h"
 #include "../frontend/Parser.h"
+#include "../frontend/Resolver.h"
 #include "../frontend/Scanner.h"
 #include "../jit/EloxirJIT.h"
 #include "../runtime/RuntimeAPI.h"
@@ -60,6 +61,15 @@ void runFile(const std::string &filename) {
     return; // Empty file
   }
 
+  // Resolve variables and analyze upvalues
+  eloxir::Resolver resolver;
+  try {
+    resolver.resolve(stmts);
+  } catch (const std::runtime_error &e) {
+    std::cerr << "Resolution error: " << e.what() << '\n';
+    return;
+  }
+
   // Clear any previous runtime errors
   elx_clear_runtime_error();
 
@@ -70,6 +80,9 @@ void runFile(const std::string &filename) {
     LLVMContext fileCtx;
     auto fileMod = std::make_unique<Module>("file_module", fileCtx);
     eloxir::CodeGenVisitor fileCG(*fileMod);
+
+    // Pass resolver upvalue information to code generator
+    fileCG.setResolverUpvalues(&resolver.function_upvalues);
 
     // Create main function
     auto fnTy = FunctionType::get(fileCG.llvmValueTy(), {}, false);
@@ -179,11 +192,26 @@ void runREPL() {
     if (!exprAST)
       continue;
 
+    // Resolve the statement
+    eloxir::Resolver resolver;
+    try {
+      std::vector<std::unique_ptr<eloxir::Stmt>> stmts;
+      stmts.push_back(std::move(exprAST));
+      resolver.resolve(stmts);
+      exprAST = std::move(stmts[0]);
+    } catch (const std::runtime_error &e) {
+      std::cerr << "Resolution error: " << e.what() << '\n';
+      continue;
+    }
+
     try {
       // Create a new context and module for each line
       LLVMContext lineCtx;
       auto lineMod = std::make_unique<Module>("repl_line", lineCtx);
       eloxir::CodeGenVisitor lineCG(*lineMod);
+
+      // Pass resolver upvalue information to code generator
+      lineCG.setResolverUpvalues(&resolver.function_upvalues);
 
       // wrap in unique function name to avoid duplicates
       std::string fnName = "__expr" + std::to_string(lineCount++);
