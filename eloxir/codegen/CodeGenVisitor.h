@@ -61,6 +61,11 @@ public:
   llvm::Value *createFunctionObject(const std::string &funcName,
                                     llvm::Function *llvmFunc, int arity);
 
+  // Helper to create function object immediately (works in nested contexts)
+  llvm::Value *createFunctionObjectImmediate(const std::string &funcName,
+                                             llvm::Function *llvmFunc,
+                                             int arity);
+
   // Closure support helpers
   bool isUpvalue(const std::string &name);
   llvm::Value *createClosureObject(llvm::Function *func,

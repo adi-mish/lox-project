@@ -837,6 +837,33 @@ void CodeGenVisitor::visitAssignExpr(Assign *e) {
       directValues.erase(varName);
     }
     builder.CreateStore(assignValue, localIt->second);
+
+    // Also check if this is a global variable and update the persistent global
+    // system
+    auto hasGlobalVarFn = mod.getFunction("elx_has_global_variable");
+    auto setGlobalVarFn = mod.getFunction("elx_set_global_variable");
+    if (hasGlobalVarFn && setGlobalVarFn) {
+      auto nameStr = builder.CreateGlobalStringPtr(varName, "var_name");
+      auto hasVar =
+          builder.CreateCall(hasGlobalVarFn, {nameStr}, "has_global_var");
+      auto hasVarBool =
+          builder.CreateICmpNE(hasVar, builder.getInt32(0), "has_var_bool");
+
+      auto fn = builder.GetInsertBlock()->getParent();
+      auto updateGlobalBB = llvm::BasicBlock::Create(ctx, "update_global", fn);
+      auto contBB = llvm::BasicBlock::Create(ctx, "cont", fn);
+
+      builder.CreateCondBr(hasVarBool, updateGlobalBB, contBB);
+
+      // Update global variable
+      builder.SetInsertPoint(updateGlobalBB);
+      builder.CreateCall(setGlobalVarFn, {nameStr, assignValue});
+      builder.CreateBr(contBB);
+
+      // Continue
+      builder.SetInsertPoint(contBB);
+    }
+
     value = assignValue; // Assignment returns the assigned value
     return;
   }
@@ -1542,10 +1569,30 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
 
   // Create closure object or function object
   if (upvalues.empty()) {
-    // Mark this function as pending for object creation
-    pendingFunctions.push_back(
-        {baseFuncName, static_cast<int>(s->params.size())});
-    value = nilConst();
+    // If we're in a nested context (currentFunction != nullptr after restore),
+    // create function object immediately. Otherwise defer to global creation.
+    if (prevFunction != nullptr) {
+      // We're in a nested function context - create function object immediately
+      auto nameStr = builder.CreateGlobalStringPtr(baseFuncName, "fname");
+      auto arityConst = llvm::ConstantInt::get(
+          llvm::Type::getInt32Ty(ctx), static_cast<int>(s->params.size()));
+      auto funcPtr = builder.CreateBitCast(
+          llvmFunc, llvm::PointerType::get(llvm::Type::getInt8Ty(ctx), 0));
+
+      auto allocFn = mod.getFunction("elx_allocate_function");
+      if (!allocFn) {
+        std::cerr << "    Error: elx_allocate_function not found\n";
+        value = nilConst();
+      } else {
+        value = builder.CreateCall(allocFn, {nameStr, arityConst, funcPtr},
+                                   "funcobj");
+      }
+    } else {
+      // We're at global scope - use deferred creation
+      pendingFunctions.push_back(
+          {baseFuncName, static_cast<int>(s->params.size())});
+      value = nilConst();
+    }
   } else {
     // Use the pre-created closure value
     value = closureValue;
