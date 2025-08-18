@@ -630,7 +630,17 @@ void CodeGenVisitor::visitUnaryExpr(Unary *e) {
 void CodeGenVisitor::visitVariableExpr(Variable *e) {
   const std::string &varName = e->name.getLexeme();
 
-  // Check locals first (for local variables including block-scoped ones)
+  // For global variables, check the persistent global system FIRST
+  if (globalVariables.count(varName)) {
+    auto getGlobalVarFn = mod.getFunction("elx_get_global_variable");
+    if (getGlobalVarFn) {
+      auto nameStr = builder.CreateGlobalStringPtr(varName, "var_name");
+      value = builder.CreateCall(getGlobalVarFn, {nameStr}, "global_var");
+      return;
+    }
+  }
+
+  // Check locals (for local variables including block-scoped ones)
   auto it = locals.find(varName);
   if (it != locals.end()) {
     // Check if this is a direct value (like a parameter) or needs to be loaded
@@ -640,16 +650,6 @@ void CodeGenVisitor::visitVariableExpr(Variable *e) {
       value = builder.CreateLoad(llvmValueTy(), it->second, varName.c_str());
     }
     return;
-  }
-
-  // For global variables, check the persistent global system
-  if (globalVariables.count(varName)) {
-    auto getGlobalVarFn = mod.getFunction("elx_get_global_variable");
-    if (getGlobalVarFn) {
-      auto nameStr = builder.CreateGlobalStringPtr(varName, "var_name");
-      value = builder.CreateCall(getGlobalVarFn, {nameStr}, "global_var");
-      return;
-    }
   }
 
   // Check if this is an upvalue
@@ -1698,8 +1698,6 @@ CodeGenVisitor::createClosureObject(llvm::Function *func,
 
   // 3. Capture each upvalue
   for (int i = 0; i < static_cast<int>(upvalues.size()); i++) {
-    std::cerr << "DEBUG: createClosureObject calling captureUpvalue for '"
-              << upvalues[i] << "'" << std::endl;
     auto upvalue_value = captureUpvalue(upvalues[i]);
     auto set_upvalue_fn = mod.getFunction("elx_set_closure_upvalue");
     auto index = llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), i);
