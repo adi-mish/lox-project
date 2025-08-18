@@ -54,16 +54,13 @@ public:
   static Value fromBits(uint64_t bits) { return Value{bits}; }
 
   Tag tag() const {
-    // If it's not a special NaN pattern, it's a regular number
-    if ((bits & 0xfff0000000000000ULL) != 0x7ff0000000000000ULL) {
-      return Tag::NUMBER;
-    }
-    // If it's a NaN, check if it matches our QNAN pattern
+    // IEEE 754 compliant logic:
+    // Check if it matches our QNAN pattern used for tagging non-number types
     if ((bits & 0xfff8000000000000ULL) == 0x7ff8000000000000ULL) {
       // Extract just the tag bits (48-50)
       return static_cast<Tag>((bits >> 48) & 0x7);
     }
-    // Other NaN patterns are treated as numbers
+    // All other bit patterns (including infinity, normal NaN) are numbers
     return Tag::NUMBER;
   }
   bool isNum() const { return tag() == Tag::NUMBER; }

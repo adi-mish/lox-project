@@ -171,37 +171,31 @@ llvm::Value *CodeGenVisitor::tagOf(llvm::Value *v) {
 }
 
 llvm::Value *CodeGenVisitor::isNumber(llvm::Value *v) {
-  // Match the runtime logic:
-  // 1. If it's not a special NaN pattern, it's a regular number
-  // 2. If it matches our QNAN pattern, check if tag bits == 0
-  // 3. Other NaN patterns are treated as numbers
+  // IEEE 754 compliant logic:
+  // A value is a number if it's NOT our special QNAN-boxed non-number types
+  // This includes normal numbers, infinity, and even NaN values that aren't our
+  // tagged types
 
-  auto specialNaNMask =
-      llvm::ConstantInt::get(llvmValueTy(), 0xfff0000000000000ULL);
-  auto specialNaNPattern =
-      llvm::ConstantInt::get(llvmValueTy(), 0x7ff0000000000000ULL);
   auto qnanMask = llvm::ConstantInt::get(llvmValueTy(), 0xfff8000000000000ULL);
   auto qnanPattern =
       llvm::ConstantInt::get(llvmValueTy(), 0x7ff8000000000000ULL);
   auto zero = llvm::ConstantInt::get(llvmValueTy(), 0);
 
-  // Check if it's not a special NaN pattern at all
-  auto maskedBits = builder.CreateAnd(v, specialNaNMask, "masked");
-  auto isNotSpecialNaN =
-      builder.CreateICmpNE(maskedBits, specialNaNPattern, "notspecialnan");
-
-  // Check if it matches our QNAN pattern
+  // Check if it matches our QNAN pattern used for tagging
   auto qnanMasked = builder.CreateAnd(v, qnanMask, "qnanmasked");
   auto isOurQNaN = builder.CreateICmpEQ(qnanMasked, qnanPattern, "isourqnan");
 
-  // If it's our QNAN, check if tag bits are 0
+  // If it's our QNAN, check if tag bits are 0 (number type)
   auto tagBits = tagOf(v);
   auto hasZeroTag = builder.CreateICmpEQ(tagBits, zero, "zerotag");
   auto isTaggedNumber =
       builder.CreateAnd(isOurQNaN, hasZeroTag, "taggednumber");
 
-  // It's a number if: not special NaN OR (our QNAN with zero tag)
-  return builder.CreateOr(isNotSpecialNaN, isTaggedNumber, "isnum");
+  // If it's not our special QNAN pattern, it's a regular IEEE 754 number
+  auto isNotOurQNaN = builder.CreateNot(isOurQNaN, "notourqnan");
+
+  // It's a number if: not our QNAN OR (our QNAN with zero tag)
+  return builder.CreateOr(isNotOurQNaN, isTaggedNumber, "isnum");
 }
 
 llvm::Value *CodeGenVisitor::toDouble(llvm::Value *v) {

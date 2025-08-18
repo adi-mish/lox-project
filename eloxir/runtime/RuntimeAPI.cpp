@@ -939,7 +939,7 @@ void elx_clear_runtime_error() {
   runtime_error_message.clear();
 }
 
-// Safe arithmetic operations
+// Safe arithmetic operations (IEEE 754 compliant)
 uint64_t elx_safe_divide(uint64_t a_bits, uint64_t b_bits) {
   Value a = Value::fromBits(a_bits);
   Value b = Value::fromBits(b_bits);
@@ -949,12 +949,11 @@ uint64_t elx_safe_divide(uint64_t a_bits, uint64_t b_bits) {
     return Value::nil().getBits();
   }
 
+  // Perform IEEE 754 compliant division
+  // This will produce NaN for 0/0, +inf for positive/0, -inf for negative/0
+  double dividend = a.asNum();
   double divisor = b.asNum();
-  if (divisor == 0.0) {
-    elx_runtime_error("Division by zero.");
-    return Value::nil().getBits();
-  }
+  double result = dividend / divisor;
 
-  double result = a.asNum() / divisor;
   return Value::number(result).getBits();
 }
