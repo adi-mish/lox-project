@@ -1,4 +1,5 @@
 #include "Resolver.h"
+#include <iostream>
 #include <stdexcept>
 
 namespace eloxir {
@@ -129,12 +130,26 @@ void Resolver::resolveFunction(Function *function, FunctionType type) {
   if (!function_stack.empty() && !completed_func.upvalues.empty()) {
     FunctionInfo &parent_func = function_stack.top();
     for (const std::string &upvalue_name : completed_func.upvalues) {
-      // Add this upvalue to the parent function if it doesn't already have it
-      if (parent_func.upvalue_indices.find(upvalue_name) ==
-          parent_func.upvalue_indices.end()) {
-        parent_func.upvalue_indices[upvalue_name] =
-            static_cast<int>(parent_func.upvalues.size());
-        parent_func.upvalues.push_back(upvalue_name);
+      // Only propagate upvalues that the parent function cannot provide locally
+      // Check if this variable exists in the parent function's LOCAL scope only
+      // (not in its parent scopes)
+      bool found_in_parent_local_scope = false;
+
+      // The last scope in the stack belongs to the parent function
+      if (!scopes.empty()) {
+        found_in_parent_local_scope = scopes.back().count(upvalue_name) > 0;
+      }
+
+      // Only propagate if the parent function cannot provide this variable from
+      // its own locals
+      if (!found_in_parent_local_scope) {
+        // Add this upvalue to the parent function if it doesn't already have it
+        if (parent_func.upvalue_indices.find(upvalue_name) ==
+            parent_func.upvalue_indices.end()) {
+          parent_func.upvalue_indices[upvalue_name] =
+              static_cast<int>(parent_func.upvalues.size());
+          parent_func.upvalues.push_back(upvalue_name);
+        }
       }
     }
   }
