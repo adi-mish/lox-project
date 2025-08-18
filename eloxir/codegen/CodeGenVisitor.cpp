@@ -1185,6 +1185,11 @@ void CodeGenVisitor::visitBlockStmt(Block *s) {
 
   // Pass 2: Process all statements normally
   for (auto &stmt : s->statements) {
+    // Check if current basic block is already terminated
+    // If so, skip remaining statements to avoid LLVM verification errors
+    if (builder.GetInsertBlock() && builder.GetInsertBlock()->getTerminator()) {
+      break;
+    }
     stmt->accept(this);
   }
 
