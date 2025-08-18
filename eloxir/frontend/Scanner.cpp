@@ -130,16 +130,52 @@ void Scanner::addToken(TokenType type, const Literal &lit) {
 }
 
 void Scanner::string() {
+  std::string value;
+
   while (peek() != '"' && !isAtEnd()) {
     if (peek() == '\n')
       line++;
-    advance();
+
+    if (peek() == '\\') {
+      advance(); // consume the backslash
+      if (isAtEnd()) {
+        throw std::runtime_error("Unterminated string at line " +
+                                 std::to_string(line));
+      }
+
+      char escaped = advance();
+      switch (escaped) {
+      case 'n':
+        value += '\n';
+        break;
+      case 't':
+        value += '\t';
+        break;
+      case 'r':
+        value += '\r';
+        break;
+      case '\\':
+        value += '\\';
+        break;
+      case '"':
+        value += '"';
+        break;
+      default:
+        // For unrecognized escape sequences, include the backslash
+        value += '\\';
+        value += escaped;
+        break;
+      }
+    } else {
+      value += advance();
+    }
   }
+
   if (isAtEnd())
     throw std::runtime_error("Unterminated string at line " +
                              std::to_string(line));
   advance(); // closing "
-  std::string value = source.substr(start + 1, (current - 1) - (start + 1));
+
   addToken(TokenType::STRING, value);
 }
 
