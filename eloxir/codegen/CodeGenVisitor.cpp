@@ -630,17 +630,7 @@ void CodeGenVisitor::visitUnaryExpr(Unary *e) {
 void CodeGenVisitor::visitVariableExpr(Variable *e) {
   const std::string &varName = e->name.getLexeme();
 
-  // For global variables, always check the persistent global system first
-  if (globalVariables.count(varName)) {
-    auto getGlobalVarFn = mod.getFunction("elx_get_global_variable");
-    if (getGlobalVarFn) {
-      auto nameStr = builder.CreateGlobalStringPtr(varName, "var_name");
-      value = builder.CreateCall(getGlobalVarFn, {nameStr}, "global_var");
-      return;
-    }
-  }
-
-  // Check locals first (for truly local variables)
+  // Check locals first (for local variables including block-scoped ones)
   auto it = locals.find(varName);
   if (it != locals.end()) {
     // Check if this is a direct value (like a parameter) or needs to be loaded
@@ -650,6 +640,16 @@ void CodeGenVisitor::visitVariableExpr(Variable *e) {
       value = builder.CreateLoad(llvmValueTy(), it->second, varName.c_str());
     }
     return;
+  }
+
+  // For global variables, check the persistent global system
+  if (globalVariables.count(varName)) {
+    auto getGlobalVarFn = mod.getFunction("elx_get_global_variable");
+    if (getGlobalVarFn) {
+      auto nameStr = builder.CreateGlobalStringPtr(varName, "var_name");
+      value = builder.CreateCall(getGlobalVarFn, {nameStr}, "global_var");
+      return;
+    }
   }
 
   // Check if this is an upvalue
@@ -1169,8 +1169,12 @@ void CodeGenVisitor::visitBlockStmt(Block *s) {
   // Pass 1: Declare all function signatures in this block
   // Pass 2: Process all statements (including function bodies)
 
-  // Save current locals scope
-  auto before = locals;
+  // Save current locals scope and global variables set
+  auto beforeLocals = locals;
+  auto beforeGlobals = globalVariables;
+
+  // Increment block depth to track nesting
+  blockDepth++;
 
   // Pass 1: Find all function declarations and create their signatures
   for (auto &stmt : s->statements) {
@@ -1184,8 +1188,12 @@ void CodeGenVisitor::visitBlockStmt(Block *s) {
     stmt->accept(this);
   }
 
-  // Restore previous locals scope
-  locals = std::move(before);
+  // Decrement block depth when exiting block
+  blockDepth--;
+
+  // Restore previous locals scope and global variables set
+  locals = std::move(beforeLocals);
+  globalVariables = std::move(beforeGlobals);
 }
 
 void CodeGenVisitor::visitIfStmt(If *s) {

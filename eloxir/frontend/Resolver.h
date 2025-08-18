@@ -68,6 +68,7 @@ private:
 
   // Upvalue support
   void addUpvalue(const std::string &name);
+  void addUpvalueChain(const std::string &name, int depth);
   int resolveUpvalue(Function *function, const Token &name);
 
 public:

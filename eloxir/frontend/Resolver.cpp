@@ -41,7 +41,10 @@ void Resolver::resolveLocal(Expr *expr, const Token &name) {
       // Check if this is an upvalue (accessed from enclosing scope)
       if (i < static_cast<int>(scopes.size()) - 1 && !function_stack.empty()) {
         // Variable found in enclosing scope - this is an upvalue!
-        addUpvalue(name.getLexeme());
+        // We need to ensure this variable is captured by ALL intermediate
+        // functions
+        addUpvalueChain(name.getLexeme(),
+                        static_cast<int>(scopes.size()) - 1 - i);
       }
       return;
     }
@@ -66,6 +69,22 @@ void Resolver::addUpvalue(const std::string &name) {
   int index = static_cast<int>(current_func.upvalues.size());
   current_func.upvalues.push_back(name);
   current_func.upvalue_indices[name] = index;
+}
+
+void Resolver::addUpvalueChain(const std::string &name, int depth) {
+  // Add upvalue to all intermediate function levels
+  // depth = 0 means current scope, depth = 1 means immediate parent, etc.
+
+  if (function_stack.empty()) {
+    return; // No functions to add upvalues to
+  }
+
+  // Add to current function
+  addUpvalue(name);
+
+  // For multi-level upvalue capture, we need to ensure that when functions
+  // complete, their upvalues are propagated to parent functions.
+  // This will be handled in the function completion logic.
 }
 
 int Resolver::resolveUpvalue(Function *function, const Token &name) {
@@ -103,6 +122,22 @@ void Resolver::resolveFunction(Function *function, FunctionType type) {
   FunctionInfo completed_func = function_stack.top();
   function_stack.pop();
   function_upvalues[function] = completed_func.upvalues;
+
+  // CRITICAL: Propagate upvalues to parent function
+  // If this function has upvalues, the parent function must also capture them
+  // to enable multi-level closure capture
+  if (!function_stack.empty() && !completed_func.upvalues.empty()) {
+    FunctionInfo &parent_func = function_stack.top();
+    for (const std::string &upvalue_name : completed_func.upvalues) {
+      // Add this upvalue to the parent function if it doesn't already have it
+      if (parent_func.upvalue_indices.find(upvalue_name) ==
+          parent_func.upvalue_indices.end()) {
+        parent_func.upvalue_indices[upvalue_name] =
+            static_cast<int>(parent_func.upvalues.size());
+        parent_func.upvalues.push_back(upvalue_name);
+      }
+    }
+  }
 
   currentFunction = enclosing;
 }

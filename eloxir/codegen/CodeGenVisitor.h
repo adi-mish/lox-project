@@ -25,6 +25,10 @@ class CodeGenVisitor : public ExprVisitor, public StmtVisitor {
   // current function being compiled (for return statements)
   llvm::Function *currentFunction;
 
+  // Track block nesting depth to distinguish true globals from block-scoped
+  // variables
+  int blockDepth = 0;
+
   // Function context for closure support
   struct FunctionContext {
     llvm::Function *llvm_function;
