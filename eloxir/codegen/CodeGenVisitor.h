@@ -29,6 +29,9 @@ class CodeGenVisitor : public ExprVisitor, public StmtVisitor {
   // variables
   int blockDepth = 0;
 
+  // Counter for creating unique variable names in loop contexts
+  int variableCounter = 0;
+
   // Function context for closure support
   struct FunctionContext {
     llvm::Function *llvm_function;

@@ -1,5 +1,6 @@
 #include "CodeGenVisitor.h"
 #include "../runtime/Value.h"
+#include <ctime>
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/Function.h>
 #include <llvm/IR/Instructions.h>
@@ -635,6 +636,20 @@ void CodeGenVisitor::visitVariableExpr(Variable *e) {
   }
 
   // Check locals (for local variables including block-scoped ones)
+  // Use the "_current" binding to find the most recent declaration
+  auto currentIt = locals.find(varName + "_current");
+  if (currentIt != locals.end()) {
+    // Check if this is a direct value (like a parameter) or needs to be loaded
+    if (directValues.count(varName)) {
+      value = currentIt->second; // Direct value, no load needed
+    } else {
+      value =
+          builder.CreateLoad(llvmValueTy(), currentIt->second, varName.c_str());
+    }
+    return;
+  }
+
+  // Fallback to original lookup for variables declared before this system
   auto it = locals.find(varName);
   if (it != locals.end()) {
     // Check if this is a direct value (like a parameter) or needs to be loaded
@@ -857,7 +872,24 @@ void CodeGenVisitor::visitAssignExpr(Assign *e) {
     return;
   }
 
-  // Check locals for truly local variables
+  // Check locals for truly local variables - use "_current" binding
+  auto currentIt = locals.find(varName + "_current");
+  if (currentIt != locals.end()) {
+    if (directValues.count(varName)) {
+      // This is a parameter or direct value - we need to create storage for it
+      auto fn = builder.GetInsertBlock()->getParent();
+      auto &entry = fn->getEntryBlock();
+      llvm::IRBuilder<> save(entry.getFirstNonPHI());
+      auto slot = save.CreateAlloca(llvmValueTy(), nullptr, varName.c_str());
+      locals[varName + "_current"] = slot;
+      directValues.erase(varName);
+    }
+    builder.CreateStore(assignValue, currentIt->second);
+    value = assignValue; // Assignment returns the assigned value
+    return;
+  }
+
+  // Fallback to original lookup
   auto localIt = locals.find(varName);
   if (localIt != locals.end()) {
     if (directValues.count(varName)) {
@@ -1149,11 +1181,28 @@ void CodeGenVisitor::visitVarStmt(Var *s) {
     // Local variable - create alloca in function entry block
     auto &entry = fn->getEntryBlock();
     auto insertPoint = entry.getFirstNonPHI();
-    llvm::IRBuilder<> save(&entry, insertPoint ? insertPoint->getIterator()
-                                               : entry.begin());
-    auto slot = save.CreateAlloca(llvmValueTy(), nullptr, varName.c_str());
+    llvm::IRBuilder<> allocaBuilder(
+        &entry, insertPoint ? insertPoint->getIterator() : entry.begin());
+
+    // DEFINITIVE FIX: Create completely unique variable binding that cannot
+    // interfere with other scopes. Each variable gets a globally unique key.
+    std::string allocaName = varName + "_scope" + std::to_string(blockDepth) +
+                             "_decl" + std::to_string(variableCounter);
+    std::string uniqueVarKey = varName + "#" + std::to_string(blockDepth) +
+                               "#" + std::to_string(variableCounter);
+    variableCounter++;
+
+    auto slot =
+        allocaBuilder.CreateAlloca(llvmValueTy(), nullptr, allocaName.c_str());
     builder.CreateStore(initValue, slot);
-    locals[varName] = slot;
+
+    // Store ONLY with the unique key - never overwrite simple variable names
+    locals[uniqueVarKey] = slot;
+
+    // For variable access, we need to find the most recent declaration
+    // We'll store a "current binding" that maps variable name to unique key
+    locals[varName + "_current"] =
+        slot; // This will be restored by block mechanism
     // Don't add to directValues since this needs to be loaded
   }
 }
