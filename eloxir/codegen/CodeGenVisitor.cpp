@@ -1415,7 +1415,8 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
     upvalues = resolver_upvalues->at(s);
   }
 
-  // Filter out function parameters from upvalues (resolver bug workaround)
+  // Filter out function parameters and the function's own name from upvalues
+  // (resolver bug workaround)
   std::vector<std::string> filtered_upvalues;
   for (const auto &upvalue_name : upvalues) {
     bool is_parameter = false;
@@ -1425,7 +1426,11 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
         break;
       }
     }
-    if (!is_parameter) {
+    // Also filter out the function's own name - it should be local, not an
+    // upvalue
+    bool is_self_reference = (upvalue_name == baseFuncName);
+
+    if (!is_parameter && !is_self_reference) {
       filtered_upvalues.push_back(upvalue_name);
     }
   }
@@ -1506,7 +1511,7 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
   directValues = tempDirectValues;
 
   // Create closure while we still have access to outer scope
-  llvm::Value *closureValue;
+  llvm::Value *closureValue = nullptr;
   if (!upvalues.empty()) {
     closureValue = createDeferredClosure(llvmFunc, upvalues,
                                          static_cast<int>(s->params.size()));

@@ -112,6 +112,13 @@ void Resolver::resolveFunction(Function *function, FunctionType type) {
   function_stack.push(func_info);
 
   beginScope();
+
+  // CRITICAL FIX: Add the function's name to its own scope for recursion
+  // This allows the function to call itself recursively
+  // Do this BEFORE processing parameters so the function name is available
+  declare(function->name);
+  define(function->name);
+
   for (const auto &param : function->params) {
     declare(param);
     define(param);
