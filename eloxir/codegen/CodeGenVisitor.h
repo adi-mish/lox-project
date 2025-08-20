@@ -22,6 +22,8 @@ class CodeGenVisitor : public ExprVisitor, public StmtVisitor {
   std::unordered_set<std::string> directValues;
   // function table for user-defined functions
   std::unordered_map<std::string, llvm::Function *> functions;
+  // track functions that failed to declare (e.g., too many parameters)
+  std::unordered_set<std::string> failedFunctions;
   // current function being compiled (for return statements)
   llvm::Function *currentFunction;
 
