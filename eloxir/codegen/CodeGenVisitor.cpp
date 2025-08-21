@@ -1140,6 +1140,10 @@ void CodeGenVisitor::visitPrintStmt(Print *s) {
 }
 
 void CodeGenVisitor::visitVarStmt(Var *s) {
+  visitVarStmtWithExecution(s, 1); // Default execution count
+}
+
+void CodeGenVisitor::visitVarStmtWithExecution(Var *s, int blockExecution) {
   // Evaluate initializer or use nil
   if (s->initializer) {
     s->initializer->accept(this);
@@ -1186,10 +1190,16 @@ void CodeGenVisitor::visitVarStmt(Var *s) {
 
     // DEFINITIVE FIX: Create completely unique variable binding that cannot
     // interfere with other scopes. Each variable gets a globally unique key.
-    std::string allocaName = varName + "_scope" + std::to_string(blockDepth) +
-                             "_decl" + std::to_string(variableCounter);
-    std::string uniqueVarKey = varName + "#" + std::to_string(blockDepth) +
-                               "#" + std::to_string(variableCounter);
+    // Include block execution count to ensure fresh storage for re-executed
+    // blocks.
+    std::string allocaName =
+        varName + "_scope" + std::to_string(blockDepth) + "_decl" +
+        std::to_string(variableCounter) +
+        (blockExecution > 1 ? ("_exec" + std::to_string(blockExecution)) : "");
+    std::string uniqueVarKey =
+        varName + "#" + std::to_string(blockDepth) + "#" +
+        std::to_string(variableCounter) +
+        (blockExecution > 1 ? ("#exec" + std::to_string(blockExecution)) : "");
     variableCounter++;
 
     auto slot =
@@ -1219,6 +1229,10 @@ void CodeGenVisitor::visitBlockStmt(Block *s) {
   // Increment block depth to track nesting
   blockDepth++;
 
+  // Track this block's execution count for proper loop variable scoping
+  blockExecutionCount[s]++;
+  int currentBlockExecution = blockExecutionCount[s];
+
   // Pass 1: Find all function declarations and create their signatures
   for (auto &stmt : s->statements) {
     if (auto funcStmt = dynamic_cast<Function *>(stmt.get())) {
@@ -1233,7 +1247,15 @@ void CodeGenVisitor::visitBlockStmt(Block *s) {
     if (builder.GetInsertBlock() && builder.GetInsertBlock()->getTerminator()) {
       break;
     }
-    stmt->accept(this);
+
+    // For variable declarations in re-executed blocks, we need special handling
+    if (auto varStmt = dynamic_cast<Var *>(stmt.get())) {
+      // Pass the block execution count to variable declaration
+      // This will be used to create unique storage for loop body variables
+      visitVarStmtWithExecution(varStmt, currentBlockExecution);
+    } else {
+      stmt->accept(this);
+    }
   }
 
   // Decrement block depth when exiting block
@@ -1891,6 +1913,38 @@ llvm::Value *CodeGenVisitor::captureUpvalue(const std::string &name) {
   // the function being compiled.
 
   // Check if the variable exists in the current local scope
+  // Use the "_current" binding system to get the most recent declaration
+  auto currentIt = locals.find(name + "_current");
+  if (currentIt != locals.end()) {
+    auto var_alloca = currentIt->second;
+
+    // For both local variables and parameters, we need to create persistent
+    // heap storage to avoid dangling pointer issues when the scope exits
+    llvm::Value *current_value;
+
+    if (directValues.find(name) == directValues.end()) {
+      // This is a local variable (alloca), load the current value
+      current_value =
+          builder.CreateLoad(llvmValueTy(), var_alloca, name.c_str());
+    } else {
+      // This is a direct value (function parameter), use it directly
+      current_value = var_alloca;
+    }
+
+    // Create persistent heap storage for the value
+    auto size = llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx), 8);
+    auto heap_ptr = builder.CreateCall(mallocFn, {size});
+    auto value_ptr = builder.CreateBitCast(
+        heap_ptr, llvm::PointerType::get(llvmValueTy(), 0));
+
+    // Store the current value in the heap location
+    builder.CreateStore(current_value, value_ptr);
+
+    // Create upvalue pointing to the heap location
+    return builder.CreateCall(alloc_upvalue_fn, {value_ptr});
+  }
+
+  // Fallback to original lookup for variables declared before _current system
   if (locals.find(name) != locals.end()) {
     auto var_alloca = locals[name];
 

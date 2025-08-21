@@ -34,6 +34,9 @@ class CodeGenVisitor : public ExprVisitor, public StmtVisitor {
   // Counter for creating unique variable names in loop contexts
   int variableCounter = 0;
 
+  // Track block re-execution for proper loop variable scoping
+  std::unordered_map<const Block *, int> blockExecutionCount;
+
   // Function context for closure support
   struct FunctionContext {
     llvm::Function *llvm_function;
@@ -125,6 +128,9 @@ public:
   void visitExpressionStmt(Expression *s) override;
   void visitPrintStmt(Print *s) override;
   void visitVarStmt(Var *s) override;
+  void
+  visitVarStmtWithExecution(Var *s,
+                            int blockExecution); // Helper for loop variables
   void visitBlockStmt(Block *s) override;
   void visitIfStmt(If *s) override;
   void visitWhileStmt(While *s) override;
