@@ -37,6 +37,9 @@ class CodeGenVisitor : public ExprVisitor, public StmtVisitor {
   // Track block re-execution for proper loop variable scoping
   std::unordered_map<const Block *, int> blockExecutionCount;
 
+  // Track variables that are declared in for-loop initializers
+  std::unordered_set<std::string> loopVariables;
+
   // Function context for closure support
   struct FunctionContext {
     llvm::Function *llvm_function;

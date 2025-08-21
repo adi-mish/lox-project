@@ -1306,10 +1306,8 @@ void CodeGenVisitor::visitIfStmt(If *s) {
 void CodeGenVisitor::visitWhileStmt(While *s) {
   auto fn = builder.GetInsertBlock()->getParent();
   auto condBB = llvm::BasicBlock::Create(ctx, "while.cond", fn);
-  auto bodyBB = llvm::BasicBlock::Create(ctx, "while.body",
-                                         fn); // Add to function immediately
-  auto endBB = llvm::BasicBlock::Create(ctx, "while.end",
-                                        fn); // Add to function immediately
+  auto bodyBB = llvm::BasicBlock::Create(ctx, "while.body", fn);
+  auto endBB = llvm::BasicBlock::Create(ctx, "while.end", fn);
 
   builder.CreateBr(condBB);
 
