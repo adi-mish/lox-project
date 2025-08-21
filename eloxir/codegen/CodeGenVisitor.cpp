@@ -1318,20 +1318,17 @@ void CodeGenVisitor::declareFunctionSignature(Function *s) {
     return; // Already declared
   }
 
-  // Check if this function already failed to declare
-  if (failedFunctions.find(baseFuncName) != failedFunctions.end()) {
-    return; // Already failed, don't print error again
-  }
-
   int arity = s->params.size();
 
   // Validate function arity (Lox limit is 255)
   if (arity > 255) {
-    std::cerr << "Error: Function '" << baseFuncName
-              << "' has too many parameters (" << arity
-              << "). Maximum is 255.\n";
-    // Track this function as failed to prevent duplicate errors
-    failedFunctions.insert(baseFuncName);
+    // Only print error if we haven't already reported it for this function
+    if (failedFunctions.find(baseFuncName) == failedFunctions.end()) {
+      std::cerr << "Error: Function '" << baseFuncName
+                << "' has too many parameters (" << arity
+                << "). Maximum is 255.\n";
+      failedFunctions.insert(baseFuncName);
+    }
     return;
   }
 
@@ -1510,8 +1507,9 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
       // Declaration failed - set value to nil and return gracefully
       value = nilConst();
       return;
+    } else {
+      llvmFunc = it2->second;
     }
-    llvmFunc = it2->second;
   }
 
   // Skip if function body is already defined
