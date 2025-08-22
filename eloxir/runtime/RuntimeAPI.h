@@ -66,6 +66,8 @@ int elx_is_function(uint64_t value_bits);
 
 // Closure and upvalue functions
 uint64_t elx_allocate_upvalue(uint64_t *slot);
+uint64_t
+elx_allocate_upvalue_with_value(uint64_t value); // NEW: immediate value capture
 uint64_t elx_allocate_closure(uint64_t function_bits, int upvalue_count);
 void elx_set_closure_upvalue(uint64_t closure_bits, int index,
                              uint64_t upvalue_bits);

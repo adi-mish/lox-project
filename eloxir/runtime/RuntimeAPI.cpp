@@ -571,6 +571,25 @@ uint64_t elx_allocate_upvalue(uint64_t *slot) {
   return Value::object(created_upvalue).getBits();
 }
 
+uint64_t elx_allocate_upvalue_with_value(uint64_t value) {
+  // Create new upvalue that immediately captures the given value
+  ObjUpvalue *created_upvalue =
+      static_cast<ObjUpvalue *>(malloc(sizeof(ObjUpvalue)));
+  if (!created_upvalue) {
+    return Value::nil().getBits();
+  }
+
+  created_upvalue->obj.type = ObjType::UPVALUE;
+  created_upvalue->location = nullptr; // No reference to original storage
+  created_upvalue->closed = value; // Immediately close with the captured value
+  created_upvalue->next = nullptr; // Not part of the open upvalues list
+
+  // Track the allocation
+  allocated_objects.insert(created_upvalue);
+
+  return Value::object(created_upvalue).getBits();
+}
+
 uint64_t elx_allocate_closure(uint64_t function_bits, int upvalue_count) {
   Value func_val = Value::fromBits(function_bits);
   ObjFunction *function = getFunction(func_val);

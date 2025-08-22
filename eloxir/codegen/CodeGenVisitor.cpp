@@ -636,7 +636,33 @@ void CodeGenVisitor::visitVariableExpr(Variable *e) {
   }
 
   // Check locals (for local variables including block-scoped ones)
-  // Use the "_current" binding to find the most recent declaration
+  // CRITICAL FIX: Look for unique storage first to avoid shared storage issues
+  auto uniqueIt = locals.end();
+
+  // Look for the most recent unique variable binding for this variable
+  // This bypasses the "_current" system to avoid overwrite issues
+  for (const auto &pair : locals) {
+    const std::string &key = pair.first;
+    // Check if this is a unique variable key for the variable we want
+    if (key.find(varName + "#") == 0) {
+      // This is a unique key for our variable
+      uniqueIt = locals.find(key);
+      // Keep looking - we want the most recent one
+    }
+  }
+
+  if (uniqueIt != locals.end()) {
+    // Check if this is a direct value (like a parameter) or needs to be loaded
+    if (directValues.count(varName)) {
+      value = uniqueIt->second; // Direct value, no load needed
+    } else {
+      value =
+          builder.CreateLoad(llvmValueTy(), uniqueIt->second, varName.c_str());
+    }
+    return;
+  }
+
+  // Fall back to "_current" binding if no unique storage found
   auto currentIt = locals.find(varName + "_current");
   if (currentIt != locals.end()) {
     // Check if this is a direct value (like a parameter) or needs to be loaded
@@ -1188,31 +1214,24 @@ void CodeGenVisitor::visitVarStmtWithExecution(Var *s, int blockExecution) {
     llvm::IRBuilder<> allocaBuilder(
         &entry, insertPoint ? insertPoint->getIterator() : entry.begin());
 
-    // DEFINITIVE FIX: Create completely unique variable binding that cannot
-    // interfere with other scopes. Each variable gets a globally unique key.
-    // Include block execution count to ensure fresh storage for re-executed
-    // blocks.
-    std::string allocaName =
-        varName + "_scope" + std::to_string(blockDepth) + "_decl" +
-        std::to_string(variableCounter) +
-        (blockExecution > 1 ? ("_exec" + std::to_string(blockExecution)) : "");
-    std::string uniqueVarKey =
-        varName + "#" + std::to_string(blockDepth) + "#" +
-        std::to_string(variableCounter) +
-        (blockExecution > 1 ? ("#exec" + std::to_string(blockExecution)) : "");
+    // DEFINITIVE FIX FOR LOOP VARIABLE CAPTURE BUG:
+    // Always create completely unique storage for each variable declaration,
+    // even if the same name exists. This prevents storage reuse that causes
+    // closure capture bugs.
+    std::string allocaName = varName + "_scope" + std::to_string(blockDepth) +
+                             "_decl" + std::to_string(variableCounter);
+    std::string uniqueVarKey = varName + "#" + std::to_string(blockDepth) +
+                               "#" + std::to_string(variableCounter);
     variableCounter++;
 
     auto slot =
         allocaBuilder.CreateAlloca(llvmValueTy(), nullptr, allocaName.c_str());
     builder.CreateStore(initValue, slot);
 
-    // Store ONLY with the unique key - never overwrite simple variable names
+    // Store with the unique key AND always update the "_current" binding
     locals[uniqueVarKey] = slot;
+    locals[varName + "_current"] = slot;
 
-    // For variable access, we need to find the most recent declaration
-    // We'll store a "current binding" that maps variable name to unique key
-    locals[varName + "_current"] =
-        slot; // This will be restored by block mechanism
     // Don't add to directValues since this needs to be loaded
   }
 }
@@ -1910,66 +1929,92 @@ llvm::Value *CodeGenVisitor::captureUpvalue(const std::string &name) {
   // scope (the enclosing scope where the closure is being created), not from
   // the function being compiled.
 
-  // Check if the variable exists in the current local scope
-  // Use the "_current" binding system to get the most recent declaration
-  auto currentIt = locals.find(name + "_current");
-  if (currentIt != locals.end()) {
-    auto var_alloca = currentIt->second;
+  // DEFINITIVE FIX FOR LOOP VARIABLE CAPTURE BUG:
+  // The root issue is that the "_current" binding gets overwritten by new
+  // declarations with the same variable name. We need to capture from the
+  // UNIQUE storage instead.
 
-    // For both local variables and parameters, we need to create persistent
-    // heap storage to avoid dangling pointer issues when the scope exits
-    llvm::Value *current_value;
+  llvm::Value *current_value = nullptr;
 
-    if (directValues.find(name) == directValues.end()) {
-      // This is a local variable (alloca), load the current value
-      current_value =
-          builder.CreateLoad(llvmValueTy(), var_alloca, name.c_str());
-    } else {
-      // This is a direct value (function parameter), use it directly
-      current_value = var_alloca;
+  // DEFINITIVE FIX: Find the MOST RECENT unique storage for this variable
+  // Each variable declaration gets a unique key: varName + "#" + blockDepth +
+  // "#" + counter We need to find the one with the highest counter (most recent
+  // declaration)
+  llvm::Value *best_storage = nullptr;
+  int highest_counter = -1;
+
+  for (const auto &pair : locals) {
+    const std::string &key = pair.first;
+    // Check if this is a unique variable key for the variable we want
+    if (key.find(name + "#") == 0) {
+      // Parse the counter from the key: "varName#blockDepth#counter"
+      size_t last_hash = key.find_last_of('#');
+      if (last_hash != std::string::npos) {
+        std::string counter_str = key.substr(last_hash + 1);
+        try {
+          int counter = std::stoi(counter_str);
+          if (counter > highest_counter) {
+            highest_counter = counter;
+            best_storage = pair.second;
+          }
+        } catch (...) {
+          // Skip invalid counter strings
+        }
+      }
     }
-
-    // Create persistent heap storage for the value
-    auto size = llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx), 8);
-    auto heap_ptr = builder.CreateCall(mallocFn, {size});
-    auto value_ptr = builder.CreateBitCast(
-        heap_ptr, llvm::PointerType::get(llvmValueTy(), 0));
-
-    // Store the current value in the heap location
-    builder.CreateStore(current_value, value_ptr);
-
-    // Create upvalue pointing to the heap location
-    return builder.CreateCall(alloc_upvalue_fn, {value_ptr});
   }
 
-  // Fallback to original lookup for variables declared before _current system
-  if (locals.find(name) != locals.end()) {
-    auto var_alloca = locals[name];
-
-    // For both local variables and parameters, we need to create persistent
-    // heap storage to avoid dangling pointer issues when the scope exits
-    llvm::Value *current_value;
-
-    if (directValues.find(name) == directValues.end()) {
-      // This is a local variable (alloca), load the current value
-      current_value =
-          builder.CreateLoad(llvmValueTy(), var_alloca, name.c_str());
+  if (best_storage != nullptr) {
+    // Load from the most recent unique storage
+    if (directValues.count(name)) {
+      current_value = best_storage; // Direct value, no load needed
     } else {
-      // This is a direct value (function parameter), use it directly
-      current_value = var_alloca;
+      current_value =
+          builder.CreateLoad(llvmValueTy(), best_storage, name.c_str());
+    }
+  } else {
+    // Fallback to "_current" binding for compatibility with non-loop variables
+    auto currentIt = locals.find(name + "_current");
+    if (currentIt != locals.end()) {
+      // Load the current value from the variable storage
+      if (directValues.count(name)) {
+        current_value = currentIt->second; // Direct value, no load needed
+      } else {
+        current_value =
+            builder.CreateLoad(llvmValueTy(), currentIt->second, name.c_str());
+      }
+    } else {
+      // Final fallback to original lookup for variables declared before unique
+      // system
+      if (locals.find(name) != locals.end()) {
+        auto fallback_alloca = locals[name];
+        if (directValues.find(name) == directValues.end()) {
+          current_value =
+              builder.CreateLoad(llvmValueTy(), fallback_alloca, name.c_str());
+        } else {
+          current_value = fallback_alloca;
+        }
+      }
+    }
+  }
+
+  if (current_value != nullptr) {
+    // DEFINITIVE FIX: Use immediate value capture instead of reference capture
+    // This ensures each closure gets its own copy of the value at creation time
+    auto alloc_upvalue_with_value_fn =
+        mod.getFunction("elx_allocate_upvalue_with_value");
+    if (!alloc_upvalue_with_value_fn) {
+      // Declare the function if it doesn't exist
+      llvm::FunctionType *allocType =
+          llvm::FunctionType::get(llvmValueTy(), {llvmValueTy()}, false);
+      alloc_upvalue_with_value_fn =
+          llvm::Function::Create(allocType, llvm::Function::ExternalLinkage,
+                                 "elx_allocate_upvalue_with_value", &mod);
     }
 
-    // Create persistent heap storage for the value
-    auto size = llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx), 8);
-    auto heap_ptr = builder.CreateCall(mallocFn, {size});
-    auto value_ptr = builder.CreateBitCast(
-        heap_ptr, llvm::PointerType::get(llvmValueTy(), 0));
-
-    // Store the current value in the heap location
-    builder.CreateStore(current_value, value_ptr);
-
-    // Create upvalue pointing to the heap location
-    return builder.CreateCall(alloc_upvalue_fn, {value_ptr});
+    // Create upvalue with immediate value capture - no reference to original
+    // storage
+    return builder.CreateCall(alloc_upvalue_with_value_fn, {current_value});
   }
 
   // Check if it's an upvalue in the current function context
