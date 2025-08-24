@@ -625,19 +625,10 @@ void CodeGenVisitor::visitUnaryExpr(Unary *e) {
 void CodeGenVisitor::visitVariableExpr(Variable *e) {
   const std::string &varName = e->name.getLexeme();
 
-  // For global variables, check the persistent global system FIRST
-  if (globalVariables.count(varName)) {
-    auto getGlobalVarFn = mod.getFunction("elx_get_global_variable");
-    if (getGlobalVarFn) {
-      auto nameStr = builder.CreateGlobalStringPtr(varName, "var_name");
-      value = builder.CreateCall(getGlobalVarFn, {nameStr}, "global_var");
-      return;
-    }
-  }
-
-  // CRITICAL FIX: Check upvalues FIRST when inside a function
-  // This ensures closures access captured values, not current lexical bindings
-  if (!function_stack.empty() && isUpvalue(varName)) {
+  // CRITICAL FIX: Check upvalues FIRST when inside any function
+  // This ensures closures ALWAYS access captured values, not current lexical
+  // bindings
+  if (!function_stack.empty()) {
     const FunctionContext &current_ctx = function_stack.top();
     auto upvalue_it = current_ctx.upvalue_indices.find(varName);
     if (upvalue_it != current_ctx.upvalue_indices.end()) {
@@ -647,19 +638,34 @@ void CodeGenVisitor::visitVariableExpr(Variable *e) {
     }
   }
 
+  // For global variables, check the persistent global system
+  if (globalVariables.count(varName)) {
+    auto getGlobalVarFn = mod.getFunction("elx_get_global_variable");
+    if (getGlobalVarFn) {
+      auto nameStr = builder.CreateGlobalStringPtr(varName, "var_name");
+      value = builder.CreateCall(getGlobalVarFn, {nameStr}, "global_var");
+      return;
+    }
+  }
+
   // Use variable stacks for lexical scope correctness (for non-upvalue access)
+  // Skip this check if inside a function and the variable is an upvalue
   auto stackIt = variableStacks.find(varName);
   if (stackIt != variableStacks.end() && !stackIt->second.empty()) {
-    // Get the storage that is current in this lexical scope (top of stack)
-    llvm::Value *current_storage = stackIt->second.back();
+    // Skip variable stack lookup if we're in a function and this is an upvalue
+    bool skipForUpvalue = !function_stack.empty() && isUpvalue(varName);
+    if (!skipForUpvalue) {
+      // Get the storage that is current in this lexical scope (top of stack)
+      llvm::Value *current_storage = stackIt->second.back();
 
-    if (directValues.count(varName)) {
-      value = current_storage; // Direct value, no load needed
-    } else {
-      value =
-          builder.CreateLoad(llvmValueTy(), current_storage, varName.c_str());
+      if (directValues.count(varName)) {
+        value = current_storage; // Direct value, no load needed
+      } else {
+        value =
+            builder.CreateLoad(llvmValueTy(), current_storage, varName.c_str());
+      }
+      return;
     }
-    return;
   }
 
   // Fall back to "_current" binding for variables not using the stack system
@@ -685,19 +691,6 @@ void CodeGenVisitor::visitVariableExpr(Variable *e) {
       value = builder.CreateLoad(llvmValueTy(), it->second, varName.c_str());
     }
     return;
-  }
-
-  // Check if this is an upvalue
-  if (isUpvalue(varName)) {
-    if (!function_stack.empty()) {
-      const FunctionContext &current_ctx = function_stack.top();
-      auto upvalue_it = current_ctx.upvalue_indices.find(varName);
-      if (upvalue_it != current_ctx.upvalue_indices.end()) {
-        int upvalue_index = upvalue_it->second;
-        value = accessUpvalue(varName, upvalue_index);
-        return;
-      }
-    }
   }
 
   // Check globals (current module scope)
@@ -868,6 +861,27 @@ void CodeGenVisitor::visitAssignExpr(Assign *e) {
   llvm::Value *assignValue = value;
 
   const std::string &varName = e->name.getLexeme();
+
+  // CRITICAL FIX: Check upvalues FIRST when inside a function for assignments
+  // This ensures assignments to captured variables update the captured value
+  if (!function_stack.empty() && isUpvalue(varName)) {
+    const FunctionContext &current_ctx = function_stack.top();
+    auto upvalue_it = current_ctx.upvalue_indices.find(varName);
+    if (upvalue_it != current_ctx.upvalue_indices.end()) {
+      int upvalue_index = upvalue_it->second;
+
+      // For assignments to upvalues, we need to update the upvalue in the array
+      // Since we currently pass values (not pointers) to functions, we update
+      // the local view of the upvalue array for this function call
+      auto idxVal =
+          llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), upvalue_index);
+      auto ptr =
+          builder.CreateGEP(llvmValueTy(), current_ctx.upvalue_array, idxVal);
+      builder.CreateStore(assignValue, ptr);
+      value = assignValue;
+      return;
+    }
+  }
 
   // For global variables, always update both local storage and global system
   if (globalVariables.count(varName)) {
