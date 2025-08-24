@@ -40,6 +40,10 @@ class CodeGenVisitor : public ExprVisitor, public StmtVisitor {
   // Track variables that are declared in for-loop initializers
   std::unordered_set<std::string> loopVariables;
 
+  // Per-variable storage stack for proper lexical scoping
+  // Maps variable name to stack of storage locations (most recent = back())
+  std::unordered_map<std::string, std::vector<llvm::Value *>> variableStacks;
+
   // Function context for closure support
   struct FunctionContext {
     llvm::Function *llvm_function;

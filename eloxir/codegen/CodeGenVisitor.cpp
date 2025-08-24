@@ -635,34 +635,34 @@ void CodeGenVisitor::visitVariableExpr(Variable *e) {
     }
   }
 
-  // Check locals (for local variables including block-scoped ones)
-  // CRITICAL FIX: Look for unique storage first to avoid shared storage issues
-  auto uniqueIt = locals.end();
-
-  // Look for the most recent unique variable binding for this variable
-  // This bypasses the "_current" system to avoid overwrite issues
-  for (const auto &pair : locals) {
-    const std::string &key = pair.first;
-    // Check if this is a unique variable key for the variable we want
-    if (key.find(varName + "#") == 0) {
-      // This is a unique key for our variable
-      uniqueIt = locals.find(key);
-      // Keep looking - we want the most recent one
+  // CRITICAL FIX: Check upvalues FIRST when inside a function
+  // This ensures closures access captured values, not current lexical bindings
+  if (!function_stack.empty() && isUpvalue(varName)) {
+    const FunctionContext &current_ctx = function_stack.top();
+    auto upvalue_it = current_ctx.upvalue_indices.find(varName);
+    if (upvalue_it != current_ctx.upvalue_indices.end()) {
+      int upvalue_index = upvalue_it->second;
+      value = accessUpvalue(varName, upvalue_index);
+      return;
     }
   }
 
-  if (uniqueIt != locals.end()) {
-    // Check if this is a direct value (like a parameter) or needs to be loaded
+  // Use variable stacks for lexical scope correctness (for non-upvalue access)
+  auto stackIt = variableStacks.find(varName);
+  if (stackIt != variableStacks.end() && !stackIt->second.empty()) {
+    // Get the storage that is current in this lexical scope (top of stack)
+    llvm::Value *current_storage = stackIt->second.back();
+
     if (directValues.count(varName)) {
-      value = uniqueIt->second; // Direct value, no load needed
+      value = current_storage; // Direct value, no load needed
     } else {
       value =
-          builder.CreateLoad(llvmValueTy(), uniqueIt->second, varName.c_str());
+          builder.CreateLoad(llvmValueTy(), current_storage, varName.c_str());
     }
     return;
   }
 
-  // Fall back to "_current" binding if no unique storage found
+  // Fall back to "_current" binding for variables not using the stack system
   auto currentIt = locals.find(varName + "_current");
   if (currentIt != locals.end()) {
     // Check if this is a direct value (like a parameter) or needs to be loaded
@@ -1232,6 +1232,10 @@ void CodeGenVisitor::visitVarStmtWithExecution(Var *s, int blockExecution) {
     locals[uniqueVarKey] = slot;
     locals[varName + "_current"] = slot;
 
+    // ARCHITECTURAL FIX: Push storage onto per-variable stack for proper
+    // lexical scoping
+    variableStacks[varName].push_back(slot);
+
     // Don't add to directValues since this needs to be loaded
   }
 }
@@ -1244,6 +1248,9 @@ void CodeGenVisitor::visitBlockStmt(Block *s) {
   // Save current locals scope and global variables set
   auto beforeLocals = locals;
   auto beforeGlobals = globalVariables;
+
+  // Track variables declared in this block for proper stack cleanup
+  std::vector<std::string> blockVariables;
 
   // Increment block depth to track nesting
   blockDepth++;
@@ -1269,11 +1276,21 @@ void CodeGenVisitor::visitBlockStmt(Block *s) {
 
     // For variable declarations in re-executed blocks, we need special handling
     if (auto varStmt = dynamic_cast<Var *>(stmt.get())) {
+      // Track this variable for stack cleanup
+      blockVariables.push_back(varStmt->name.getLexeme());
+
       // Pass the block execution count to variable declaration
       // This will be used to create unique storage for loop body variables
       visitVarStmtWithExecution(varStmt, currentBlockExecution);
     } else {
       stmt->accept(this);
+    }
+  }
+
+  // CRITICAL FIX: Pop variables from stacks when exiting block scope
+  for (const auto &varName : blockVariables) {
+    if (!variableStacks[varName].empty()) {
+      variableStacks[varName].pop_back();
     }
   }
 
@@ -1567,6 +1584,7 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
   llvm::Function *prevFunction = currentFunction;
   auto prevLocals = locals;
   auto prevDirectValues = directValues;
+  auto prevVariableStacks = variableStacks; // Save variable stacks too
   llvm::BasicBlock *prevBB = builder.GetInsertBlock();
 
   // Create new function context for closure support but DON'T switch yet
@@ -1581,6 +1599,7 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
   // but don't switch contexts yet
   auto tempLocals = locals; // Save current locals
   auto tempDirectValues = directValues;
+  auto tempVariableStacks = variableStacks; // Save current variable stacks
 
   currentFunction = llvmFunc;
   locals.clear();
@@ -1610,6 +1629,8 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
   builder.SetInsertPoint(oldInsertPoint);
   locals = tempLocals;
   directValues = tempDirectValues;
+  variableStacks =
+      tempVariableStacks; // Restore variable stacks for closure capture
 
   // Create closure while we still have access to outer scope
   llvm::Value *closureValue = nullptr;
@@ -1676,6 +1697,7 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
     currentFunction = prevFunction;
     locals = std::move(prevLocals);
     directValues = std::move(prevDirectValues);
+    variableStacks = std::move(prevVariableStacks); // Restore variable stacks
     if (prevBB) {
       builder.SetInsertPoint(prevBB);
     }
@@ -1691,6 +1713,7 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
   currentFunction = prevFunction;
   locals = std::move(prevLocals);
   directValues = std::move(prevDirectValues);
+  variableStacks = std::move(prevVariableStacks); // Restore variable stacks
   if (prevBB) {
     builder.SetInsertPoint(prevBB);
   }
@@ -1925,82 +1948,49 @@ llvm::Value *CodeGenVisitor::captureUpvalue(const std::string &name) {
         mallocType, llvm::Function::ExternalLinkage, "malloc", &mod);
   }
 
-  // When creating a closure, we need to capture variables from the CURRENT
-  // scope (the enclosing scope where the closure is being created), not from
-  // the function being compiled.
-
-  // DEFINITIVE FIX FOR LOOP VARIABLE CAPTURE BUG:
-  // The root issue is that the "_current" binding gets overwritten by new
-  // declarations with the same variable name. We need to capture from the
-  // UNIQUE storage instead.
+  // DEFINITIVE FIX FOR CLOSURE CAPTURE BUG:
+  // Use lexical stack to resolve current binding, then snapshot the value
+  // This ensures closures capture from their correct lexical scope
 
   llvm::Value *current_value = nullptr;
 
-  // DEFINITIVE FIX: Find the MOST RECENT unique storage for this variable
-  // Each variable declaration gets a unique key: varName + "#" + blockDepth +
-  // "#" + counter We need to find the one with the highest counter (most recent
-  // declaration)
-  llvm::Value *best_storage = nullptr;
-  int highest_counter = -1;
-
-  for (const auto &pair : locals) {
-    const std::string &key = pair.first;
-    // Check if this is a unique variable key for the variable we want
-    if (key.find(name + "#") == 0) {
-      // Parse the counter from the key: "varName#blockDepth#counter"
-      size_t last_hash = key.find_last_of('#');
-      if (last_hash != std::string::npos) {
-        std::string counter_str = key.substr(last_hash + 1);
-        try {
-          int counter = std::stoi(counter_str);
-          if (counter > highest_counter) {
-            highest_counter = counter;
-            best_storage = pair.second;
-          }
-        } catch (...) {
-          // Skip invalid counter strings
-        }
-      }
-    }
-  }
-
-  if (best_storage != nullptr) {
-    // Load from the most recent unique storage
+  // 1) Resolve current lexical binding via variable stack:
+  auto stackIt = variableStacks.find(name);
+  if (stackIt != variableStacks.end() && !stackIt->second.empty()) {
+    // Get the storage that is current in this lexical scope (top of stack)
+    llvm::Value *current_storage = stackIt->second.back();
     if (directValues.count(name)) {
-      current_value = best_storage; // Direct value, no load needed
+      current_value = current_storage; // Direct value, no load needed
     } else {
       current_value =
-          builder.CreateLoad(llvmValueTy(), best_storage, name.c_str());
+          builder.CreateLoad(llvmValueTy(), current_storage, name.c_str());
     }
   } else {
-    // Fallback to "_current" binding for compatibility with non-loop variables
+    // Fallback for variables not using the stack system
     auto currentIt = locals.find(name + "_current");
     if (currentIt != locals.end()) {
-      // Load the current value from the variable storage
       if (directValues.count(name)) {
-        current_value = currentIt->second; // Direct value, no load needed
+        current_value = currentIt->second;
       } else {
         current_value =
             builder.CreateLoad(llvmValueTy(), currentIt->second, name.c_str());
       }
     } else {
-      // Final fallback to original lookup for variables declared before unique
-      // system
-      if (locals.find(name) != locals.end()) {
-        auto fallback_alloca = locals[name];
-        if (directValues.find(name) == directValues.end()) {
-          current_value =
-              builder.CreateLoad(llvmValueTy(), fallback_alloca, name.c_str());
+      // Final fallback to original lookup
+      auto it = locals.find(name);
+      if (it != locals.end()) {
+        if (directValues.count(name)) {
+          current_value = it->second;
         } else {
-          current_value = fallback_alloca;
+          current_value =
+              builder.CreateLoad(llvmValueTy(), it->second, name.c_str());
         }
       }
     }
   }
 
   if (current_value != nullptr) {
-    // DEFINITIVE FIX: Use immediate value capture instead of reference capture
-    // This ensures each closure gets its own copy of the value at creation time
+    // 2) Snapshot the value into a closed upvalue:
     auto alloc_upvalue_with_value_fn =
         mod.getFunction("elx_allocate_upvalue_with_value");
     if (!alloc_upvalue_with_value_fn) {
@@ -2033,17 +2023,18 @@ llvm::Value *CodeGenVisitor::captureUpvalue(const std::string &name) {
           llvmValueTy(), current_ctx.upvalue_array, index_val);
       auto upvalue_value = builder.CreateLoad(llvmValueTy(), upvalue_ptr);
 
-      // Create heap storage for this value
-      auto size = llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx), 8);
-      auto heap_ptr = builder.CreateCall(mallocFn, {size});
-      auto value_ptr = builder.CreateBitCast(
-          heap_ptr, llvm::PointerType::get(llvmValueTy(), 0));
-
-      // Store the current value in the heap location
-      builder.CreateStore(upvalue_value, value_ptr);
-
-      // Create upvalue pointing to the heap location
-      return builder.CreateCall(alloc_upvalue_fn, {value_ptr});
+      // STEP 4 FIX: Use immediate value capture instead of heap allocation +
+      // reference
+      auto alloc_upvalue_with_value_fn =
+          mod.getFunction("elx_allocate_upvalue_with_value");
+      if (!alloc_upvalue_with_value_fn) {
+        llvm::FunctionType *allocType =
+            llvm::FunctionType::get(llvmValueTy(), {llvmValueTy()}, false);
+        alloc_upvalue_with_value_fn =
+            llvm::Function::Create(allocType, llvm::Function::ExternalLinkage,
+                                   "elx_allocate_upvalue_with_value", &mod);
+      }
+      return builder.CreateCall(alloc_upvalue_with_value_fn, {upvalue_value});
     }
   }
 
@@ -2051,18 +2042,18 @@ llvm::Value *CodeGenVisitor::captureUpvalue(const std::string &name) {
   if (globals.find(name) != globals.end()) {
     auto global_value = globals[name];
 
-    // For global variables, we also need to create persistent storage
-    // since globals[name] contains the value, not a pointer to storage
-    auto size = llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx), 8);
-    auto heap_ptr = builder.CreateCall(mallocFn, {size});
-    auto value_ptr = builder.CreateBitCast(
-        heap_ptr, llvm::PointerType::get(llvmValueTy(), 0));
-
-    // Store the global value in the heap location
-    builder.CreateStore(global_value, value_ptr);
-
-    // Create upvalue pointing to the heap location
-    return builder.CreateCall(alloc_upvalue_fn, {value_ptr});
+    // STEP 5 FIX: Use immediate value capture for globals instead of heap
+    // allocation + reference
+    auto alloc_upvalue_with_value_fn =
+        mod.getFunction("elx_allocate_upvalue_with_value");
+    if (!alloc_upvalue_with_value_fn) {
+      llvm::FunctionType *allocType =
+          llvm::FunctionType::get(llvmValueTy(), {llvmValueTy()}, false);
+      alloc_upvalue_with_value_fn =
+          llvm::Function::Create(allocType, llvm::Function::ExternalLinkage,
+                                 "elx_allocate_upvalue_with_value", &mod);
+    }
+    return builder.CreateCall(alloc_upvalue_with_value_fn, {global_value});
   }
 
   // Variable not found - this should not happen with correct resolver

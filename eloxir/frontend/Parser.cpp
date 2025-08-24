@@ -155,10 +155,19 @@ std::unique_ptr<Stmt> Parser::forStatement() {
   // If this is a for-loop with a variable declaration, apply the capture fix
   if (hasLoopVar) {
     // Transform: for (var i = init; cond; incr) { body }
-    // Into: { var i_outer = init; while (i_outer < limit) { { var i = i_outer;
-    // body } i_outer = i_outer + 1; } }
+    // Into: { var i_outer = init; while (i_outer < limit) { { var i_UNIQUE =
+    // i_outer; body } i_outer = i_outer + 1; } } CRITICAL: Each iteration MUST
+    // get a unique variable name to prevent all closures from capturing the
+    // same variable binding.
 
     std::string outerVarName = loopVar.getLexeme() + "_outer";
+
+    // Generate a unique identifier for this transformation to ensure
+    // different for-loops don't conflict with each other
+    static int forLoopCounter = 0;
+    forLoopCounter++;
+    std::string innerVarName =
+        loopVar.getLexeme() + "_iter_" + std::to_string(forLoopCounter);
 
     // Get the initializer expression from the original variable declaration
     auto originalVar = dynamic_cast<Var *>(initializer.get());
@@ -170,10 +179,20 @@ std::unique_ptr<Stmt> Parser::forStatement() {
     auto outerVarDecl =
         std::make_unique<Var>(Token(outerVarToken), std::move(initExpr));
 
-    // Create inner block: { var i = i_outer; body }
+    // CRITICAL CHANGE: Create inner block with UNIQUE variable name per
+    // iteration We need to create a fresh scope structure that the resolver
+    // will understand as creating separate variables for each iteration.
+
+    // The key insight: We need the BODY to see the original variable name (i),
+    // but each iteration must have its OWN distinct variable that captures
+    // the current value of i_outer.
+
+    // Strategy: Create a block scope that allocates a fresh binding of 'i'
+    // for each iteration, initialized from i_outer's current value.
+
     std::vector<std::unique_ptr<Stmt>> innerStatements;
 
-    // var i = i_outer;
+    // var i = i_outer;  (using original variable name so body code works)
     Token outerReadToken(TokenType::IDENTIFIER, outerVarName, std::monostate{},
                          loopVar.getLine());
     auto outerVarRead = std::make_unique<Variable>(std::move(outerReadToken));
