@@ -638,16 +638,6 @@ void CodeGenVisitor::visitVariableExpr(Variable *e) {
     }
   }
 
-  // For global variables, check the persistent global system
-  if (globalVariables.count(varName)) {
-    auto getGlobalVarFn = mod.getFunction("elx_get_global_variable");
-    if (getGlobalVarFn) {
-      auto nameStr = builder.CreateGlobalStringPtr(varName, "var_name");
-      value = builder.CreateCall(getGlobalVarFn, {nameStr}, "global_var");
-      return;
-    }
-  }
-
   // Use variable stacks for lexical scope correctness (for non-upvalue access)
   // Skip this check if inside a function and the variable is an upvalue
   auto stackIt = variableStacks.find(varName);
@@ -664,6 +654,16 @@ void CodeGenVisitor::visitVariableExpr(Variable *e) {
         value =
             builder.CreateLoad(llvmValueTy(), current_storage, varName.c_str());
       }
+      return;
+    }
+  }
+
+  // For global variables, check the persistent global system AFTER local stacks
+  if (globalVariables.count(varName)) {
+    auto getGlobalVarFn = mod.getFunction("elx_get_global_variable");
+    if (getGlobalVarFn) {
+      auto nameStr = builder.CreateGlobalStringPtr(varName, "var_name");
+      value = builder.CreateCall(getGlobalVarFn, {nameStr}, "global_var");
       return;
     }
   }
@@ -883,35 +883,6 @@ void CodeGenVisitor::visitAssignExpr(Assign *e) {
     }
   }
 
-  // For global variables, always update both local storage and global system
-  if (globalVariables.count(varName)) {
-    // Update local storage if it exists
-    auto localIt = locals.find(varName);
-    if (localIt != locals.end()) {
-      if (directValues.count(varName)) {
-        // This is a parameter or direct value - we need to create storage for
-        // it
-        auto fn = builder.GetInsertBlock()->getParent();
-        auto &entry = fn->getEntryBlock();
-        llvm::IRBuilder<> save(entry.getFirstNonPHI());
-        auto slot = save.CreateAlloca(llvmValueTy(), nullptr, varName.c_str());
-        locals[varName] = slot;
-        directValues.erase(varName);
-      }
-      builder.CreateStore(assignValue, localIt->second);
-    }
-
-    // Always update the persistent global system for global variables
-    auto setGlobalVarFn = mod.getFunction("elx_set_global_variable");
-    if (setGlobalVarFn) {
-      auto nameStr = builder.CreateGlobalStringPtr(varName, "var_name");
-      builder.CreateCall(setGlobalVarFn, {nameStr, assignValue});
-    }
-
-    value = assignValue; // Assignment returns the assigned value
-    return;
-  }
-
   // CRITICAL FIX: Use variable stacks for lexical scope correctness in
   // assignments This ensures assignments respect the same scoping as variable
   // access
@@ -940,6 +911,35 @@ void CodeGenVisitor::visitAssignExpr(Assign *e) {
       value = assignValue; // Assignment returns the assigned value
       return;
     }
+  }
+
+  // For global variables AFTER checking local stacks
+  if (globalVariables.count(varName)) {
+    // Update local storage if it exists
+    auto localIt = locals.find(varName);
+    if (localIt != locals.end()) {
+      if (directValues.count(varName)) {
+        // This is a parameter or direct value - we need to create storage for
+        // it
+        auto fn = builder.GetInsertBlock()->getParent();
+        auto &entry = fn->getEntryBlock();
+        llvm::IRBuilder<> save(entry.getFirstNonPHI());
+        auto slot = save.CreateAlloca(llvmValueTy(), nullptr, varName.c_str());
+        locals[varName] = slot;
+        directValues.erase(varName);
+      }
+      builder.CreateStore(assignValue, localIt->second);
+    }
+
+    // Always update the persistent global system for global variables
+    auto setGlobalVarFn = mod.getFunction("elx_set_global_variable");
+    if (setGlobalVarFn) {
+      auto nameStr = builder.CreateGlobalStringPtr(varName, "var_name");
+      builder.CreateCall(setGlobalVarFn, {nameStr, assignValue});
+    }
+
+    value = assignValue; // Assignment returns the assigned value
+    return;
   }
 
   // Check locals for truly local variables - use "_current" binding
@@ -1226,9 +1226,10 @@ void CodeGenVisitor::visitVarStmtWithExecution(Var *s, int blockExecution) {
 
   // Determine if we're at global scope
   auto fn = builder.GetInsertBlock()->getParent();
-  bool isGlobal =
-      (currentFunction == nullptr ||
-       fn->getName().str().find("__expr") == 0); // REPL expression functions
+  // A declaration is truly global only at top level (no surrounding block).
+  bool isGlobal = ((currentFunction == nullptr) ||
+                   fn->getName().str().find("__expr") == 0) &&
+                  (blockDepth == 0);
 
   if (isGlobal) {
     // For global variables, create an alloca so they can be modified
