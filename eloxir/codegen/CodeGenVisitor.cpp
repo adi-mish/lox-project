@@ -912,6 +912,36 @@ void CodeGenVisitor::visitAssignExpr(Assign *e) {
     return;
   }
 
+  // CRITICAL FIX: Use variable stacks for lexical scope correctness in
+  // assignments This ensures assignments respect the same scoping as variable
+  // access
+  auto stackIt = variableStacks.find(varName);
+  if (stackIt != variableStacks.end() && !stackIt->second.empty()) {
+    // Skip variable stack lookup if we're in a function and this is an upvalue
+    bool skipForUpvalue = !function_stack.empty() && isUpvalue(varName);
+    if (!skipForUpvalue) {
+      // Get the storage that is current in this lexical scope (top of stack)
+      llvm::Value *current_storage = stackIt->second.back();
+
+      if (directValues.count(varName)) {
+        // This shouldn't happen for variable stack entries, but handle it
+        // Convert to storage-based
+        auto fn = builder.GetInsertBlock()->getParent();
+        auto &entry = fn->getEntryBlock();
+        llvm::IRBuilder<> save(entry.getFirstNonPHI());
+        auto slot = save.CreateAlloca(llvmValueTy(), nullptr, varName.c_str());
+        builder.CreateStore(current_storage, slot);
+        stackIt->second.back() = slot; // Update the stack entry
+        directValues.erase(varName);
+        current_storage = slot;
+      }
+
+      builder.CreateStore(assignValue, current_storage);
+      value = assignValue; // Assignment returns the assigned value
+      return;
+    }
+  }
+
   // Check locals for truly local variables - use "_current" binding
   auto currentIt = locals.find(varName + "_current");
   if (currentIt != locals.end()) {
@@ -1242,9 +1272,15 @@ void CodeGenVisitor::visitVarStmtWithExecution(Var *s, int blockExecution) {
         allocaBuilder.CreateAlloca(llvmValueTy(), nullptr, allocaName.c_str());
     builder.CreateStore(initValue, slot);
 
-    // Store with the unique key AND always update the "_current" binding
+    // Store with the unique key for internal tracking
     locals[uniqueVarKey] = slot;
-    locals[varName + "_current"] = slot;
+
+    // CRITICAL FIX: Don't update "_current" binding when using variable stacks
+    // The "_current" system interferes with proper lexical scoping
+    // Only update "_current" if this is the first declaration of this variable
+    if (variableStacks[varName].empty()) {
+      locals[varName + "_current"] = slot;
+    }
 
     // ARCHITECTURAL FIX: Push storage onto per-variable stack for proper
     // lexical scoping
@@ -1301,19 +1337,26 @@ void CodeGenVisitor::visitBlockStmt(Block *s) {
     }
   }
 
+  // Decrement block depth when exiting block
+  blockDepth--;
+
+  // Restore previous locals scope and global variables set FIRST
+  locals = std::move(beforeLocals);
+  globalVariables = std::move(beforeGlobals);
+
   // CRITICAL FIX: Pop variables from stacks when exiting block scope
   for (const auto &varName : blockVariables) {
     if (!variableStacks[varName].empty()) {
       variableStacks[varName].pop_back();
+
+      // CRITICAL FIX: If the stack becomes empty, remove the entry entirely
+      // This allows global variables to be accessed correctly after local
+      // shadowing ends
+      if (variableStacks[varName].empty()) {
+        variableStacks.erase(varName);
+      }
     }
   }
-
-  // Decrement block depth when exiting block
-  blockDepth--;
-
-  // Restore previous locals scope and global variables set
-  locals = std::move(beforeLocals);
-  globalVariables = std::move(beforeGlobals);
 }
 
 void CodeGenVisitor::visitIfStmt(If *s) {
