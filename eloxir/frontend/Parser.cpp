@@ -4,7 +4,8 @@
 
 namespace eloxir {
 
-Parser::Parser(const std::vector<Token> &tokens) : tokens(tokens) {}
+Parser::Parser(const std::vector<Token> &tokens)
+    : tokens(tokens), hadError(false), firstError("") {}
 
 std::vector<std::unique_ptr<Stmt>> Parser::parse() {
   std::vector<std::unique_ptr<Stmt>> statements;
@@ -16,7 +17,9 @@ std::vector<std::unique_ptr<Stmt>> Parser::parse() {
         statements.push_back(std::move(stmt));
       }
     } catch (const std::runtime_error &e) {
-      std::cerr << "Parse error: " << e.what() << std::endl;
+      if (!hadError)
+        firstError = e.what();
+      hadError = true;
       synchronize();
     }
   }
@@ -474,6 +477,9 @@ std::runtime_error Parser::error(const Token &token,
 
   std::string fullMessage = "[line " + std::to_string(token.getLine()) +
                             "] Error" + where + ": " + message;
+  if (!hadError)
+    firstError = fullMessage;
+  hadError = true;
   return std::runtime_error(fullMessage);
 }
 
@@ -530,6 +536,9 @@ parseREPL(const std::string &source) {
 
     // Fallback: full statement parse (must end with EOF)
     auto stmts = p.parse();
+    if (p.hadErrors()) {
+      return {nullptr, p.firstErrorMessage()};
+    }
     if (stmts.empty())
       return {nullptr, ""};
     if (stmts.size() == 1)

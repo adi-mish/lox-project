@@ -15,6 +15,14 @@
 
 using namespace llvm;
 
+namespace {
+
+enum class ExitCode : int {
+  kOk = 0,
+  kCompileError = 65,
+  kRuntimeError = 70,
+};
+
 // Function to parse and execute a file
 std::pair<std::vector<std::unique_ptr<eloxir::Stmt>>, std::string>
 parseFile(const std::string &source) {
@@ -23,13 +31,17 @@ parseFile(const std::string &source) {
     auto tokens = scanner.scanTokens();
     eloxir::Parser parser(tokens);
     auto stmts = parser.parse();
+    if (parser.hadErrors()) {
+      return {std::vector<std::unique_ptr<eloxir::Stmt>>{},
+              parser.firstErrorMessage()};
+    }
     return {std::move(stmts), ""};
   } catch (const std::runtime_error &e) {
     return {std::vector<std::unique_ptr<eloxir::Stmt>>{}, e.what()};
   }
 }
 
-void runFile(const std::string &filename) {
+int runFile(const std::string &filename) {
   // Initialize LLVM targets
   InitializeNativeTarget();
   InitializeNativeTargetAsmPrinter();
@@ -42,7 +54,7 @@ void runFile(const std::string &filename) {
   std::ifstream file(filename);
   if (!file.is_open()) {
     std::cerr << "Error: Could not open file '" << filename << "'\n";
-    return;
+    return static_cast<int>(ExitCode::kRuntimeError);
   }
 
   std::stringstream buffer;
@@ -54,11 +66,11 @@ void runFile(const std::string &filename) {
   auto [stmts, error] = parseFile(source);
   if (!error.empty()) {
     std::cerr << "Parse error: " << error << '\n';
-    return;
+    return static_cast<int>(ExitCode::kCompileError);
   }
 
   if (stmts.empty()) {
-    return; // Empty file
+    return static_cast<int>(ExitCode::kOk); // Empty file
   }
 
   // Resolve variables and analyze upvalues
@@ -67,7 +79,7 @@ void runFile(const std::string &filename) {
     resolver.resolve(stmts);
   } catch (const std::runtime_error &e) {
     std::cerr << "Resolution error: " << e.what() << '\n';
-    return;
+    return static_cast<int>(ExitCode::kCompileError);
   }
 
   // Clear any previous runtime errors
@@ -120,7 +132,7 @@ void runFile(const std::string &filename) {
     // Verify the function before executing
     if (llvm::verifyFunction(*fn, &llvm::errs())) {
       std::cerr << "Generated invalid LLVM IR. Cannot execute.\n";
-      return;
+      return static_cast<int>(ExitCode::kCompileError);
     }
 
     // After the main function is complete, create function objects at global
@@ -145,16 +157,23 @@ void runFile(const std::string &filename) {
     if (elx_has_runtime_error()) {
       // Error already printed by runtime, just clear it
       elx_clear_runtime_error();
+      return static_cast<int>(ExitCode::kRuntimeError);
     }
 
   } catch (const std::exception &e) {
     std::cerr << "Error: " << e.what() << '\n';
     elx_clear_runtime_error();
+    return static_cast<int>(ExitCode::kRuntimeError);
   } catch (...) {
     std::cerr << "Unknown error occurred\n";
     elx_clear_runtime_error();
+    return static_cast<int>(ExitCode::kRuntimeError);
   }
+
+  return static_cast<int>(ExitCode::kOk);
 }
+
+} // namespace
 
 void runREPL() {
   // Initialize LLVM targets
@@ -266,7 +285,7 @@ int main(int argc, char *argv[]) {
     runREPL();
   } else if (argc == 2) {
     // One argument - run file
-    runFile(argv[1]);
+    return runFile(argv[1]);
   } else {
     std::cerr << "Usage: " << argv[0] << " [filename]\n";
     std::cerr << "  No arguments: Start REPL\n";
