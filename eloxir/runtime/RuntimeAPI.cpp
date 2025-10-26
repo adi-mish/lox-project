@@ -27,6 +27,31 @@ static std::unordered_map<std::string, uint64_t> global_functions;
 static bool runtime_error_flag = false;
 static std::string runtime_error_message;
 
+namespace {
+constexpr int MAX_CALL_DEPTH = 256;
+thread_local int current_call_depth = 0;
+
+struct CallDepthGuard {
+  CallDepthGuard() {
+    if (current_call_depth < MAX_CALL_DEPTH) {
+      ++current_call_depth;
+      active = true;
+    }
+  }
+
+  ~CallDepthGuard() {
+    if (active) {
+      --current_call_depth;
+    }
+  }
+
+  bool entered() const { return active; }
+
+private:
+  bool active = false;
+};
+} // namespace
+
 static const char *getString(Value v) {
   if (!v.isObj())
     return nullptr;
@@ -385,6 +410,12 @@ uint64_t elx_call_function(uint64_t func_bits, uint64_t *args, int arg_count) {
     return Value::nil().getBits();
   }
 
+  CallDepthGuard depth_guard;
+  if (!depth_guard.entered()) {
+    elx_runtime_error("Stack overflow.");
+    return Value::nil().getBits();
+  }
+
   // Use a more flexible calling mechanism that supports up to 16 arguments
   // For functions with more arguments, we'd need libffi or similar
   try {
@@ -735,6 +766,12 @@ uint64_t elx_call_closure(uint64_t closure_bits, uint64_t *args,
 
   if (!func->llvm_function) {
     elx_runtime_error("Closure function has no implementation.");
+    return Value::nil().getBits();
+  }
+
+  CallDepthGuard depth_guard;
+  if (!depth_guard.entered()) {
+    elx_runtime_error("Stack overflow.");
     return Value::nil().getBits();
   }
 

@@ -1703,6 +1703,12 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
   directValues.clear();
   builder.SetInsertPoint(entryBB);
 
+  // Reset lexical storage tracking for the new function. Sharing the stacks
+  // with the enclosing context causes inner functions to reference allocas
+  // from other functions, triggering LLVM verifier failures when closures
+  // capture locals.
+  variableStacks.clear();
+
   // Re-add parameters to local scope
   argIt = llvmFunc->arg_begin();
   for (size_t i = 0; i < s->params.size(); ++i, ++argIt) {
@@ -1736,6 +1742,7 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
     currentFunction = prevFunction;
     locals = std::move(prevLocals);
     directValues = std::move(prevDirectValues);
+    variableStacks = std::move(prevVariableStacks);
     if (prevBB) {
       builder.SetInsertPoint(prevBB);
     }
