@@ -380,8 +380,8 @@ void CodeGenVisitor::emitRuntimeError(const std::string &message) {
   auto runtimeErrorFn = mod.getFunction("elx_runtime_error");
   if (!runtimeErrorFn)
     return;
-  auto msgValue = stringConst(message);
-  builder.CreateCall(runtimeErrorFn, {msgValue});
+  auto msgPtr = builder.CreateGlobalStringPtr(message, "runtime_error_msg");
+  builder.CreateCall(runtimeErrorFn, {msgPtr});
 }
 
 // --------- Expr visitors -------------------------------------------------

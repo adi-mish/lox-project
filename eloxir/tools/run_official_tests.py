@@ -104,8 +104,12 @@ def _normalize_output(stream: str | bytes | None) -> str:
 
 def run_test(path: Path, timeout: int) -> Tuple[str, str, int, bool]:
     try:
+        cmd = [str(ELOXIR_BIN)]
+        if path.parent.name == "scanning":
+            cmd.append("--scan")
+        cmd.append(str(path))
         completed = subprocess.run(
-            [str(ELOXIR_BIN), str(path)],
+            cmd,
             capture_output=True,
             text=True,
             timeout=timeout,

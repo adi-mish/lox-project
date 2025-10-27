@@ -1,34 +1,36 @@
 # Eloxir test status (temporary notes)
 
-## Failing cases after initial test run
-- `closure/nested_closure.lox`: LLVM verifier errors due to cross-function instruction references when loading captured locals (scope1_decl etc.).
-- `limit/stack_overflow.lox`: aborts with exit code -11 (likely stack overflow from runaway recursion or infinite loop?). Need to investigate.
-- `limit/too_many_upvalues.lox`: similar LLVM verifier errors referencing instructions in other functions for captured variables.
+## Outstanding suites
+- Resolver/codegen still lets invalid programs fall through (e.g. too many locals/constants) instead of halting with compile errors.
+- Method binding/`this` semantics are broken; closures lose the bound instance and emit "Can only call functions and closures."
 
-## Timeouts with 3s budget (not necessarily bugs)
-- `benchmark/equality.lox` (~4.5s runtime, completes successfully)
-- `benchmark/instantiation.lox`
-- `benchmark/invocation.lox`
-- `benchmark/properties.lox`
-- `benchmark/string_equality.lox`
-- `benchmark/zoo_batch.lox`
-- `for/syntax.lox`: infinite loop printing `1`. Real bug (should report parser errors?).
+## Recent investigations
 
+### assignment/undefined.lox
+- Failure mode: LLVM verifier rejects the module because `emitRuntimeError()` boxed the diagnostic string via `stringConst()` (returns a tagged `Value`) before calling `elx_runtime_error(const char*)`.
+- Fix: pass the raw `i8*` from `CreateGlobalStringPtr` directly to `elx_runtime_error` so the runtime sees a C string and the verifier accepts the call.
+- Status: resolved.
 
-### nested_closure_capture.lox
-- Reproduction confirms LLVM verifier error due to cross-function alloca usage via shared `variableStacks` across function boundaries.
-- Root cause: when entering a new function, `variableStacks` retains pointers from enclosing scopes, so inner closures load from outer allocas directly instead of capturing values.
+### scanning/*
+- Failure mode: CLI executed scanner fixtures as full programs, so parser raised syntax errors.
+- Fix: add `--scan` mode to the `eloxir` binary and teach the Python harness to invoke it for `test/scanning/**` files, printing tokens in Crafting Interpreters format.
+- Status: resolved.
 
-### for_no_increment.lox
-- Reproduction loops forever printing 1.
-- Root cause: Parser's special-case transformation for `for` loops with `var` initializer rewrites loop to use shadow `*_outer` variable but skips increment when original increment clause missing, leaving outer variable constant so condition never changes.
+### variable/collide_with_parameter.lox
+- Failure mode: function parameters lived in a parent resolver scope, so `var a;` inside the body silently shadowed the parameter instead of raising a compile error.
+- Fix: resolve function bodies directly within the parameter scope rather than delegating to the block visitor that introduces another scope.
+- Status: resolved.
 
-### stack_overflow.lox
-- Segfault instead of runtime error.
-- Root cause: Runtime lacks call depth guard; unbounded recursion eventually crashes host stack. Need global counter to emit "Stack overflow." before C++ stack blows.
+### while/*
+- Failure mode: runtime error calls for undefined variables/closures passed boxed `Value` handles to `elx_runtime_error`, confusing LLVM's verifier.
+- Fix: emit plain `i8*` constants for diagnostics so the verifier accepts the module; while-suite programs now execute and return expected results.
+- Status: resolved.
 
-## Status updates
-- nested_closure_capture.lox now prints `ok` after isolating `variableStacks` per function.
-- for_no_increment.lox now terminates with 1,2,3 after restoring canonical `for` desugaring.
-- stack_overflow.lox now reports runtime error via call-depth guard.
-- Full official suite passes; benchmark cases require tens of seconds each (e.g. instantiation ~59s) but complete successfully.
+### nested_closure_capture.lox (resolved earlier)
+- Shared `variableStacks` allowed closures to capture outer allocas directly; clearing stacks per function restored proper upvalue lifting.
+
+### for_no_increment.lox (resolved earlier)
+- Rewrote `for` desugaring to keep increment clause even when missing in source, preventing infinite loops.
+
+### stack_overflow.lox (resolved earlier)
+- Added runtime call-depth guard so deep recursion raises "Stack overflow." instead of segfaulting.
