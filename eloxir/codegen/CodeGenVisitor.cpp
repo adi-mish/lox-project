@@ -376,15 +376,18 @@ llvm::Value *CodeGenVisitor::checkBothNumbers(llvm::Value *L, llvm::Value *R,
 
   // Error case - generate runtime error instead of trap
   builder.SetInsertPoint(errorBB);
-  // Print error message and continue with nil instead of crashing
-  auto printFn = mod.getFunction("elx_print");
-  if (printFn) {
-    auto errorMsg = stringConst("Runtime error: Operands must be numbers.");
-    builder.CreateCall(printFn, {errorMsg}, "print_error");
-  }
+  emitRuntimeError("Runtime error: Operands must be numbers.");
   // Don't return here - let the caller handle control flow
 
   return both;
+}
+
+void CodeGenVisitor::emitRuntimeError(const std::string &message) {
+  auto runtimeErrorFn = mod.getFunction("elx_runtime_error");
+  if (!runtimeErrorFn)
+    return;
+  auto msgPtr = builder.CreateGlobalStringPtr(message, "runtime_error_msg");
+  builder.CreateCall(runtimeErrorFn, {msgPtr});
 }
 
 // --------- Expr visitors -------------------------------------------------
@@ -460,13 +463,8 @@ void CodeGenVisitor::visitBinaryExpr(Binary *e) {
 
     // Type error
     builder.SetInsertPoint(errorBB);
-    // Print error message and continue with nil instead of crashing
-    auto printFn = mod.getFunction("elx_print");
-    if (printFn) {
-      auto errorMsg = stringConst(
-          "Runtime error: Operands must be numbers or strings for +.");
-      builder.CreateCall(printFn, {errorMsg}, "print_error");
-    }
+    emitRuntimeError(
+        "Runtime error: Operands must be numbers or strings for +.");
     auto errorResult = nilConst();
     builder.CreateBr(contBB);
 
@@ -601,13 +599,8 @@ void CodeGenVisitor::visitUnaryExpr(Unary *e) {
     builder.CreateBr(contBB);
 
     builder.SetInsertPoint(slowBB);
-    // Print error message and continue with nil instead of crashing
-    auto printFn = mod.getFunction("elx_print");
-    if (printFn) {
-      auto errorMsg =
-          stringConst("Runtime error: Operand must be a number for negation.");
-      builder.CreateCall(printFn, {errorMsg}, "print_error");
-    }
+    emitRuntimeError(
+        "Runtime error: Operand must be a number for negation.");
     auto errorResult = nilConst();
     builder.CreateBr(contBB);
 
@@ -739,13 +732,7 @@ void CodeGenVisitor::visitVariableExpr(Variable *e) {
 
       // Function not found - runtime error
       builder.SetInsertPoint(notFoundBB);
-      auto printFn = mod.getFunction("elx_print");
-      if (printFn) {
-        std::string errorMsg =
-            "Runtime error: Undefined function '" + varName + "'.";
-        auto msgValue = stringConst(errorMsg);
-        builder.CreateCall(printFn, {msgValue});
-      }
+      emitRuntimeError("Runtime error: Undefined function '" + varName + "'.");
       auto notFoundValue = nilConst();
       builder.CreateBr(contBB);
 
@@ -829,13 +816,8 @@ void CodeGenVisitor::visitVariableExpr(Variable *e) {
 
         // Variable not found - runtime error
         builder.SetInsertPoint(notFoundBB);
-        auto printFn = mod.getFunction("elx_print");
-        if (printFn) {
-          std::string errorMsg =
-              "Runtime error: Undefined variable '" + varName + "'.";
-          auto msgValue = stringConst(errorMsg);
-          builder.CreateCall(printFn, {msgValue});
-        }
+        emitRuntimeError("Runtime error: Undefined variable '" + varName +
+                         "'.");
         auto notFoundValue = nilConst();
         builder.CreateBr(contBB);
 
@@ -853,13 +835,7 @@ void CodeGenVisitor::visitVariableExpr(Variable *e) {
   }
 
   // Fallback - return nil and print error
-  auto printFn = mod.getFunction("elx_print");
-  if (printFn) {
-    std::string errorMsg =
-        "Runtime error: Undefined variable '" + varName + "'.";
-    auto msgValue = stringConst(errorMsg);
-    builder.CreateCall(printFn, {msgValue});
-  }
+  emitRuntimeError("Runtime error: Undefined variable '" + varName + "'.");
   value = nilConst();
 }
 
@@ -1016,12 +992,7 @@ void CodeGenVisitor::visitAssignExpr(Assign *e) {
 
     // Variable not found - error
     builder.SetInsertPoint(errorBB);
-    auto printFn = mod.getFunction("elx_print");
-    if (printFn) {
-      auto errorMsg =
-          stringConst("Runtime error: Undefined variable '" + varName + "'.");
-      builder.CreateCall(printFn, {errorMsg}, "print_error");
-    }
+    emitRuntimeError("Runtime error: Undefined variable '" + varName + "'.");
     builder.CreateBr(contBB);
 
     // Continuation
@@ -1034,12 +1005,7 @@ void CodeGenVisitor::visitAssignExpr(Assign *e) {
   }
 
   // Variable not found - this is an error in Lox
-  auto printFn = mod.getFunction("elx_print");
-  if (printFn) {
-    auto errorMsg =
-        stringConst("Runtime error: Undefined variable '" + varName + "'.");
-    builder.CreateCall(printFn, {errorMsg}, "print_error");
-  }
+  emitRuntimeError("Runtime error: Undefined variable '" + varName + "'.");
   value = nilConst();
 }
 
@@ -1707,6 +1673,12 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
   directValues.clear();
   builder.SetInsertPoint(entryBB);
 
+  // Reset lexical storage tracking for the new function. Sharing the stacks
+  // with the enclosing context causes inner functions to reference allocas
+  // from other functions, triggering LLVM verifier failures when closures
+  // capture locals.
+  variableStacks.clear();
+
   // Re-add parameters to local scope
   argIt = llvmFunc->arg_begin();
   for (size_t i = 0; i < s->params.size(); ++i, ++argIt) {
@@ -1738,6 +1710,7 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
     currentFunction = prevFunction;
     locals = std::move(prevLocals);
     directValues = std::move(prevDirectValues);
+    variableStacks = std::move(prevVariableStacks);
     if (prevBB) {
       builder.SetInsertPoint(prevBB);
     }

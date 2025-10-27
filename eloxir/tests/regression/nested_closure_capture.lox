@@ -1,0 +1,14 @@
+fun outer() {
+  var a = "ok";
+  fun mid() {
+    var b = "ignored";
+    fun inner() {
+      print a;
+    }
+    return inner;
+  }
+  return mid();
+}
+
+var fn = outer();
+fn(); // expect: ok

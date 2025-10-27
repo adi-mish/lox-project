@@ -136,7 +136,11 @@ void Resolver::resolveFunction(Function *function, FunctionType type) {
     declare(param);
     define(param);
   }
-  resolve(function->body.get());
+  if (function->body) {
+    for (const auto &stmt : function->body->statements) {
+      resolve(stmt.get());
+    }
+  }
   endScope();
 
   // Pop function context and store upvalue info

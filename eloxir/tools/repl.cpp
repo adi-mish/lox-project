@@ -15,6 +15,149 @@
 
 using namespace llvm;
 
+namespace {
+
+enum class ExitCode : int {
+  kOk = 0,
+  kCompileError = 65,
+  kRuntimeError = 70,
+};
+
+std::string tokenTypeName(eloxir::TokenType type) {
+  using eloxir::TokenType;
+  switch (type) {
+  case TokenType::LEFT_PAREN:
+    return "LEFT_PAREN";
+  case TokenType::RIGHT_PAREN:
+    return "RIGHT_PAREN";
+  case TokenType::LEFT_BRACE:
+    return "LEFT_BRACE";
+  case TokenType::RIGHT_BRACE:
+    return "RIGHT_BRACE";
+  case TokenType::COMMA:
+    return "COMMA";
+  case TokenType::DOT:
+    return "DOT";
+  case TokenType::MINUS:
+    return "MINUS";
+  case TokenType::PLUS:
+    return "PLUS";
+  case TokenType::SEMICOLON:
+    return "SEMICOLON";
+  case TokenType::SLASH:
+    return "SLASH";
+  case TokenType::STAR:
+    return "STAR";
+  case TokenType::BANG:
+    return "BANG";
+  case TokenType::BANG_EQUAL:
+    return "BANG_EQUAL";
+  case TokenType::EQUAL:
+    return "EQUAL";
+  case TokenType::EQUAL_EQUAL:
+    return "EQUAL_EQUAL";
+  case TokenType::GREATER:
+    return "GREATER";
+  case TokenType::GREATER_EQUAL:
+    return "GREATER_EQUAL";
+  case TokenType::LESS:
+    return "LESS";
+  case TokenType::LESS_EQUAL:
+    return "LESS_EQUAL";
+  case TokenType::IDENTIFIER:
+    return "IDENTIFIER";
+  case TokenType::STRING:
+    return "STRING";
+  case TokenType::NUMBER:
+    return "NUMBER";
+  case TokenType::AND:
+    return "AND";
+  case TokenType::CLASS:
+    return "CLASS";
+  case TokenType::ELSE:
+    return "ELSE";
+  case TokenType::FALSE:
+    return "FALSE";
+  case TokenType::FUN:
+    return "FUN";
+  case TokenType::FOR:
+    return "FOR";
+  case TokenType::IF:
+    return "IF";
+  case TokenType::NIL:
+    return "NIL";
+  case TokenType::OR:
+    return "OR";
+  case TokenType::PRINT:
+    return "PRINT";
+  case TokenType::RETURN:
+    return "RETURN";
+  case TokenType::SUPER:
+    return "SUPER";
+  case TokenType::THIS:
+    return "THIS";
+  case TokenType::TRUE:
+    return "TRUE";
+  case TokenType::VAR:
+    return "VAR";
+  case TokenType::WHILE:
+    return "WHILE";
+  case TokenType::EOF_TOKEN:
+    return "EOF";
+  }
+  return "UNKNOWN";
+}
+
+std::string literalToString(const eloxir::Token &token) {
+  const auto &literal = token.getLiteral();
+  if (std::holds_alternative<std::monostate>(literal)) {
+    return "null";
+  }
+  if (const auto *num = std::get_if<double>(&literal)) {
+    std::ostringstream out;
+    out.precision(15);
+    out << *num;
+    auto text = out.str();
+    if (text.find('e') == std::string::npos && text.find('E') == std::string::npos &&
+        text.find('.') == std::string::npos) {
+      text += ".0";
+    }
+    return text;
+  }
+  if (const auto *str = std::get_if<std::string>(&literal)) {
+    return *str;
+  }
+  if (const auto *boolean = std::get_if<bool>(&literal)) {
+    return *boolean ? "true" : "false";
+  }
+  return "null";
+}
+
+int scanFile(const std::string &filename) {
+  std::ifstream file(filename);
+  if (!file.is_open()) {
+    std::cerr << "Error: Could not open file '" << filename << "'\n";
+    return static_cast<int>(ExitCode::kRuntimeError);
+  }
+
+  std::stringstream buffer;
+  buffer << file.rdbuf();
+  std::string source = buffer.str();
+
+  try {
+    eloxir::Scanner scanner(source);
+    auto tokens = scanner.scanTokens();
+    for (const auto &token : tokens) {
+      std::cout << tokenTypeName(token.getType()) << ' '
+                << token.getLexeme() << ' ' << literalToString(token) << '\n';
+    }
+    return static_cast<int>(ExitCode::kOk);
+  } catch (const std::runtime_error &e) {
+    std::cerr << "Scan error: " << e.what() << '\n';
+    return static_cast<int>(ExitCode::kCompileError);
+  }
+}
+
 // Function to parse and execute a file
 std::pair<std::vector<std::unique_ptr<eloxir::Stmt>>, std::string>
 parseFile(const std::string &source) {
@@ -23,6 +166,10 @@ parseFile(const std::string &source) {
     auto tokens = scanner.scanTokens();
     eloxir::Parser parser(tokens);
     auto stmts = parser.parse();
+    if (parser.hadErrors()) {
+      return {std::vector<std::unique_ptr<eloxir::Stmt>>{},
+              parser.firstErrorMessage()};
+    }
     return {std::move(stmts), ""};
   } catch (const std::runtime_error &e) {
     return {std::vector<std::unique_ptr<eloxir::Stmt>>{}, e.what()};
@@ -42,7 +189,7 @@ int runFile(const std::string &filename) {
   std::ifstream file(filename);
   if (!file.is_open()) {
     std::cerr << "Error: Could not open file '" << filename << "'\n";
-    return 1;
+    return static_cast<int>(ExitCode::kRuntimeError);
   }
 
   std::stringstream buffer;
@@ -54,11 +201,11 @@ int runFile(const std::string &filename) {
   auto [stmts, error] = parseFile(source);
   if (!error.empty()) {
     std::cerr << "Parse error: " << error << '\n';
-    return 65;
+    return static_cast<int>(ExitCode::kCompileError);
   }
 
   if (stmts.empty()) {
-    return 0; // Empty file
+    return static_cast<int>(ExitCode::kOk); // Empty file
   }
 
   // Resolve variables and analyze upvalues
@@ -67,7 +214,7 @@ int runFile(const std::string &filename) {
     resolver.resolve(stmts);
   } catch (const std::runtime_error &e) {
     std::cerr << "Resolution error: " << e.what() << '\n';
-    return 65;
+    return static_cast<int>(ExitCode::kCompileError);
   }
 
   // Clear any previous runtime errors
@@ -120,7 +267,7 @@ int runFile(const std::string &filename) {
     // Verify the function before executing
     if (llvm::verifyFunction(*fn, &llvm::errs())) {
       std::cerr << "Generated invalid LLVM IR. Cannot execute.\n";
-      return 65;
+      return static_cast<int>(ExitCode::kCompileError);
     }
 
     // After the main function is complete, create function objects at global
@@ -142,22 +289,26 @@ int runFile(const std::string &filename) {
     reinterpret_cast<FnTy>(sym.getAddress())();
 
     // Check for runtime errors after execution
-      if (elx_has_runtime_error()) {
-        // Error already printed by runtime, just clear it
-        elx_clear_runtime_error();
-      }
+    if (elx_has_runtime_error()) {
+      // Error already printed by runtime, just clear it
+      elx_clear_runtime_error();
+      return static_cast<int>(ExitCode::kRuntimeError);
+    }
 
   } catch (const std::exception &e) {
     std::cerr << "Error: " << e.what() << '\n';
     elx_clear_runtime_error();
-    return 65;
+    return static_cast<int>(ExitCode::kRuntimeError);
   } catch (...) {
     std::cerr << "Unknown error occurred\n";
     elx_clear_runtime_error();
-    return 70;
+    return static_cast<int>(ExitCode::kRuntimeError);
   }
-  return 0;
+
+  return static_cast<int>(ExitCode::kOk);
 }
+
+} // namespace
 
 void runREPL() {
   // Initialize LLVM targets
@@ -265,17 +416,26 @@ void runREPL() {
 
 int main(int argc, char *argv[]) {
   if (argc == 1) {
-    // No arguments - run REPL
     runREPL();
-  } else if (argc == 2) {
-    // One argument - run file
-    return runFile(argv[1]);
-  } else {
-    std::cerr << "Usage: " << argv[0] << " [filename]\n";
-    std::cerr << "  No arguments: Start REPL\n";
-    std::cerr << "  One argument: Execute file\n";
-    return 1;
+    return 0;
   }
 
-  return 0;
+  std::string option = argv[1];
+  if (option == "--scan") {
+    if (argc != 3) {
+      std::cerr << "Usage: " << argv[0] << " --scan <filename>\n";
+      return static_cast<int>(ExitCode::kRuntimeError);
+    }
+    return scanFile(argv[2]);
+  }
+
+  if (argc == 2) {
+    return runFile(argv[1]);
+  }
+
+  std::cerr << "Usage: " << argv[0] << " [--scan <filename>] [filename]\n";
+  std::cerr << "  No arguments: Start REPL\n";
+  std::cerr << "  --scan <file>: Print tokens produced by scanner\n";
+  std::cerr << "  <file>: Execute file\n";
+  return static_cast<int>(ExitCode::kRuntimeError);
 }

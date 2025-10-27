@@ -17,10 +17,14 @@ public:
   // Public for parseREPL usage
   std::unique_ptr<Expr> expression();
   bool isAtEnd();
+  bool hadErrors() const { return hadError; }
+  const std::string &firstErrorMessage() const { return firstError; }
 
 private:
   const std::vector<Token> &tokens;
   size_t current = 0;
+  bool hadError = false;
+  std::string firstError;
 
   // declarations
   std::unique_ptr<Stmt> declaration();
