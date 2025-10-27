@@ -7,6 +7,7 @@
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/Module.h>
 #include <stack>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -22,10 +23,11 @@ class CodeGenVisitor : public ExprVisitor, public StmtVisitor {
   std::unordered_set<std::string> directValues;
   // function table for user-defined functions
   std::unordered_map<std::string, llvm::Function *> functions;
-  // track functions that failed to declare (e.g., too many parameters)
-  std::unordered_set<std::string> failedFunctions;
   // current function being compiled (for return statements)
   llvm::Function *currentFunction;
+
+  static constexpr int MAX_PARAMETERS = 255;
+  static constexpr int MAX_CONSTANTS = 256;
 
   // Track block nesting depth to distinguish true globals from block-scoped
   // variables
@@ -52,9 +54,13 @@ class CodeGenVisitor : public ExprVisitor, public StmtVisitor {
     std::vector<std::string> upvalues; // Names of captured variables
     std::unordered_map<std::string, int> upvalue_indices;
     llvm::Value *upvalue_array; // Array parameter for upvalues
+    int constantCount = 0;
+    std::string debug_name;
   };
 
   std::stack<FunctionContext> function_stack;
+
+  int globalConstantCount = 0;
 
   // Deferred function objects to create in global context
   std::vector<std::pair<std::string, int>> pendingFunctions; // name, arity
@@ -154,7 +160,8 @@ private:
   llvm::Value *boolConst(bool b);
   llvm::Value *nilConst();
   llvm::Value *makeBool(llvm::Value *i1);
-  llvm::Value *stringConst(const std::string &str);
+  llvm::Value *stringConst(const std::string &str,
+                           bool countAsConstant = false);
   llvm::Value *isFalsy(llvm::Value *v);  // returns i1
   llvm::Value *isTruthy(llvm::Value *v); // returns i1 (= !isFalsy)
 
@@ -167,6 +174,9 @@ private:
   // Error propagation helper
   void emitRuntimeError(const std::string &message);
   void checkRuntimeError(llvm::Value *returnValue = nullptr);
+
+  void recordConstant();
+  void ensureParameterLimit(size_t arity);
 };
 
 } // namespace eloxir
