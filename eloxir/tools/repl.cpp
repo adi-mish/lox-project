@@ -29,7 +29,7 @@ parseFile(const std::string &source) {
   }
 }
 
-void runFile(const std::string &filename) {
+int runFile(const std::string &filename) {
   // Initialize LLVM targets
   InitializeNativeTarget();
   InitializeNativeTargetAsmPrinter();
@@ -42,7 +42,7 @@ void runFile(const std::string &filename) {
   std::ifstream file(filename);
   if (!file.is_open()) {
     std::cerr << "Error: Could not open file '" << filename << "'\n";
-    return;
+    return 1;
   }
 
   std::stringstream buffer;
@@ -54,11 +54,11 @@ void runFile(const std::string &filename) {
   auto [stmts, error] = parseFile(source);
   if (!error.empty()) {
     std::cerr << "Parse error: " << error << '\n';
-    return;
+    return 65;
   }
 
   if (stmts.empty()) {
-    return; // Empty file
+    return 0; // Empty file
   }
 
   // Resolve variables and analyze upvalues
@@ -67,7 +67,7 @@ void runFile(const std::string &filename) {
     resolver.resolve(stmts);
   } catch (const std::runtime_error &e) {
     std::cerr << "Resolution error: " << e.what() << '\n';
-    return;
+    return 65;
   }
 
   // Clear any previous runtime errors
@@ -120,7 +120,7 @@ void runFile(const std::string &filename) {
     // Verify the function before executing
     if (llvm::verifyFunction(*fn, &llvm::errs())) {
       std::cerr << "Generated invalid LLVM IR. Cannot execute.\n";
-      return;
+      return 65;
     }
 
     // After the main function is complete, create function objects at global
@@ -142,18 +142,21 @@ void runFile(const std::string &filename) {
     reinterpret_cast<FnTy>(sym.getAddress())();
 
     // Check for runtime errors after execution
-    if (elx_has_runtime_error()) {
-      // Error already printed by runtime, just clear it
-      elx_clear_runtime_error();
-    }
+      if (elx_has_runtime_error()) {
+        // Error already printed by runtime, just clear it
+        elx_clear_runtime_error();
+      }
 
   } catch (const std::exception &e) {
     std::cerr << "Error: " << e.what() << '\n';
     elx_clear_runtime_error();
+    return 65;
   } catch (...) {
     std::cerr << "Unknown error occurred\n";
     elx_clear_runtime_error();
+    return 70;
   }
+  return 0;
 }
 
 void runREPL() {
@@ -266,7 +269,7 @@ int main(int argc, char *argv[]) {
     runREPL();
   } else if (argc == 2) {
     // One argument - run file
-    runFile(argv[1]);
+    return runFile(argv[1]);
   } else {
     std::cerr << "Usage: " << argv[0] << " [filename]\n";
     std::cerr << "  No arguments: Start REPL\n";

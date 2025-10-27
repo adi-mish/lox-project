@@ -26,6 +26,14 @@ void Resolver::declare(const Token &name) {
                              name.getLexeme());
   }
   scope[name.getLexeme()] = false;
+
+  if (!function_stack.empty()) {
+    FunctionInfo &info = function_stack.top();
+    if (info.localCount >= MAX_LOCAL_SLOTS) {
+      throw std::runtime_error("Too many local variables in function.");
+    }
+    info.localCount++;
+  }
 }
 
 void Resolver::define(const Token &name) {
@@ -67,6 +75,9 @@ void Resolver::addUpvalue(const std::string &name) {
   }
 
   // Add new upvalue
+  if (current_func.upvalues.size() >= MAX_UPVALUES) {
+    throw std::runtime_error("Too many closure variables in function.");
+  }
   int index = static_cast<int>(current_func.upvalues.size());
   current_func.upvalues.push_back(name);
   current_func.upvalue_indices[name] = index;
@@ -109,6 +120,8 @@ void Resolver::resolveFunction(Function *function, FunctionType type) {
   // Push new function context
   FunctionInfo func_info;
   func_info.type = type;
+  func_info.name = function->name.getLexeme();
+  func_info.localCount = 0;
   function_stack.push(func_info);
 
   beginScope();
@@ -153,6 +166,9 @@ void Resolver::resolveFunction(Function *function, FunctionType type) {
         // Add this upvalue to the parent function if it doesn't already have it
         if (parent_func.upvalue_indices.find(upvalue_name) ==
             parent_func.upvalue_indices.end()) {
+          if (parent_func.upvalues.size() >= MAX_UPVALUES) {
+            throw std::runtime_error("Too many closure variables in function.");
+          }
           parent_func.upvalue_indices[upvalue_name] =
               static_cast<int>(parent_func.upvalues.size());
           parent_func.upvalues.push_back(upvalue_name);
