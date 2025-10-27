@@ -6,6 +6,7 @@
 #include <llvm/IR/Instructions.h>
 #include <llvm/IR/Type.h>
 #include <llvm/IR/Verifier.h>
+#include <stdexcept>
 
 namespace eloxir {
 
@@ -262,7 +263,12 @@ llvm::Value *CodeGenVisitor::isString(llvm::Value *v) {
   return builder.CreateICmpEQ(tag, objTag, "isstr");
 }
 
-llvm::Value *CodeGenVisitor::stringConst(const std::string &str) {
+llvm::Value *CodeGenVisitor::stringConst(const std::string &str,
+                                         bool countAsConstant) {
+  if (countAsConstant) {
+    recordConstant();
+  }
+
   // Use global string interning instead of local interning
   auto strConstant = builder.CreateGlobalStringPtr(str, "str");
   auto lengthConst =
@@ -561,11 +567,12 @@ void CodeGenVisitor::visitLiteralExpr(Literal *e) {
     double d = std::get<double>(e->value);
     uint64_t bits;
     std::memcpy(&bits, &d, sizeof(bits));
+    recordConstant();
     value = llvm::ConstantInt::get(llvmValueTy(), bits);
   } else if (std::holds_alternative<std::string>(e->value)) {
     // Create a string object
     const std::string &str = std::get<std::string>(e->value);
-    value = stringConst(str);
+    value = stringConst(str, true);
   } else if (std::holds_alternative<bool>(e->value)) {
     value = boolConst(std::get<bool>(e->value));
   } else {
@@ -1077,6 +1084,10 @@ void CodeGenVisitor::visitLogicalExpr(Logical *e) {
 }
 
 void CodeGenVisitor::visitCallExpr(Call *e) {
+  if (e->arguments.size() > static_cast<size_t>(MAX_PARAMETERS)) {
+    throw std::runtime_error("Can't have more than 255 arguments.");
+  }
+
   // Evaluate the callee expression
   e->callee->accept(this);
   llvm::Value *callee = value;
@@ -1432,19 +1443,8 @@ void CodeGenVisitor::declareFunctionSignature(Function *s) {
     return; // Already declared
   }
 
-  int arity = s->params.size();
-
-  // Validate function arity (Lox limit is 255)
-  if (arity > 255) {
-    // Only print error if we haven't already reported it for this function
-    if (failedFunctions.find(baseFuncName) == failedFunctions.end()) {
-      std::cerr << "Error: Function '" << baseFuncName
-                << "' has too many parameters (" << arity
-                << "). Maximum is 255.\n";
-      failedFunctions.insert(baseFuncName);
-    }
-    return;
-  }
+  size_t arity = s->params.size();
+  ensureParameterLimit(arity);
 
   // Get upvalues for this function from resolver
   std::vector<std::string> upvalues;
@@ -1575,6 +1575,8 @@ void CodeGenVisitor::createGlobalFunctionObjects() {
 void CodeGenVisitor::visitFunctionStmt(Function *s) {
   const std::string &baseFuncName = s->name.getLexeme();
 
+  ensureParameterLimit(s->params.size());
+
   // Get upvalues for this function from resolver
   std::vector<std::string> upvalues;
   if (resolver_upvalues &&
@@ -1652,6 +1654,8 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
   for (int i = 0; i < static_cast<int>(upvalues.size()); i++) {
     funcCtx.upvalue_indices[upvalues[i]] = i;
   }
+  funcCtx.constantCount = 0;
+  funcCtx.debug_name = baseFuncName;
 
   // Set up the function signature to understand upvalue parameter
   // but don't switch contexts yet
@@ -1727,8 +1731,6 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
       builder.CreateRet(nilConst());
     }
   } catch (const std::exception &e) {
-    std::cerr << "Error generating function body for '" << baseFuncName
-              << "': " << e.what() << "\n";
     // Clean up and restore state
     llvmFunc->eraseFromParent();
     functions.erase(baseFuncName); // Remove from functions map
@@ -1740,7 +1742,7 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
       builder.SetInsertPoint(prevBB);
     }
     value = nilConst();
-    return;
+    throw;
   }
 
   // Verify the function
@@ -1855,6 +1857,27 @@ void CodeGenVisitor::checkRuntimeError(llvm::Value *returnValue) {
   } else {
     // For void operations, just check but don't change value
     // The error will be caught at the REPL level
+  }
+}
+
+void CodeGenVisitor::recordConstant() {
+  if (!function_stack.empty()) {
+    FunctionContext &ctx = function_stack.top();
+    if (ctx.constantCount >= MAX_CONSTANTS) {
+      throw std::runtime_error("Too many constants in one chunk.");
+    }
+    ctx.constantCount++;
+  } else {
+    if (globalConstantCount >= MAX_CONSTANTS) {
+      throw std::runtime_error("Too many constants in one chunk.");
+    }
+    globalConstantCount++;
+  }
+}
+
+void CodeGenVisitor::ensureParameterLimit(size_t arity) {
+  if (arity > static_cast<size_t>(MAX_PARAMETERS)) {
+    throw std::runtime_error("Can't have more than 255 parameters.");
   }
 }
 

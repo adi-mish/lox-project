@@ -4,6 +4,7 @@
 #include "Token.h"
 #include "Visitor.h"
 #include <stack>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -46,10 +47,15 @@ private:
   enum class FunctionType { NONE, FUNCTION, INITIALIZER, METHOD };
   enum class ClassType { NONE, CLASS, SUBCLASS };
 
+  static constexpr int MAX_LOCAL_SLOTS = 256;
+  static constexpr int MAX_UPVALUES = 256;
+
   struct FunctionInfo {
     FunctionType type;
     std::vector<std::string> upvalues; // Names of captured variables
     std::unordered_map<std::string, int> upvalue_indices;
+    std::string name;
+    int localCount = 0;
   };
 
   std::vector<std::unordered_map<std::string, bool>> scopes;
