@@ -14,6 +14,7 @@ import argparse
 import dataclasses
 import enum
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -71,11 +72,14 @@ def parse_expectations(path: Path) -> TestExpectations:
         if comment_start == -1:
             continue
         comment = raw_line[comment_start:].strip()
+        normalized_comment = re.sub(r"^(//)+", "//", comment)
 
-        if comment.startswith("// expect:"):
-            expected_output.append(comment.split("// expect:", 1)[1].strip())
+        if normalized_comment.startswith("// expect:"):
+            expected_output.append(
+                normalized_comment.split("// expect:", 1)[1].strip()
+            )
             saw_expect_line = True
-        elif comment.lower().startswith("// expect runtime error"):
+        elif normalized_comment.lower().startswith("// expect runtime error"):
             saw_runtime_error = True
         elif comment.startswith("// [line") and "Error" in comment:
             saw_parse_error = True
