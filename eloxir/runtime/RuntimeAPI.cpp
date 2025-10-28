@@ -723,9 +723,12 @@ void elx_set_upvalue_value(uint64_t upvalue_bits, uint64_t value) {
 void elx_close_upvalues(uint64_t *last_local) {
   while (open_upvalues != nullptr && open_upvalues->location >= last_local) {
     ObjUpvalue *upvalue = open_upvalues;
-    upvalue->closed = *(upvalue->location);
-    upvalue->location = nullptr;
     open_upvalues = upvalue->next;
+    if (upvalue->location != nullptr) {
+      upvalue->closed = *(upvalue->location);
+      upvalue->location = nullptr;
+    }
+    upvalue->next = nullptr;
   }
 }
 
@@ -785,11 +788,11 @@ uint64_t elx_call_closure(uint64_t closure_bits, uint64_t *args,
       return Value::nil().getBits();
     }
 
-    // Get current values of all upvalues
+    // Pass upvalue objects through to the JITed function so it can fetch and
+    // update them via the runtime helpers.
     for (int i = 0; i < closure->upvalue_count; i++) {
       if (closure->upvalues[i] != nullptr) {
-        upvalue_args[i] = elx_get_upvalue_value(
-            Value::object(closure->upvalues[i]).getBits());
+        upvalue_args[i] = Value::object(closure->upvalues[i]).getBits();
       } else {
         upvalue_args[i] = Value::nil().getBits();
       }

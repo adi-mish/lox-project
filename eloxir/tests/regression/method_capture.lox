@@ -1,0 +1,28 @@
+var closure;
+
+class Counter {
+  init(value) {
+    this.value = value;
+  }
+
+  make(delta) {
+    var local = delta;
+    fun inc() {
+      this.value = this.value + local;
+      print this.value;
+    }
+    closure = inc;
+  }
+}
+
+var counter = Counter(1);
+counter.make(2);
+closure();
+// expect: 3
+
+closure();
+// expect: 5
+
+counter.make(3);
+closure();
+// expect: 8

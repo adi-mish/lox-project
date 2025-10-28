@@ -1,5 +1,7 @@
 #include "CodeGenVisitor.h"
 #include "../runtime/Value.h"
+#include <algorithm>
+#include <cstdint>
 #include <ctime>
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/Function.h>
@@ -7,6 +9,7 @@
 #include <llvm/IR/Type.h>
 #include <llvm/IR/Verifier.h>
 #include <stdexcept>
+#include <iostream>
 
 namespace eloxir {
 
@@ -853,14 +856,15 @@ void CodeGenVisitor::visitAssignExpr(Assign *e) {
     if (upvalue_it != current_ctx.upvalue_indices.end()) {
       int upvalue_index = upvalue_it->second;
 
-      // For assignments to upvalues, we need to update the upvalue in the array
-      // Since we currently pass values (not pointers) to functions, we update
-      // the local view of the upvalue array for this function call
       auto idxVal =
           llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), upvalue_index);
       auto ptr =
           builder.CreateGEP(llvmValueTy(), current_ctx.upvalue_array, idxVal);
-      builder.CreateStore(assignValue, ptr);
+      auto upvalue_bits = builder.CreateLoad(llvmValueTy(), ptr);
+      auto set_upvalue_fn = mod.getFunction("elx_set_upvalue_value");
+      if (set_upvalue_fn) {
+        builder.CreateCall(set_upvalue_fn, {upvalue_bits, assignValue});
+      }
       value = assignValue;
       return;
     }
@@ -1264,6 +1268,12 @@ void CodeGenVisitor::visitVarStmtWithExecution(Var *s, int blockExecution) {
     // lexical scoping
     variableStacks[varName].push_back(slot);
 
+    if (!function_stack.empty()) {
+      function_stack.top().local_slots.push_back(slot);
+    } else {
+      global_local_slots.push_back(slot);
+    }
+
     // Don't add to directValues since this needs to be loaded
   }
 }
@@ -1325,6 +1335,16 @@ void CodeGenVisitor::visitBlockStmt(Block *s) {
   // CRITICAL FIX: Pop variables from stacks when exiting block scope
   for (const auto &varName : blockVariables) {
     if (!variableStacks[varName].empty()) {
+      llvm::Value *slot = variableStacks[varName].back();
+      bool wasCaptured = removeLocalSlot(slot);
+      if (wasCaptured) {
+        auto closeFn = mod.getFunction("elx_close_upvalues");
+        auto *currentBlock = builder.GetInsertBlock();
+        if (closeFn && currentBlock && !currentBlock->getTerminator()) {
+          builder.CreateCall(closeFn, {slot});
+        }
+      }
+
       variableStacks[varName].pop_back();
 
       // CRITICAL FIX: If the stack becomes empty, remove the entry entirely
@@ -1679,18 +1699,31 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
   // capture locals.
   variableStacks.clear();
 
-  // Re-add parameters to local scope
+  llvm::IRBuilder<> entryAllocaBuilder(entryBB, entryBB->begin());
+  std::vector<llvm::Value *> paramSlots;
+
+  // Re-add parameters to local scope using stack slots so they can be captured
   argIt = llvmFunc->arg_begin();
   for (size_t i = 0; i < s->params.size(); ++i, ++argIt) {
     const std::string &paramName = s->params[i].getLexeme();
-    locals[paramName] = &*argIt;
-    directValues.insert(paramName);
+    argIt->setName(paramName);
+    auto slotName = paramName + "_param";
+    auto slot =
+        entryAllocaBuilder.CreateAlloca(llvmValueTy(), nullptr, slotName.c_str());
+    builder.CreateStore(&*argIt, slot);
+    locals[paramName] = slot;
+    locals[paramName + "_current"] = slot;
+    variableStacks[paramName].push_back(slot);
+    paramSlots.push_back(slot);
   }
 
   // Set up upvalue array parameter if needed
   if (!upvalues.empty() && argIt != llvmFunc->arg_end()) {
+    argIt->setName("upvalues");
     funcCtx.upvalue_array = &*argIt;
   }
+
+  funcCtx.local_slots = paramSlots;
 
   function_stack.push(funcCtx);
 
@@ -1700,6 +1733,7 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
 
     // If no explicit return and no terminator, return nil
     if (!builder.GetInsertBlock()->getTerminator()) {
+      closeAllCapturedLocals();
       builder.CreateRet(nilConst());
     }
   } catch (const std::exception &e) {
@@ -1795,8 +1829,10 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
 void CodeGenVisitor::visitReturnStmt(Return *s) {
   if (s->value) {
     s->value->accept(this);
+    closeAllCapturedLocals();
     builder.CreateRet(value);
   } else {
+    closeAllCapturedLocals();
     builder.CreateRet(nilConst());
   }
 }
@@ -1806,6 +1842,57 @@ void CodeGenVisitor::visitSetExpr(Set *e) { value = nilConst(); }
 void CodeGenVisitor::visitThisExpr(This *e) { value = nilConst(); }
 void CodeGenVisitor::visitSuperExpr(Super *e) { value = nilConst(); }
 void CodeGenVisitor::visitClassStmt(Class *s) {}
+
+void CodeGenVisitor::closeAllCapturedLocals() {
+  if (function_stack.empty()) {
+    return;
+  }
+
+  FunctionContext &ctx = function_stack.top();
+  if (ctx.captured_slots.empty()) {
+    return;
+  }
+
+  auto closeFn = mod.getFunction("elx_close_upvalues");
+  if (!closeFn) {
+    return;
+  }
+
+  for (auto it = ctx.local_slots.rbegin(); it != ctx.local_slots.rend(); ++it) {
+    llvm::Value *slot = *it;
+    if (ctx.captured_slots.count(slot) > 0) {
+      builder.CreateCall(closeFn, {slot});
+    }
+  }
+}
+
+bool CodeGenVisitor::removeLocalSlot(llvm::Value *slot) {
+  bool captured = false;
+
+  if (!function_stack.empty()) {
+    FunctionContext &ctx = function_stack.top();
+    if (!ctx.local_slots.empty()) {
+      auto it = std::find(ctx.local_slots.rbegin(), ctx.local_slots.rend(), slot);
+      if (it != ctx.local_slots.rend()) {
+        ctx.local_slots.erase(std::next(it).base());
+      }
+    }
+    captured = ctx.captured_slots.erase(slot) > 0;
+  }
+
+  if (!global_local_slots.empty()) {
+    auto it = std::find(global_local_slots.rbegin(), global_local_slots.rend(), slot);
+    if (it != global_local_slots.rend()) {
+      global_local_slots.erase(std::next(it).base());
+    }
+  }
+
+  if (global_captured_slots.erase(slot) > 0) {
+    captured = true;
+  }
+
+  return captured;
+}
 
 void CodeGenVisitor::checkRuntimeError(llvm::Value *returnValue) {
   // Check if there's a runtime error and return nil if so
@@ -1978,21 +2065,117 @@ llvm::Value *CodeGenVisitor::accessUpvalue(const std::string &name, int index) {
     return nilConst();
   }
 
-  // The upvalue array contains VALUES (extracted by runtime), not upvalue
-  // objects Load specific upvalue value: upvalue_array[index]
+  // The upvalue array contains upvalue objects. Load the object then ask the
+  // runtime for the current value so multiple closures stay in sync.
   auto index_val = llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), index);
   auto upvalue_ptr =
       builder.CreateGEP(llvmValueTy(), current_ctx.upvalue_array, index_val);
   auto upvalue_value = builder.CreateLoad(llvmValueTy(), upvalue_ptr);
 
-  // Return the value directly
-  return upvalue_value;
+  auto get_upvalue_fn = mod.getFunction("elx_get_upvalue_value");
+  if (!get_upvalue_fn) {
+    return upvalue_value;
+  }
+
+  return builder.CreateCall(get_upvalue_fn, {upvalue_value}, name + "_value");
 }
 
 llvm::Value *CodeGenVisitor::captureUpvalue(const std::string &name) {
   auto alloc_upvalue_fn = mod.getFunction("elx_allocate_upvalue");
+  if (!alloc_upvalue_fn) {
+    return nilConst();
+  }
 
-  // Declare malloc function if not already available (used in multiple places)
+  llvm::Value *slot = nullptr;
+
+  auto stackIt = variableStacks.find(name);
+  if (stackIt != variableStacks.end() && !stackIt->second.empty()) {
+    slot = stackIt->second.back();
+  }
+
+  if (!slot) {
+    auto currentIt = locals.find(name + "_current");
+    if (currentIt != locals.end()) {
+      slot = currentIt->second;
+    } else {
+      auto it = locals.find(name);
+      if (it != locals.end()) {
+        slot = it->second;
+      }
+    }
+  }
+
+  if (slot && directValues.count(name)) {
+    // Convert direct values (like parameters) into stack storage so they can be
+    // captured
+    auto directValue = slot;
+    auto fn = builder.GetInsertBlock()->getParent();
+    auto &entry = fn->getEntryBlock();
+    auto insertPoint = entry.getFirstNonPHI();
+    llvm::IRBuilder<> allocaBuilder(
+        &entry, insertPoint ? insertPoint->getIterator() : entry.begin());
+    std::string slotName = name + "_captured" + std::to_string(variableCounter++);
+    auto storage =
+        allocaBuilder.CreateAlloca(llvmValueTy(), nullptr, slotName.c_str());
+    builder.CreateStore(directValue, storage);
+    slot = storage;
+
+    locals[name] = slot;
+    locals[name + "_current"] = slot;
+    directValues.erase(name);
+
+    if (!variableStacks[name].empty()) {
+      variableStacks[name].back() = slot;
+    } else {
+      variableStacks[name].push_back(slot);
+    }
+
+    if (!function_stack.empty()) {
+      FunctionContext &ctx = function_stack.top();
+      auto it = std::find(ctx.local_slots.begin(), ctx.local_slots.end(), directValue);
+      if (it != ctx.local_slots.end()) {
+        *it = slot;
+      } else {
+        ctx.local_slots.push_back(slot);
+      }
+    }
+  }
+
+  if (slot) {
+    if (!globalVariables.count(name)) {
+      if (!function_stack.empty()) {
+        FunctionContext &ctx = function_stack.top();
+        ctx.captured_slots.insert(slot);
+        if (std::find(ctx.local_slots.begin(), ctx.local_slots.end(), slot) ==
+            ctx.local_slots.end()) {
+          ctx.local_slots.push_back(slot);
+        }
+      } else {
+        global_captured_slots.insert(slot);
+        if (std::find(global_local_slots.begin(), global_local_slots.end(), slot) ==
+            global_local_slots.end()) {
+          global_local_slots.push_back(slot);
+        }
+      }
+    }
+
+    return builder.CreateCall(alloc_upvalue_fn, {slot});
+  }
+
+  if (!function_stack.empty()) {
+    const FunctionContext &current_ctx = function_stack.top();
+    auto upvalue_it = current_ctx.upvalue_indices.find(name);
+    if (upvalue_it != current_ctx.upvalue_indices.end() &&
+        current_ctx.upvalue_array) {
+      auto index_val =
+          llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), upvalue_it->second);
+      auto upvalue_ptr = builder.CreateGEP(llvmValueTy(), current_ctx.upvalue_array,
+                                           index_val);
+      return builder.CreateLoad(llvmValueTy(), upvalue_ptr);
+    }
+  }
+
+  // Variable not found - allocate independent storage initialized to nil
   llvm::Function *mallocFn = mod.getFunction("malloc");
   if (!mallocFn) {
     llvm::FunctionType *mallocType = llvm::FunctionType::get(
@@ -2002,132 +2185,12 @@ llvm::Value *CodeGenVisitor::captureUpvalue(const std::string &name) {
         mallocType, llvm::Function::ExternalLinkage, "malloc", &mod);
   }
 
-  // DEFINITIVE FIX FOR CLOSURE CAPTURE BUG:
-  // Use lexical stack to resolve current binding, then snapshot the value
-  // This ensures closures capture from their correct lexical scope
-
-  llvm::Value *current_value = nullptr;
-
-  // 1) Resolve current lexical binding via variable stack:
-  auto stackIt = variableStacks.find(name);
-  if (stackIt != variableStacks.end() && !stackIt->second.empty()) {
-    // Get the storage that is current in this lexical scope (top of stack)
-    llvm::Value *current_storage = stackIt->second.back();
-    if (directValues.count(name)) {
-      current_value = current_storage; // Direct value, no load needed
-    } else {
-      current_value =
-          builder.CreateLoad(llvmValueTy(), current_storage, name.c_str());
-    }
-  } else {
-    // Fallback for variables not using the stack system
-    auto currentIt = locals.find(name + "_current");
-    if (currentIt != locals.end()) {
-      if (directValues.count(name)) {
-        current_value = currentIt->second;
-      } else {
-        current_value =
-            builder.CreateLoad(llvmValueTy(), currentIt->second, name.c_str());
-      }
-    } else {
-      // Final fallback to original lookup
-      auto it = locals.find(name);
-      if (it != locals.end()) {
-        if (directValues.count(name)) {
-          current_value = it->second;
-        } else {
-          current_value =
-              builder.CreateLoad(llvmValueTy(), it->second, name.c_str());
-        }
-      }
-    }
-  }
-
-  if (current_value != nullptr) {
-    // 2) Snapshot the value into a closed upvalue:
-    auto alloc_upvalue_with_value_fn =
-        mod.getFunction("elx_allocate_upvalue_with_value");
-    if (!alloc_upvalue_with_value_fn) {
-      // Declare the function if it doesn't exist
-      llvm::FunctionType *allocType =
-          llvm::FunctionType::get(llvmValueTy(), {llvmValueTy()}, false);
-      alloc_upvalue_with_value_fn =
-          llvm::Function::Create(allocType, llvm::Function::ExternalLinkage,
-                                 "elx_allocate_upvalue_with_value", &mod);
-    }
-
-    // Create upvalue with immediate value capture - no reference to original
-    // storage
-    return builder.CreateCall(alloc_upvalue_with_value_fn, {current_value});
-  }
-
-  // Check if it's an upvalue in the current function context
-  if (!function_stack.empty()) {
-    const FunctionContext &current_ctx = function_stack.top();
-    auto upvalue_it = current_ctx.upvalue_indices.find(name);
-    if (upvalue_it != current_ctx.upvalue_indices.end() &&
-        current_ctx.upvalue_array) {
-      // Access upvalue from current function's upvalue array
-      int index = upvalue_it->second;
-      auto index_val =
-          llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), index);
-
-      // Get the current value from the upvalue array
-      auto upvalue_ptr = builder.CreateGEP(
-          llvmValueTy(), current_ctx.upvalue_array, index_val);
-      auto upvalue_value = builder.CreateLoad(llvmValueTy(), upvalue_ptr);
-
-      // STEP 4 FIX: Use immediate value capture instead of heap allocation +
-      // reference
-      auto alloc_upvalue_with_value_fn =
-          mod.getFunction("elx_allocate_upvalue_with_value");
-      if (!alloc_upvalue_with_value_fn) {
-        llvm::FunctionType *allocType =
-            llvm::FunctionType::get(llvmValueTy(), {llvmValueTy()}, false);
-        alloc_upvalue_with_value_fn =
-            llvm::Function::Create(allocType, llvm::Function::ExternalLinkage,
-                                   "elx_allocate_upvalue_with_value", &mod);
-      }
-      return builder.CreateCall(alloc_upvalue_with_value_fn, {upvalue_value});
-    }
-  }
-
-  // Check if it's a global variable
-  if (globals.find(name) != globals.end()) {
-    auto global_value = globals[name];
-
-    // STEP 5 FIX: Use immediate value capture for globals instead of heap
-    // allocation + reference
-    auto alloc_upvalue_with_value_fn =
-        mod.getFunction("elx_allocate_upvalue_with_value");
-    if (!alloc_upvalue_with_value_fn) {
-      llvm::FunctionType *allocType =
-          llvm::FunctionType::get(llvmValueTy(), {llvmValueTy()}, false);
-      alloc_upvalue_with_value_fn =
-          llvm::Function::Create(allocType, llvm::Function::ExternalLinkage,
-                                 "elx_allocate_upvalue_with_value", &mod);
-    }
-    return builder.CreateCall(alloc_upvalue_with_value_fn, {global_value});
-  }
-
-  // Variable not found - this should not happen with correct resolver
-  // But if it does, we should not create an upvalue for a non-existent variable
-  // Instead, skip this upvalue (this will result in the closure having fewer
-  // upvalues than expected)
-  std::cerr << "WARNING: Variable '" << name
-            << "' not found for upvalue capture, creating nil upvalue"
-            << std::endl;
-
-  // Return a nil upvalue that points to a nil value
-  auto size = llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx), 8);
+  auto size = llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx), sizeof(uint64_t));
   auto heap_ptr = builder.CreateCall(mallocFn, {size});
   auto value_ptr =
       builder.CreateBitCast(heap_ptr, llvm::PointerType::get(llvmValueTy(), 0));
-
-  // Store nil in the heap location
   builder.CreateStore(nilConst(), value_ptr);
 
-  // Create upvalue pointing to the heap location with nil
   return builder.CreateCall(alloc_upvalue_fn, {value_ptr});
 }
 
