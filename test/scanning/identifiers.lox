@@ -9,4 +9,4 @@ abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890_
 // expect: IDENTIFIER _abc null
 // expect: IDENTIFIER ab123 null
 // expect: IDENTIFIER abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890_ null
-// expect: EOF  null
+// expect: EOF null
