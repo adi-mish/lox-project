@@ -9,4 +9,4 @@ end
 // expect: IDENTIFIER tabs null
 // expect: IDENTIFIER newlines null
 // expect: IDENTIFIER end null
-// expect: EOF  null
+// expect: EOF null

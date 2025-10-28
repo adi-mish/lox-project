@@ -15,4 +15,4 @@ and class else false for fun if nil or return super this true var while
 // expect: TRUE true null
 // expect: VAR var null
 // expect: WHILE while null
-// expect: EOF  null
+// expect: EOF null

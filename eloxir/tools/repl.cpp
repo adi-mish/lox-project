@@ -237,29 +237,30 @@ std::string tokenTypeName(eloxir::TokenType type) {
   return "UNKNOWN";
 }
 
+std::string formatNumber(double value) {
+  std::ostringstream out;
+  out.precision(15);
+  out << value;
+  auto text = out.str();
+  if (text.find('e') == std::string::npos && text.find('E') == std::string::npos &&
+      text.find('.') == std::string::npos) {
+    text += ".0";
+  }
+  return text;
+}
+
+struct LiteralFormatter {
+  std::string operator()(std::monostate) const { return "null"; }
+
+  std::string operator()(double value) const { return formatNumber(value); }
+
+  std::string operator()(const std::string &value) const { return value; }
+
+  std::string operator()(bool value) const { return value ? "true" : "false"; }
+};
+
 std::string literalToString(const eloxir::Token &token) {
-  const auto &literal = token.getLiteral();
-  if (std::holds_alternative<std::monostate>(literal)) {
-    return "null";
-  }
-  if (const auto *num = std::get_if<double>(&literal)) {
-    std::ostringstream out;
-    out.precision(15);
-    out << *num;
-    auto text = out.str();
-    if (text.find('e') == std::string::npos && text.find('E') == std::string::npos &&
-        text.find('.') == std::string::npos) {
-      text += ".0";
-    }
-    return text;
-  }
-  if (const auto *str = std::get_if<std::string>(&literal)) {
-    return *str;
-  }
-  if (const auto *boolean = std::get_if<bool>(&literal)) {
-    return *boolean ? "true" : "false";
-  }
-  return "null";
+  return std::visit(LiteralFormatter{}, token.getLiteral());
 }
 
 int scanFile(const std::string &filename) {
@@ -277,8 +278,17 @@ int scanFile(const std::string &filename) {
     eloxir::Scanner scanner(source);
     auto tokens = scanner.scanTokens();
     for (const auto &token : tokens) {
-      std::cout << tokenTypeName(token.getType()) << ' '
-                << token.getLexeme() << ' ' << literalToString(token) << '\n';
+      const std::string &lexeme = token.getLexeme();
+      const std::string literal = literalToString(token);
+
+      std::cout << tokenTypeName(token.getType());
+      if (!lexeme.empty()) {
+        std::cout << ' ' << lexeme;
+      }
+      if (!literal.empty()) {
+        std::cout << ' ' << literal;
+      }
+      std::cout << '\n';
     }
     return static_cast<int>(ExitCode::kOk);
   } catch (const std::runtime_error &e) {
