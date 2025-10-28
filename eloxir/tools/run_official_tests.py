@@ -102,9 +102,13 @@ def _normalize_output(stream: str | bytes | None) -> str:
     return stream.rstrip()
 
 
-def run_test(path: Path, timeout: int) -> Tuple[str, str, int, bool]:
+def run_test(
+    path: Path, timeout: int, extra_args: List[str] | None = None
+) -> Tuple[str, str, int, bool]:
+    if extra_args is None:
+        extra_args = []
     try:
-        cmd = [str(ELOXIR_BIN)]
+        cmd = [str(ELOXIR_BIN), *extra_args]
         if path.parent.name == "scanning":
             cmd.append("--scan")
         cmd.append(str(path))
@@ -176,6 +180,8 @@ def run_suite(timeout: int) -> Tuple[List[TestResult], List[TestResult]]:
         )
 
     tests = discover_tests()
+    expression_tests = [t for t in tests if t.parent.name == "expressions"]
+    other_tests = [t for t in tests if t.parent.name != "expressions"]
     results: List[TestResult] = []
     failures: List[TestResult] = []
 
@@ -183,38 +189,48 @@ def run_suite(timeout: int) -> Tuple[List[TestResult], List[TestResult]]:
     print(f"Discovered {total} test files")
     print("Running tests...", flush=True)
 
-    for index, test_path in enumerate(tests, 1):
-        expectations = parse_expectations(test_path)
-        stdout, stderr, code, timed_out = run_test(test_path, timeout)
-        passed = False
-        if expectations.exit_code == 0:
-            passed = code == 0
-            if passed and expectations.check_stdout:
-                passed = stdout == expectations.output
-        else:
-            passed = code == expectations.exit_code
-            if passed and expectations.check_stdout:
-                passed = stdout == expectations.output
+    index = 0
+    ordered_tests = [
+        (expression_tests, ["--print-ast"]),
+        (other_tests, []),
+    ]
 
-        result = TestResult(
-            path=test_path,
-            category=test_path.parent.name,
-            expectations=expectations,
-            actual_stdout=stdout,
-            actual_stderr=stderr,
-            exit_code=code,
-            passed=passed,
-        )
+    for paths, extra_args in ordered_tests:
+        for test_path in paths:
+            index += 1
+            expectations = parse_expectations(test_path)
+            stdout, stderr, code, timed_out = run_test(
+                test_path, timeout, extra_args=extra_args
+            )
+            passed = False
+            if expectations.exit_code == 0:
+                passed = code == 0
+                if passed and expectations.check_stdout:
+                    passed = stdout == expectations.output
+            else:
+                passed = code == expectations.exit_code
+                if passed and expectations.check_stdout:
+                    passed = stdout == expectations.output
 
-        if not passed:
-            result.failure_kind = classify_failure(result, timed_out)
-            failures.append(result)
-        results.append(result)
-        print(
-            f"\r[{index}/{total}] {test_path.name:<40}",
-            end="",
-            flush=True,
-        )
+            result = TestResult(
+                path=test_path,
+                category=test_path.parent.name,
+                expectations=expectations,
+                actual_stdout=stdout,
+                actual_stderr=stderr,
+                exit_code=code,
+                passed=passed,
+            )
+
+            if not passed:
+                result.failure_kind = classify_failure(result, timed_out)
+                failures.append(result)
+            results.append(result)
+            print(
+                f"\r[{index}/{total}] {test_path.name:<40}",
+                end="",
+                flush=True,
+            )
 
     print()  # newline after progress
     return results, failures

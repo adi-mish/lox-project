@@ -10,9 +10,11 @@
 #include <llvm/IR/Verifier.h>
 #include <llvm/Support/TargetSelect.h>
 #include <llvm/Transforms/Utils/Cloning.h>
+#include <initializer_list>
 #include <memory>
 #include <sstream>
 #include <string>
+#include <variant>
 
 using namespace llvm;
 
@@ -22,6 +24,132 @@ enum class ExitCode : int {
   kOk = 0,
   kCompileError = 65,
   kRuntimeError = 70,
+};
+
+class AstPrinter : public eloxir::ExprVisitor {
+public:
+  std::string print(const eloxir::Expr *expr) {
+    if (!expr)
+      return "";
+    const_cast<eloxir::Expr *>(expr)->accept(this);
+    return result;
+  }
+
+  void visitBinaryExpr(eloxir::Binary *expr) override {
+    result = parenthesize(expr->op.getLexeme(),
+                          {expr->left.get(), expr->right.get()});
+  }
+
+  void visitGroupingExpr(eloxir::Grouping *expr) override {
+    result = parenthesize("group", {expr->expression.get()});
+  }
+
+  void visitLiteralExpr(eloxir::Literal *expr) override {
+    result = formatLiteral(expr->value);
+  }
+
+  void visitUnaryExpr(eloxir::Unary *expr) override {
+    result = parenthesize(expr->op.getLexeme(), {expr->right.get()});
+  }
+
+  void visitVariableExpr(eloxir::Variable *expr) override {
+    result = expr->name.getLexeme();
+  }
+
+  void visitAssignExpr(eloxir::Assign *expr) override {
+    result = parenthesizeParts("=", expr->name.getLexeme(), expr->value.get());
+  }
+
+  void visitLogicalExpr(eloxir::Logical *expr) override {
+    result = parenthesize(expr->op.getLexeme(),
+                          {expr->left.get(), expr->right.get()});
+  }
+
+  void visitCallExpr(eloxir::Call *expr) override {
+    result = parenthesizeParts("call", expr->callee.get(), expr->arguments);
+  }
+
+  void visitGetExpr(eloxir::Get *expr) override {
+    result = parenthesizeParts(".", expr->object.get(), expr->name.getLexeme());
+  }
+
+  void visitSetExpr(eloxir::Set *expr) override {
+    result = parenthesizeParts("=", expr->object.get(), expr->name.getLexeme(),
+                               expr->value.get());
+  }
+
+  void visitThisExpr(eloxir::This *expr) override { result = "this"; }
+
+  void visitSuperExpr(eloxir::Super *expr) override {
+    result = parenthesizeParts("super", expr->method.getLexeme());
+  }
+
+private:
+  std::string result;
+
+  static std::string formatLiteral(const eloxir::Expr::Value &value) {
+    if (std::holds_alternative<std::monostate>(value))
+      return "nil";
+    if (const auto *num = std::get_if<double>(&value)) {
+      std::ostringstream out;
+      out.precision(15);
+      out << *num;
+      auto text = out.str();
+      if (text.find('e') == std::string::npos &&
+          text.find('E') == std::string::npos &&
+          text.find('.') == std::string::npos) {
+        text += ".0";
+      }
+      return text;
+    }
+    if (const auto *str = std::get_if<std::string>(&value))
+      return *str;
+    if (const auto *boolean = std::get_if<bool>(&value))
+      return *boolean ? "true" : "false";
+    return "nil";
+  }
+
+  std::string parenthesize(const std::string &name,
+                           std::initializer_list<const eloxir::Expr *> exprs) {
+    std::string builder = "(" + name;
+    for (const auto *expr : exprs) {
+      builder.push_back(' ');
+      builder += print(expr);
+    }
+    builder.push_back(')');
+    return builder;
+  }
+
+  template <typename... Parts>
+  std::string parenthesizeParts(const std::string &name, Parts &&...parts) {
+    std::string builder = "(" + name;
+    (appendPart(builder, std::forward<Parts>(parts)), ...);
+    builder.push_back(')');
+    return builder;
+  }
+
+  void appendPart(std::string &builder, const eloxir::Expr *expr) {
+    builder.push_back(' ');
+    builder += print(expr);
+  }
+
+  void appendPart(
+      std::string &builder,
+      const std::vector<std::unique_ptr<eloxir::Expr>> &expressions) {
+    for (const auto &expr : expressions) {
+      appendPart(builder, expr.get());
+    }
+  }
+
+  void appendPart(std::string &builder, const eloxir::Token &token) {
+    builder.push_back(' ');
+    builder += token.getLexeme();
+  }
+
+  void appendPart(std::string &builder, const std::string &text) {
+    builder.push_back(' ');
+    builder += text;
+  }
 };
 
 std::string tokenTypeName(eloxir::TokenType type) {
@@ -155,6 +283,38 @@ int scanFile(const std::string &filename) {
     return static_cast<int>(ExitCode::kOk);
   } catch (const std::runtime_error &e) {
     std::cerr << "Scan error: " << e.what() << '\n';
+    return static_cast<int>(ExitCode::kCompileError);
+  }
+}
+
+int printAstFile(const std::string &filename) {
+  std::ifstream file(filename);
+  if (!file.is_open()) {
+    std::cerr << "Error: Could not open file '" << filename << "'\n";
+    return static_cast<int>(ExitCode::kRuntimeError);
+  }
+
+  std::stringstream buffer;
+  buffer << file.rdbuf();
+  std::string source = buffer.str();
+
+  try {
+    eloxir::Scanner scanner(source);
+    auto tokens = scanner.scanTokens();
+    eloxir::Parser parser(tokens);
+    auto expr = parser.parseSingleExpression();
+    if (!expr || parser.hadErrors()) {
+      std::string message = parser.hadErrors() ? parser.firstErrorMessage()
+                                               : "Failed to parse expression.";
+      std::cerr << "Parse error: " << message << '\n';
+      return static_cast<int>(ExitCode::kCompileError);
+    }
+
+    AstPrinter printer;
+    std::cout << printer.print(expr.get()) << '\n';
+    return static_cast<int>(ExitCode::kOk);
+  } catch (const std::runtime_error &e) {
+    std::cerr << "Parse error: " << e.what() << '\n';
     return static_cast<int>(ExitCode::kCompileError);
   }
 }
@@ -440,13 +600,23 @@ int main(int argc, char *argv[]) {
     return scanFile(argv[2]);
   }
 
+  if (option == "--print-ast") {
+    if (argc != 3) {
+      std::cerr << "Usage: " << argv[0] << " --print-ast <filename>\n";
+      return static_cast<int>(ExitCode::kRuntimeError);
+    }
+    return printAstFile(argv[2]);
+  }
+
   if (argc == 2) {
     return runFile(argv[1]);
   }
 
-  std::cerr << "Usage: " << argv[0] << " [--scan <filename>] [filename]\n";
+  std::cerr << "Usage: " << argv[0]
+            << " [--scan <filename>] [--print-ast <filename>] [filename]\n";
   std::cerr << "  No arguments: Start REPL\n";
   std::cerr << "  --scan <file>: Print tokens produced by scanner\n";
+  std::cerr << "  --print-ast <file>: Print canonical AST for expression\n";
   std::cerr << "  <file>: Execute file\n";
   return static_cast<int>(ExitCode::kRuntimeError);
 }

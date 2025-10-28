@@ -14,6 +14,10 @@ public:
   explicit Parser(const std::vector<Token> &tokens);
   std::vector<std::unique_ptr<Stmt>> parse();
 
+  // Parse a single expression terminated by EOF. This is used by
+  // expression-focused tools like the AST printer and CLI flag.
+  std::unique_ptr<Expr> parseSingleExpression();
+
   // Public for parseREPL usage
   std::unique_ptr<Expr> expression();
   bool isAtEnd();

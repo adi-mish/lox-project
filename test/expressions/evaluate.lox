@@ -1,4 +1,4 @@
-// Note: This is just for the expression evaluating chapter which evaluates an
-// expression directly.
+// Note: This mirrors the expression evaluating chapter but exercises the
+// canonical AST printer.
 (5 - (3 - 1)) + -1
-// expect: 2
+// expect: (+ (group (- 5.0 (group (- 3.0 1.0)))) (- 1.0))
