@@ -27,6 +27,18 @@ std::vector<std::unique_ptr<Stmt>> Parser::parse() {
   return statements;
 }
 
+std::unique_ptr<Expr> Parser::parseSingleExpression() {
+  try {
+    auto expr = expression();
+    return expr;
+  } catch (const std::runtime_error &e) {
+    if (!hadError)
+      firstError = e.what();
+    hadError = true;
+    return nullptr;
+  }
+}
+
 std::unique_ptr<Stmt> Parser::declaration() {
   try {
     if (match(TokenType::CLASS))
@@ -520,18 +532,16 @@ parseREPL(const std::string &source) {
 
     // Accept either a full statement ending with ';', or a bare expression.
     // Try: expression followed by EOF. If that works, wrap in Print.
-    size_t save = 0;
     try {
       // Light-weight inline parse: reuse private methods by constructing a new
       // Parser
       Parser exprParser(tokens);
-      auto expr = exprParser.expression();
-      if (!exprParser.isAtEnd()) { /* not clean, fall back to full parse */
-        throw std::runtime_error("not single expr");
+      auto expr = exprParser.parseSingleExpression();
+      if (expr && !exprParser.hadErrors()) {
+        return {std::make_unique<Print>(std::move(expr)), ""};
       }
-      return {std::make_unique<Print>(std::move(expr)), ""};
     } catch (...) {
-      (void)save;
+      // Ignore and fall back to the full statement parser below.
     }
 
     // Fallback: full statement parse (must end with EOF)
