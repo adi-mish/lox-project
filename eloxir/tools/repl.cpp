@@ -1,6 +1,7 @@
 #include "../codegen/CodeGenVisitor.h"
 #include "../frontend/Parser.h"
 #include "../frontend/Resolver.h"
+#include "../frontend/CompileError.h"
 #include "../frontend/Scanner.h"
 #include "../jit/EloxirJIT.h"
 #include "../runtime/RuntimeAPI.h"
@@ -212,6 +213,9 @@ int runFile(const std::string &filename) {
   eloxir::Resolver resolver;
   try {
     resolver.resolve(stmts);
+  } catch (const eloxir::CompileError &e) {
+    std::cerr << "Resolution error: " << e.what() << '\n';
+    return static_cast<int>(ExitCode::kCompileError);
   } catch (const std::runtime_error &e) {
     std::cerr << "Resolution error: " << e.what() << '\n';
     return static_cast<int>(ExitCode::kCompileError);
@@ -295,6 +299,10 @@ int runFile(const std::string &filename) {
       return static_cast<int>(ExitCode::kRuntimeError);
     }
 
+  } catch (const eloxir::CompileError &e) {
+    std::cerr << "Compile error: " << e.what() << '\n';
+    elx_clear_runtime_error();
+    return static_cast<int>(ExitCode::kCompileError);
   } catch (const std::exception &e) {
     std::cerr << "Error: " << e.what() << '\n';
     elx_clear_runtime_error();
@@ -398,6 +406,9 @@ void runREPL() {
         elx_clear_runtime_error();
       }
 
+    } catch (const eloxir::CompileError &e) {
+      std::cerr << "Compile error: " << e.what() << '\n';
+      elx_clear_runtime_error();
     } catch (const std::exception &e) {
       std::cerr << "Error: " << e.what() << '\n';
       elx_clear_runtime_error();

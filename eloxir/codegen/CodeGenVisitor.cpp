@@ -1,4 +1,5 @@
 #include "CodeGenVisitor.h"
+#include "../frontend/CompileError.h"
 #include "../runtime/Value.h"
 #include <algorithm>
 #include <cstdint>
@@ -1055,7 +1056,7 @@ void CodeGenVisitor::visitLogicalExpr(Logical *e) {
 
 void CodeGenVisitor::visitCallExpr(Call *e) {
   if (e->arguments.size() > static_cast<size_t>(MAX_PARAMETERS)) {
-    throw std::runtime_error("Can't have more than 255 arguments.");
+    throw CompileError("Can't have more than 255 arguments.");
   }
 
   // Evaluate the callee expression
@@ -1240,6 +1241,13 @@ void CodeGenVisitor::visitVarStmtWithExecution(Var *s, int blockExecution) {
     llvm::IRBuilder<> allocaBuilder(
         &entry, insertPoint ? insertPoint->getIterator() : entry.begin());
 
+    if (!function_stack.empty()) {
+      FunctionContext &ctx = function_stack.top();
+      if (ctx.local_slots.size() >= static_cast<size_t>(MAX_LOCAL_SLOTS)) {
+        throw CompileError("Too many local variables in function.");
+      }
+    }
+
     // DEFINITIVE FIX FOR LOOP VARIABLE CAPTURE BUG:
     // Always create completely unique storage for each variable declaration,
     // even if the same name exists. This prevents storage reuse that causes
@@ -1269,7 +1277,9 @@ void CodeGenVisitor::visitVarStmtWithExecution(Var *s, int blockExecution) {
     variableStacks[varName].push_back(slot);
 
     if (!function_stack.empty()) {
-      function_stack.top().local_slots.push_back(slot);
+      FunctionContext &ctx = function_stack.top();
+      ctx.local_slots.push_back(slot);
+      ctx.localCount = static_cast<int>(ctx.local_slots.size());
     } else {
       global_local_slots.push_back(slot);
     }
@@ -1637,6 +1647,10 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
   FunctionContext funcCtx;
   funcCtx.llvm_function = llvmFunc;
   funcCtx.upvalues = upvalues;
+  funcCtx.upvalueCount = static_cast<int>(upvalues.size());
+  if (funcCtx.upvalueCount > MAX_UPVALUES) {
+    throw CompileError("Too many closure variables in function.");
+  }
   for (int i = 0; i < static_cast<int>(upvalues.size()); i++) {
     funcCtx.upvalue_indices[upvalues[i]] = i;
   }
@@ -1724,6 +1738,10 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
   }
 
   funcCtx.local_slots = paramSlots;
+  funcCtx.localCount = static_cast<int>(paramSlots.size());
+  if (funcCtx.localCount > MAX_LOCAL_SLOTS) {
+    throw CompileError("Too many local variables in function.");
+  }
 
   function_stack.push(funcCtx);
 
@@ -1869,15 +1887,21 @@ void CodeGenVisitor::closeAllCapturedLocals() {
 bool CodeGenVisitor::removeLocalSlot(llvm::Value *slot) {
   bool captured = false;
 
+  bool removedFromContext = false;
+
   if (!function_stack.empty()) {
     FunctionContext &ctx = function_stack.top();
     if (!ctx.local_slots.empty()) {
       auto it = std::find(ctx.local_slots.rbegin(), ctx.local_slots.rend(), slot);
       if (it != ctx.local_slots.rend()) {
         ctx.local_slots.erase(std::next(it).base());
+        removedFromContext = true;
       }
     }
     captured = ctx.captured_slots.erase(slot) > 0;
+    if (removedFromContext) {
+      ctx.localCount = static_cast<int>(ctx.local_slots.size());
+    }
   }
 
   if (!global_local_slots.empty()) {
@@ -1924,12 +1948,12 @@ void CodeGenVisitor::recordConstant() {
   if (!function_stack.empty()) {
     FunctionContext &ctx = function_stack.top();
     if (ctx.constantCount >= MAX_CONSTANTS) {
-      throw std::runtime_error("Too many constants in one chunk.");
+      throw CompileError("Too many constants in one chunk.");
     }
     ctx.constantCount++;
   } else {
     if (globalConstantCount >= MAX_CONSTANTS) {
-      throw std::runtime_error("Too many constants in one chunk.");
+      throw CompileError("Too many constants in one chunk.");
     }
     globalConstantCount++;
   }
@@ -1937,7 +1961,7 @@ void CodeGenVisitor::recordConstant() {
 
 void CodeGenVisitor::ensureParameterLimit(size_t arity) {
   if (arity > static_cast<size_t>(MAX_PARAMETERS)) {
-    throw std::runtime_error("Can't have more than 255 parameters.");
+    throw CompileError("Can't have more than 255 parameters.");
   }
 }
 
@@ -2136,8 +2160,14 @@ llvm::Value *CodeGenVisitor::captureUpvalue(const std::string &name) {
       if (it != ctx.local_slots.end()) {
         *it = slot;
       } else {
+        if (ctx.local_slots.size() >= static_cast<size_t>(MAX_LOCAL_SLOTS)) {
+          throw CompileError("Too many local variables in function.");
+        }
         ctx.local_slots.push_back(slot);
       }
+      ctx.localCount = static_cast<int>(ctx.local_slots.size());
+    } else {
+      global_local_slots.push_back(slot);
     }
   }
 
@@ -2148,8 +2178,12 @@ llvm::Value *CodeGenVisitor::captureUpvalue(const std::string &name) {
         ctx.captured_slots.insert(slot);
         if (std::find(ctx.local_slots.begin(), ctx.local_slots.end(), slot) ==
             ctx.local_slots.end()) {
+          if (ctx.local_slots.size() >= static_cast<size_t>(MAX_LOCAL_SLOTS)) {
+            throw CompileError("Too many local variables in function.");
+          }
           ctx.local_slots.push_back(slot);
         }
+        ctx.localCount = static_cast<int>(ctx.local_slots.size());
       } else {
         global_captured_slots.insert(slot);
         if (std::find(global_local_slots.begin(), global_local_slots.end(), slot) ==
