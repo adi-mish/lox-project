@@ -1,4 +1,5 @@
 #include "Resolver.h"
+#include "CompileError.h"
 #include <iostream>
 #include <stdexcept>
 
@@ -30,7 +31,7 @@ void Resolver::declare(const Token &name) {
   if (!function_stack.empty()) {
     FunctionInfo &info = function_stack.top();
     if (info.localCount >= MAX_LOCAL_SLOTS) {
-      throw std::runtime_error("Too many local variables in function.");
+      throw CompileError("Too many local variables in function.");
     }
     info.localCount++;
   }
@@ -76,7 +77,7 @@ void Resolver::addUpvalue(const std::string &name) {
 
   // Add new upvalue
   if (current_func.upvalues.size() >= MAX_UPVALUES) {
-    throw std::runtime_error("Too many closure variables in function.");
+    throw CompileError("Too many closure variables in function.");
   }
   int index = static_cast<int>(current_func.upvalues.size());
   current_func.upvalues.push_back(name);
@@ -171,7 +172,7 @@ void Resolver::resolveFunction(Function *function, FunctionType type) {
         if (parent_func.upvalue_indices.find(upvalue_name) ==
             parent_func.upvalue_indices.end()) {
           if (parent_func.upvalues.size() >= MAX_UPVALUES) {
-            throw std::runtime_error("Too many closure variables in function.");
+            throw CompileError("Too many closure variables in function.");
           }
           parent_func.upvalue_indices[upvalue_name] =
               static_cast<int>(parent_func.upvalues.size());

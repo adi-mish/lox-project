@@ -29,6 +29,8 @@ class CodeGenVisitor : public ExprVisitor, public StmtVisitor {
 
   static constexpr int MAX_PARAMETERS = 255;
   static constexpr int MAX_CONSTANTS = 256;
+  static constexpr int MAX_LOCAL_SLOTS = 256;
+  static constexpr int MAX_UPVALUES = 256;
 
   // Track block nesting depth to distinguish true globals from block-scoped
   // variables
@@ -58,6 +60,8 @@ class CodeGenVisitor : public ExprVisitor, public StmtVisitor {
     std::unordered_map<std::string, int> upvalue_indices;
     llvm::Value *upvalue_array = nullptr; // Array parameter for upvalues
     int constantCount = 0;
+    int localCount = 0;
+    int upvalueCount = 0;
     std::string debug_name;
     std::vector<llvm::Value *> local_slots;
     std::unordered_set<llvm::Value *> captured_slots;
