@@ -13,17 +13,19 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import enum
+import fnmatch
 import os
 import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import List, Tuple
+from typing import Iterable, List, Tuple
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TEST_DIR = REPO_ROOT / "test"
-ELOXIR_BIN = REPO_ROOT / "eloxir" / "build" / "eloxir"
+BUILD_DIR = REPO_ROOT / "eloxir" / "build"
+OPTIMISED_BUILD_TYPES = ("RelWithDebInfo", "Release")
 DEFAULT_TIMEOUT_SECONDS = 10
 
 
@@ -57,8 +59,63 @@ class TestResult:
     failure_kind: FailureKind | None = None
 
 
-def discover_tests() -> List[Path]:
-    return sorted(TEST_DIR.rglob("*.lox"))
+def discover_tests(filter_pattern: str | None = None) -> List[Path]:
+    tests = sorted(TEST_DIR.rglob("*.lox"))
+    if not filter_pattern:
+        return tests
+
+    query = filter_pattern.strip()
+    if not query:
+        return tests
+
+    has_glob = any(ch in query for ch in "*?[]")
+    lowered_query = query.lower()
+
+    def matches(path: Path) -> bool:
+        relative = path.relative_to(TEST_DIR).as_posix()
+        if has_glob:
+            return fnmatch.fnmatch(relative, query)
+        return lowered_query in relative.lower()
+
+    return [path for path in tests if matches(path)]
+
+
+def _candidate_binaries(
+    build_dir: Path, build_type_hints: Iterable[str | None]
+) -> List[Path]:
+    candidates: List[Path] = []
+    for hint in build_type_hints:
+        candidate = (
+            build_dir / "eloxir"
+            if hint in (None, "")
+            else build_dir / hint / "eloxir"
+        )
+        if candidate not in candidates:
+            candidates.append(candidate)
+    return candidates
+
+
+def resolve_binary(preferred_build_type: str | None = None) -> Path:
+    override = os.environ.get("ELOXIR_BIN")
+    if override:
+        return Path(override)
+
+    env_build_type = os.environ.get("ELOXIR_BUILD_TYPE")
+    hints: List[str | None] = []
+    if preferred_build_type:
+        hints.append(preferred_build_type)
+    if env_build_type:
+        hints.append(env_build_type)
+    hints.extend(OPTIMISED_BUILD_TYPES)
+    hints.append(None)
+
+    for candidate in _candidate_binaries(BUILD_DIR, hints):
+        if candidate.exists() and os.access(candidate, os.X_OK):
+            return candidate
+
+    # Nothing matched; fall back to the first candidate so the caller can
+    # surface a meaningful error message with the expected location.
+    return _candidate_binaries(BUILD_DIR, hints)[0]
 
 
 def parse_expectations(path: Path) -> TestExpectations:
@@ -107,12 +164,15 @@ def _normalize_output(stream: str | bytes | None) -> str:
 
 
 def run_test(
-    path: Path, timeout: int, extra_args: List[str] | None = None
+    path: Path,
+    timeout: int,
+    binary: Path,
+    extra_args: List[str] | None = None,
 ) -> Tuple[str, str, int, bool]:
     if extra_args is None:
         extra_args = []
     try:
-        cmd = [str(ELOXIR_BIN), *extra_args]
+        cmd = [str(binary), *extra_args]
         if path.parent.name == "scanning":
             cmd.append("--scan")
         cmd.append(str(path))
@@ -132,7 +192,7 @@ def run_test(
         code = -1
         timed_out = True
     except FileNotFoundError as exc:  # pragma: no cover - defensive
-        raise RuntimeError(f"Failed to execute {ELOXIR_BIN}: {exc}") from exc
+        raise RuntimeError(f"Failed to execute {binary}: {exc}") from exc
 
     return stdout, stderr, code, timed_out
 
@@ -175,15 +235,20 @@ def minimal_repro(path: Path) -> str:
     return "\n".join(lines)
 
 
-def run_suite(timeout: int) -> Tuple[List[TestResult], List[TestResult]]:
+def run_suite(
+    timeout: int,
+    filter_pattern: str | None = None,
+    preferred_build_type: str | None = None,
+) -> Tuple[List[TestResult], List[TestResult]]:
     if not TEST_DIR.is_dir():
         raise SystemExit(f"Error: Test directory not found at {TEST_DIR}")
-    if not (ELOXIR_BIN.exists() and os.access(ELOXIR_BIN, os.X_OK)):
+    binary = resolve_binary(preferred_build_type)
+    if not (binary.exists() and os.access(binary, os.X_OK)):
         raise SystemExit(
-            f"Error: eloxir binary not found or not executable at {ELOXIR_BIN}"
+            f"Error: eloxir binary not found or not executable at {binary}"
         )
 
-    tests = discover_tests()
+    tests = discover_tests(filter_pattern)
     expression_tests = [t for t in tests if t.parent.name == "expressions"]
     other_tests = [t for t in tests if t.parent.name != "expressions"]
     results: List[TestResult] = []
@@ -192,6 +257,7 @@ def run_suite(timeout: int) -> Tuple[List[TestResult], List[TestResult]]:
     total = len(tests)
     print(f"Discovered {total} test files")
     print("Running tests...", flush=True)
+    print(f"Using eloxir binary at {binary}")
 
     index = 0
     ordered_tests = [
@@ -204,7 +270,7 @@ def run_suite(timeout: int) -> Tuple[List[TestResult], List[TestResult]]:
             index += 1
             expectations = parse_expectations(test_path)
             stdout, stderr, code, timed_out = run_test(
-                test_path, timeout, extra_args=extra_args
+                test_path, timeout, binary, extra_args=extra_args
             )
             passed = False
             if expectations.exit_code == 0:
@@ -277,9 +343,31 @@ def main(argv: List[str]) -> int:
         default=DEFAULT_TIMEOUT_SECONDS,
         help="Per-test timeout in seconds (default: %(default)s)",
     )
+    parser.add_argument(
+        "--filter",
+        type=str,
+        default=None,
+        help=(
+            "Only run tests whose relative path matches this glob or contains "
+            "the provided substring (case-insensitive)."
+        ),
+    )
+    parser.add_argument(
+        "--build-type",
+        type=str,
+        default=None,
+        help=(
+            "Preferred CMake build configuration to locate the eloxir binary "
+            "(e.g. RelWithDebInfo, Release)."
+        ),
+    )
     args = parser.parse_args(argv)
 
-    results, failures = run_suite(timeout=args.timeout)
+    results, failures = run_suite(
+        timeout=args.timeout,
+        filter_pattern=args.filter,
+        preferred_build_type=args.build_type,
+    )
     print_report(results, failures)
     return 0 if not failures else 1
 
