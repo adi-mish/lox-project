@@ -1,0 +1,26 @@
+var f;
+var g;
+var h;
+
+for (var i = 0; i < 3; i = i + 1) {
+  var j = i;
+  fun make() {
+    print j;
+  }
+  if (i == 0) {
+    f = make;
+  } else if (i == 1) {
+    g = make;
+  } else {
+    h = make;
+  }
+}
+
+f();
+// expect: 0
+
+g();
+// expect: 1
+
+h();
+// expect: 2

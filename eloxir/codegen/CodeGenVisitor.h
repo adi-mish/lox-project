@@ -10,6 +10,7 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 namespace eloxir {
 
@@ -45,6 +46,8 @@ class CodeGenVisitor : public ExprVisitor, public StmtVisitor {
   // Per-variable storage stack for proper lexical scoping
   // Maps variable name to stack of storage locations (most recent = back())
   std::unordered_map<std::string, std::vector<llvm::Value *>> variableStacks;
+  std::vector<llvm::Value *> global_local_slots;
+  std::unordered_set<llvm::Value *> global_captured_slots;
 
   // Function context for closure support
   struct FunctionContext {
@@ -53,9 +56,11 @@ class CodeGenVisitor : public ExprVisitor, public StmtVisitor {
     std::unordered_set<std::string> direct_values;
     std::vector<std::string> upvalues; // Names of captured variables
     std::unordered_map<std::string, int> upvalue_indices;
-    llvm::Value *upvalue_array; // Array parameter for upvalues
+    llvm::Value *upvalue_array = nullptr; // Array parameter for upvalues
     int constantCount = 0;
     std::string debug_name;
+    std::vector<llvm::Value *> local_slots;
+    std::unordered_set<llvm::Value *> captured_slots;
   };
 
   std::stack<FunctionContext> function_stack;
@@ -177,6 +182,8 @@ private:
 
   void recordConstant();
   void ensureParameterLimit(size_t arity);
+  void closeAllCapturedLocals();
+  bool removeLocalSlot(llvm::Value *slot);
 };
 
 } // namespace eloxir
