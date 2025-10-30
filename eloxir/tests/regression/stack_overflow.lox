@@ -1,0 +1,5 @@
+fun foo() {
+  foo();
+}
+foo();
+// expect runtime error: Stack overflow.

@@ -4,7 +4,8 @@
 
 namespace eloxir {
 
-Parser::Parser(const std::vector<Token> &tokens) : tokens(tokens) {}
+Parser::Parser(const std::vector<Token> &tokens)
+    : tokens(tokens), hadError(false), firstError("") {}
 
 std::vector<std::unique_ptr<Stmt>> Parser::parse() {
   std::vector<std::unique_ptr<Stmt>> statements;
@@ -16,7 +17,9 @@ std::vector<std::unique_ptr<Stmt>> Parser::parse() {
         statements.push_back(std::move(stmt));
       }
     } catch (const std::runtime_error &e) {
-      std::cerr << "Parse error: " << e.what() << std::endl;
+      if (!hadError)
+        firstError = e.what();
+      hadError = true;
       synchronize();
     }
   }
@@ -152,157 +155,31 @@ std::unique_ptr<Stmt> Parser::forStatement() {
   // Parse the body
   auto body = statement();
 
-  // If this is a for-loop with a variable declaration, apply the capture fix
-  if (hasLoopVar) {
-    // Transform: for (var i = init; cond; incr) { body }
-    // Into: { var i_outer = init; while (i_outer < limit) { { var i_UNIQUE =
-    // i_outer; body } i_outer = i_outer + 1; } } CRITICAL: Each iteration MUST
-    // get a unique variable name to prevent all closures from capturing the
-    // same variable binding.
+  // Desugar the for-loop to the canonical while-loop form used in the book.
+  // This preserves the semantics expected by the official test suite and
+  // avoids altering control-flow or variable capture behaviour.
 
-    std::string outerVarName = loopVar.getLexeme() + "_outer";
-
-    // Generate a unique identifier for this transformation to ensure
-    // different for-loops don't conflict with each other
-    static int forLoopCounter = 0;
-    forLoopCounter++;
-    std::string innerVarName =
-        loopVar.getLexeme() + "_iter_" + std::to_string(forLoopCounter);
-
-    // Get the initializer expression from the original variable declaration
-    auto originalVar = dynamic_cast<Var *>(initializer.get());
-    auto initExpr = std::move(originalVar->initializer);
-
-    // Create the outer variable: var i_outer = init;
-    Token outerVarToken(TokenType::IDENTIFIER, outerVarName, std::monostate{},
-                        loopVar.getLine());
-    auto outerVarDecl =
-        std::make_unique<Var>(Token(outerVarToken), std::move(initExpr));
-
-    // CRITICAL CHANGE: Create inner block with UNIQUE variable name per
-    // iteration We need to create a fresh scope structure that the resolver
-    // will understand as creating separate variables for each iteration.
-
-    // The key insight: We need the BODY to see the original variable name (i),
-    // but each iteration must have its OWN distinct variable that captures
-    // the current value of i_outer.
-
-    // Strategy: Create a block scope that allocates a fresh binding of 'i'
-    // for each iteration, initialized from i_outer's current value.
-
-    std::vector<std::unique_ptr<Stmt>> innerStatements;
-
-    // var i = i_outer;  (using original variable name so body code works)
-    Token outerReadToken(TokenType::IDENTIFIER, outerVarName, std::monostate{},
-                         loopVar.getLine());
-    auto outerVarRead = std::make_unique<Variable>(std::move(outerReadToken));
-    auto innerVarDecl =
-        std::make_unique<Var>(std::move(loopVar), std::move(outerVarRead));
-
-    innerStatements.push_back(std::move(innerVarDecl));
-    innerStatements.push_back(std::move(body));
-
-    auto innerBlock = std::make_unique<Block>(std::move(innerStatements));
-
-    // Create the while loop body (inner block + increment)
-    std::vector<std::unique_ptr<Stmt>> whileBodyStatements;
-    whileBodyStatements.push_back(std::move(innerBlock));
-
-    // Add increment: i_outer = i_outer + 1;
-    if (increment != nullptr) {
-      // For now, we'll assume the increment is of the form: i = i + 1
-      // and transform it to: i_outer = i_outer + 1
-      // This is a simplification - a full implementation would need expression
-      // rewriting
-
-      Token outerIncrToken(TokenType::IDENTIFIER, outerVarName,
-                           std::monostate{}, 0);
-      Token outerReadToken2(TokenType::IDENTIFIER, outerVarName,
-                            std::monostate{}, 0);
-      auto outerVarRead2 =
-          std::make_unique<Variable>(std::move(outerReadToken2));
-      auto one = std::make_unique<Literal>(1.0);
-      Token plusToken(TokenType::PLUS, "+", std::monostate{}, 0);
-      auto incrementExpr = std::make_unique<Binary>(
-          std::move(outerVarRead2), std::move(plusToken), std::move(one));
-      auto assignment = std::make_unique<Assign>(std::move(outerIncrToken),
-                                                 std::move(incrementExpr));
-      whileBodyStatements.push_back(
-          std::make_unique<Expression>(std::move(assignment)));
-    }
-
-    auto whileBody = std::make_unique<Block>(std::move(whileBodyStatements));
-
-    // Create the condition - always rewrite if there's a condition
-    if (condition == nullptr) {
-      condition = std::make_unique<Literal>(true);
-    } else {
-      // Always rewrite any condition to use the outer variable
-      // This is a simplification - assumes the condition was of the form "i op
-      // rightSide"
-      Token outerCondToken(TokenType::IDENTIFIER, outerVarName,
-                           std::monostate{}, 0);
-      auto outerVarCond = std::make_unique<Variable>(std::move(outerCondToken));
-
-      // Try to extract the right side value if it's a simple binary expression
-      if (auto binary = dynamic_cast<Binary *>(condition.get())) {
-        if (auto rightLit = dynamic_cast<Literal *>(binary->right.get())) {
-          Token opCopy(binary->op.getType(), binary->op.getLexeme(),
-                       binary->op.getLiteral(), binary->op.getLine());
-          auto newRight = std::make_unique<Literal>(rightLit->value);
-          condition = std::make_unique<Binary>(
-              std::move(outerVarCond), std::move(opCopy), std::move(newRight));
-        } else {
-          // Fallback: i_outer < 1000 (should terminate eventually)
-          auto defaultRight = std::make_unique<Literal>(1000.0);
-          Token ltToken(TokenType::LESS, "<", std::monostate{}, 0);
-          condition = std::make_unique<Binary>(std::move(outerVarCond),
-                                               std::move(ltToken),
-                                               std::move(defaultRight));
-        }
-      } else {
-        // Not a binary expression - fallback
-        auto defaultRight = std::make_unique<Literal>(1000.0);
-        Token ltToken(TokenType::LESS, "<", std::monostate{}, 0);
-        condition = std::make_unique<Binary>(std::move(outerVarCond),
-                                             std::move(ltToken),
-                                             std::move(defaultRight));
-      }
-    }
-
-    auto whileLoop =
-        std::make_unique<While>(std::move(condition), std::move(whileBody));
-
-    // Wrap everything in a block
-    std::vector<std::unique_ptr<Stmt>> outerStatements;
-    outerStatements.push_back(std::move(outerVarDecl));
-    outerStatements.push_back(std::move(whileLoop));
-
-    return std::make_unique<Block>(std::move(outerStatements));
-  } else {
-    // Regular for-loop desugaring for non-variable cases
-    if (increment != nullptr) {
-      std::vector<std::unique_ptr<Stmt>> statements;
-      statements.push_back(std::move(body));
-      statements.push_back(std::make_unique<Expression>(std::move(increment)));
-      body = std::make_unique<Block>(std::move(statements));
-    }
-
-    if (condition == nullptr) {
-      condition = std::make_unique<Literal>(true);
-    }
-
-    body = std::make_unique<While>(std::move(condition), std::move(body));
-
-    if (initializer != nullptr) {
-      std::vector<std::unique_ptr<Stmt>> statements;
-      statements.push_back(std::move(initializer));
-      statements.push_back(std::move(body));
-      body = std::make_unique<Block>(std::move(statements));
-    }
-
-    return body;
+  if (increment != nullptr) {
+    std::vector<std::unique_ptr<Stmt>> statements;
+    statements.push_back(std::move(body));
+    statements.push_back(std::make_unique<Expression>(std::move(increment)));
+    body = std::make_unique<Block>(std::move(statements));
   }
+
+  if (condition == nullptr) {
+    condition = std::make_unique<Literal>(true);
+  }
+
+  body = std::make_unique<While>(std::move(condition), std::move(body));
+
+  if (initializer != nullptr) {
+    std::vector<std::unique_ptr<Stmt>> statements;
+    statements.push_back(std::move(initializer));
+    statements.push_back(std::move(body));
+    body = std::make_unique<Block>(std::move(statements));
+  }
+
+  return body;
 }
 
 std::unique_ptr<Stmt> Parser::ifStatement() {
@@ -600,6 +477,9 @@ std::runtime_error Parser::error(const Token &token,
 
   std::string fullMessage = "[line " + std::to_string(token.getLine()) +
                             "] Error" + where + ": " + message;
+  if (!hadError)
+    firstError = fullMessage;
+  hadError = true;
   return std::runtime_error(fullMessage);
 }
 
@@ -656,6 +536,9 @@ parseREPL(const std::string &source) {
 
     // Fallback: full statement parse (must end with EOF)
     auto stmts = p.parse();
+    if (p.hadErrors()) {
+      return {nullptr, p.firstErrorMessage()};
+    }
     if (stmts.empty())
       return {nullptr, ""};
     if (stmts.size() == 1)

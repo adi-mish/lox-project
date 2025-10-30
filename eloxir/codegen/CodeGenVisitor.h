@@ -165,6 +165,7 @@ private:
                                 llvm::BasicBlock *&errorBB); // returns i1
 
   // Error propagation helper
+  void emitRuntimeError(const std::string &message);
   void checkRuntimeError(llvm::Value *returnValue = nullptr);
 };
 
