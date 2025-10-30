@@ -136,6 +136,8 @@ int elx_has_global_function(const char *name);
 
 // Error handling
 void elx_runtime_error(const char *message);
+void elx_runtime_error_silent(const char *message);
+void elx_emit_runtime_error();
 int elx_has_runtime_error();
 void elx_clear_runtime_error();
 

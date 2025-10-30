@@ -1635,7 +1635,8 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
         value = createFunctionObjectImmediate(baseFuncName, llvmFunc,
                                               methodArity);
       } else {
-        value = createDeferredClosure(llvmFunc, upvalues, methodArity);
+        value = createDeferredClosure(llvmFunc, upvalues, methodArity,
+                                      baseFuncName);
       }
     } else {
       // Create closure object instead of just nil
@@ -1717,7 +1718,8 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
   llvm::Value *closureValue = nullptr;
   if (!upvalues.empty() && !isMethod) {
     closureValue = createDeferredClosure(llvmFunc, upvalues,
-                                         static_cast<int>(userParamCount));
+                                         static_cast<int>(userParamCount),
+                                         baseFuncName);
   }
 
   // Now fully switch to function context
@@ -1783,7 +1785,27 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
     // If no explicit return and no terminator, return nil
     if (!builder.GetInsertBlock()->getTerminator()) {
       closeAllCapturedLocals();
-      builder.CreateRet(nilConst());
+
+      llvm::Value *implicitReturn = nilConst();
+      if (methodContext == MethodContext::INITIALIZER) {
+        llvm::Value *thisSlot = nullptr;
+        auto thisIt = locals.find("this");
+        if (thisIt != locals.end()) {
+          thisSlot = thisIt->second;
+        } else {
+          auto currentIt = locals.find("this_current");
+          if (currentIt != locals.end()) {
+            thisSlot = currentIt->second;
+          }
+        }
+
+        if (thisSlot) {
+          implicitReturn =
+              builder.CreateLoad(llvmValueTy(), thisSlot, "this");
+        }
+      }
+
+      builder.CreateRet(implicitReturn);
     }
   } catch (const std::exception &e) {
     // Clean up and restore state
@@ -1837,7 +1859,7 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
   if (methodContext != MethodContext::NONE) {
     int methodArity = static_cast<int>(totalParamCount);
     llvm::Value *callable =
-        createDeferredClosure(llvmFunc, upvalues, methodArity);
+        createDeferredClosure(llvmFunc, upvalues, methodArity, baseFuncName);
     value = callable;
     return;
   }
@@ -1949,12 +1971,20 @@ void CodeGenVisitor::visitGetExpr(Get *e) {
   auto findMethodFn = mod.getFunction("elx_class_find_method");
   auto bindMethodFn = mod.getFunction("elx_bind_method");
   auto clearErrorFn = mod.getFunction("elx_clear_runtime_error");
+  auto emitErrorFn = mod.getFunction("elx_emit_runtime_error");
 
   llvm::BasicBlock *methodFoundBB = nullptr;
   llvm::Value *methodResult = nullptr;
   llvm::BasicBlock *methodMissingBB = nullptr;
 
   if (!getClassFn || !findMethodFn || !bindMethodFn) {
+    if (emitErrorFn) {
+      builder.CreateCall(emitErrorFn, {});
+    } else {
+      std::string message =
+          "Runtime error: Undefined property '" + e->name.getLexeme() + "'.";
+      emitRuntimeError(message);
+    }
     builder.CreateBr(contBB);
     methodMissingBB = builder.GetInsertBlock();
   } else {
@@ -2437,14 +2467,14 @@ CodeGenVisitor::createClosureObject(llvm::Function *func,
 llvm::Value *CodeGenVisitor::createDeferredClosureWithCapturedUpvalues(
     llvm::Function *func, const std::vector<std::string> &upvalues,
     const std::unordered_map<std::string, llvm::Value *> &capturedUpvalues,
-    int arity) {
+    int arity, const std::string &funcName) {
   // Use the existing runtime API for closure creation with pre-captured upvalue
   // values
 
   // Build function object first
   int llvm_arity = arity + (upvalues.empty() ? 0 : 1);
 
-  auto nameStr = builder.CreateGlobalStringPtr("", "fname");
+  auto nameStr = builder.CreateGlobalStringPtr(funcName, "fname");
   auto arityConst =
       llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), llvm_arity);
   auto funcPtr = builder.CreateBitCast(
@@ -2483,10 +2513,11 @@ llvm::Value *CodeGenVisitor::createDeferredClosureWithCapturedUpvalues(
 }
 
 llvm::Value *CodeGenVisitor::createDeferredClosure(
-    llvm::Function *func, const std::vector<std::string> &upvalues, int arity) {
+    llvm::Function *func, const std::vector<std::string> &upvalues, int arity,
+    const std::string &funcName) {
   // Create the function object using the original Lox arity
   // The upvalue array parameter is an implementation detail
-  auto nameStr = builder.CreateGlobalStringPtr("", "fname");
+  auto nameStr = builder.CreateGlobalStringPtr(funcName, "fname");
   auto arityConst = llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), arity);
   auto funcPtr = builder.CreateBitCast(
       func, llvm::PointerType::get(llvm::Type::getInt8Ty(ctx), 0));

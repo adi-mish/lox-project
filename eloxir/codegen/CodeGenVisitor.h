@@ -118,11 +118,12 @@ public:
                                    const std::vector<std::string> &upvalues);
   llvm::Value *createDeferredClosure(llvm::Function *func,
                                      const std::vector<std::string> &upvalues,
-                                     int arity);
+                                     int arity,
+                                     const std::string &funcName = "");
   llvm::Value *createDeferredClosureWithCapturedUpvalues(
       llvm::Function *func, const std::vector<std::string> &upvalues,
       const std::unordered_map<std::string, llvm::Value *> &capturedUpvalues,
-      int arity);
+      int arity, const std::string &funcName = "");
   llvm::Value *accessUpvalue(const std::string &name, int index);
   llvm::Value *captureUpvalue(const std::string &name);
 
