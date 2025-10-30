@@ -1190,7 +1190,8 @@ void CodeGenVisitor::visitVarStmtWithExecution(Var *s, int blockExecution) {
 
     if (!function_stack.empty()) {
       FunctionContext &ctx = function_stack.top();
-      if (ctx.local_slots.size() >= static_cast<size_t>(MAX_LOCAL_SLOTS)) {
+      if (ctx.local_slots.size() >=
+          static_cast<size_t>(MAX_LOCAL_SLOTS - 1)) {
         throw CompileError("Too many local variables in function.");
       }
     }
@@ -1771,7 +1772,7 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
 
   funcCtx.local_slots = paramSlots;
   funcCtx.localCount = static_cast<int>(paramSlots.size());
-  if (funcCtx.localCount > MAX_LOCAL_SLOTS) {
+  if (funcCtx.localCount > MAX_LOCAL_SLOTS - 1) {
     throw CompileError("Too many local variables in function.");
   }
   funcCtx.method_context = methodContext;
@@ -2625,7 +2626,8 @@ llvm::Value *CodeGenVisitor::captureUpvalue(const std::string &name) {
       if (it != ctx.local_slots.end()) {
         *it = slot;
       } else {
-        if (ctx.local_slots.size() >= static_cast<size_t>(MAX_LOCAL_SLOTS)) {
+        if (ctx.local_slots.size() >=
+            static_cast<size_t>(MAX_LOCAL_SLOTS - 1)) {
           throw CompileError("Too many local variables in function.");
         }
         ctx.local_slots.push_back(slot);
@@ -2643,7 +2645,8 @@ llvm::Value *CodeGenVisitor::captureUpvalue(const std::string &name) {
         ctx.captured_slots.insert(slot);
         if (std::find(ctx.local_slots.begin(), ctx.local_slots.end(), slot) ==
             ctx.local_slots.end()) {
-          if (ctx.local_slots.size() >= static_cast<size_t>(MAX_LOCAL_SLOTS)) {
+          if (ctx.local_slots.size() >=
+              static_cast<size_t>(MAX_LOCAL_SLOTS - 1)) {
             throw CompileError("Too many local variables in function.");
           }
           ctx.local_slots.push_back(slot);
