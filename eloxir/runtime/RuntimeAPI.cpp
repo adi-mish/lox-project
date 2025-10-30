@@ -65,6 +65,23 @@ static const char *getString(Value v) {
   return str->chars;
 }
 
+static ObjString *getStringObject(Value v) {
+  if (!v.isObj())
+    return nullptr;
+
+  void *obj_ptr = v.asObj();
+  if (obj_ptr == nullptr)
+    return nullptr;
+
+  if (allocated_objects.find(obj_ptr) == allocated_objects.end())
+    return nullptr;
+
+  ObjString *str = static_cast<ObjString *>(obj_ptr);
+  if (str->obj.type != ObjType::STRING)
+    return nullptr;
+  return str;
+}
+
 static ObjFunction *getFunction(Value v) {
   if (!v.isObj())
     return nullptr;
@@ -126,6 +143,84 @@ static ObjUpvalue *getUpvalue(Value v) {
   if (upvalue->obj.type != ObjType::UPVALUE)
     return nullptr;
   return upvalue;
+}
+
+static ObjClass *getClass(Value v) {
+  if (!v.isObj())
+    return nullptr;
+
+  void *obj_ptr = v.asObj();
+  if (obj_ptr == nullptr)
+    return nullptr;
+
+  if (allocated_objects.find(obj_ptr) == allocated_objects.end())
+    return nullptr;
+
+  ObjClass *klass = static_cast<ObjClass *>(obj_ptr);
+  if (klass->obj.type != ObjType::CLASS)
+    return nullptr;
+  return klass;
+}
+
+static ObjInstance *getInstance(Value v) {
+  if (!v.isObj())
+    return nullptr;
+
+  void *obj_ptr = v.asObj();
+  if (obj_ptr == nullptr)
+    return nullptr;
+
+  if (allocated_objects.find(obj_ptr) == allocated_objects.end())
+    return nullptr;
+
+  ObjInstance *instance = static_cast<ObjInstance *>(obj_ptr);
+  if (instance->obj.type != ObjType::INSTANCE)
+    return nullptr;
+  return instance;
+}
+
+static ObjBoundMethod *getBoundMethod(Value v) {
+  if (!v.isObj())
+    return nullptr;
+
+  void *obj_ptr = v.asObj();
+  if (obj_ptr == nullptr)
+    return nullptr;
+
+  if (allocated_objects.find(obj_ptr) == allocated_objects.end())
+    return nullptr;
+
+  ObjBoundMethod *bound = static_cast<ObjBoundMethod *>(obj_ptr);
+  if (bound->obj.type != ObjType::BOUND_METHOD)
+    return nullptr;
+  return bound;
+}
+
+static bool extractStringKey(uint64_t string_bits, std::string &out) {
+  Value string_val = Value::fromBits(string_bits);
+  ObjString *str = getStringObject(string_val);
+  if (!str)
+    return false;
+
+  out.assign(str->chars, str->length);
+  return true;
+}
+
+static void destroyObject(Obj *obj) {
+  switch (obj->type) {
+  case ObjType::CLASS:
+    delete reinterpret_cast<ObjClass *>(obj);
+    break;
+  case ObjType::INSTANCE:
+    delete reinterpret_cast<ObjInstance *>(obj);
+    break;
+  case ObjType::BOUND_METHOD:
+    delete reinterpret_cast<ObjBoundMethod *>(obj);
+    break;
+  default:
+    free(obj);
+    break;
+  }
 }
 
 uint64_t elx_print(uint64_t bits) {
@@ -191,6 +286,43 @@ uint64_t elx_print(uint64_t bits) {
     }
     case ObjType::UPVALUE: {
       std::cout << "<upvalue>";
+      break;
+    }
+    case ObjType::CLASS: {
+      ObjClass *klass = static_cast<ObjClass *>(obj_ptr);
+      if (klass && klass->name) {
+        std::cout << klass->name->chars;
+      } else {
+        std::cout << "<class>";
+      }
+      break;
+    }
+    case ObjType::INSTANCE: {
+      ObjInstance *instance = static_cast<ObjInstance *>(obj_ptr);
+      if (instance && instance->klass && instance->klass->name) {
+        std::cout << instance->klass->name->chars << " instance";
+      } else {
+        std::cout << "<instance>";
+      }
+      break;
+    }
+    case ObjType::BOUND_METHOD: {
+      ObjBoundMethod *bound = static_cast<ObjBoundMethod *>(obj_ptr);
+      if (bound) {
+        Value method_val = Value::fromBits(bound->method);
+        ObjClosure *closure = getClosure(method_val);
+        if (closure && closure->function && closure->function->name) {
+          std::cout << "<fn " << closure->function->name << ">";
+          break;
+        }
+
+        ObjFunction *func = getFunction(method_val);
+        if (func && func->name) {
+          std::cout << "<fn " << func->name << ">";
+          break;
+        }
+      }
+      std::cout << "<bound method>";
       break;
     }
     default:
@@ -283,7 +415,7 @@ void elx_free_object(uint64_t obj_bits) {
   // Remove from tracking registry
   allocated_objects.erase(obj);
 
-  free(obj);
+  destroyObject(obj);
 }
 
 uint64_t elx_concatenate_strings(uint64_t a_bits, uint64_t b_bits) {
@@ -889,6 +1021,158 @@ int elx_is_closure(uint64_t value_bits) {
   return result ? 1 : 0;
 }
 
+static uint64_t findMethodOnClass(ObjClass *klass, const std::string &name) {
+  for (ObjClass *current = klass; current != nullptr;
+       current = current->superclass) {
+    auto it = current->methods.find(name);
+    if (it != current->methods.end()) {
+      return it->second;
+    }
+  }
+
+  return Value::nil().getBits();
+}
+
+uint64_t elx_allocate_class(uint64_t name_bits, uint64_t superclass_bits) {
+  Value name_val = Value::fromBits(name_bits);
+  ObjString *name_str = getStringObject(name_val);
+  if (!name_str) {
+    elx_runtime_error("Class name must be a string.");
+    return Value::nil().getBits();
+  }
+
+  ObjClass *superclass = nullptr;
+  Value superclass_val = Value::fromBits(superclass_bits);
+  if (!superclass_val.isNil()) {
+    superclass = getClass(superclass_val);
+    if (!superclass) {
+      elx_runtime_error("Superclass must be a class.");
+      return Value::nil().getBits();
+    }
+  }
+
+  ObjClass *klass = new ObjClass();
+  klass->obj.type = ObjType::CLASS;
+  klass->name = name_str;
+  klass->superclass = superclass;
+  klass->methods.clear();
+
+  allocated_objects.insert(klass);
+  return Value::object(klass).getBits();
+}
+
+void elx_class_add_method(uint64_t class_bits, uint64_t name_bits,
+                          uint64_t method_bits) {
+  Value class_val = Value::fromBits(class_bits);
+  ObjClass *klass = getClass(class_val);
+  if (!klass)
+    return;
+
+  std::string method_name;
+  if (!extractStringKey(name_bits, method_name))
+    return;
+
+  klass->methods[method_name] = method_bits;
+}
+
+uint64_t elx_class_find_method(uint64_t class_bits, uint64_t name_bits) {
+  Value class_val = Value::fromBits(class_bits);
+  ObjClass *klass = getClass(class_val);
+  if (!klass)
+    return Value::nil().getBits();
+
+  std::string method_name;
+  if (!extractStringKey(name_bits, method_name))
+    return Value::nil().getBits();
+
+  return findMethodOnClass(klass, method_name);
+}
+
+uint64_t elx_instantiate_class(uint64_t class_bits) {
+  Value class_val = Value::fromBits(class_bits);
+  ObjClass *klass = getClass(class_val);
+  if (!klass) {
+    elx_runtime_error("Can only call functions and classes.");
+    return Value::nil().getBits();
+  }
+
+  ObjInstance *instance = new ObjInstance();
+  instance->obj.type = ObjType::INSTANCE;
+  instance->klass = klass;
+  instance->fields.clear();
+
+  allocated_objects.insert(instance);
+  return Value::object(instance).getBits();
+}
+
+uint64_t elx_get_instance_field(uint64_t instance_bits, uint64_t name_bits) {
+  Value instance_val = Value::fromBits(instance_bits);
+  ObjInstance *instance = getInstance(instance_val);
+  if (!instance) {
+    elx_runtime_error("Only instances have properties.");
+    return Value::nil().getBits();
+  }
+
+  std::string field_name;
+  if (!extractStringKey(name_bits, field_name)) {
+    elx_runtime_error("Property name must be a string.");
+    return Value::nil().getBits();
+  }
+
+  auto it = instance->fields.find(field_name);
+  if (it != instance->fields.end()) {
+    return it->second;
+  }
+
+  uint64_t method_bits = findMethodOnClass(instance->klass, field_name);
+  if (method_bits != Value::nil().getBits()) {
+    return elx_bind_method(instance_bits, method_bits);
+  }
+
+  std::string error_msg = "Undefined property '" + field_name + "'.";
+  elx_runtime_error(error_msg.c_str());
+  return Value::nil().getBits();
+}
+
+uint64_t elx_set_instance_field(uint64_t instance_bits, uint64_t name_bits,
+                                uint64_t value_bits) {
+  Value instance_val = Value::fromBits(instance_bits);
+  ObjInstance *instance = getInstance(instance_val);
+  if (!instance) {
+    elx_runtime_error("Only instances have fields.");
+    return Value::nil().getBits();
+  }
+
+  std::string field_name;
+  if (!extractStringKey(name_bits, field_name)) {
+    elx_runtime_error("Property name must be a string.");
+    return Value::nil().getBits();
+  }
+
+  instance->fields[field_name] = value_bits;
+  return value_bits;
+}
+
+uint64_t elx_bind_method(uint64_t instance_bits, uint64_t method_bits) {
+  Value instance_val = Value::fromBits(instance_bits);
+  ObjInstance *instance = getInstance(instance_val);
+  if (!instance)
+    return Value::nil().getBits();
+
+  Value method_val = Value::fromBits(method_bits);
+  ObjClosure *closure = getClosure(method_val);
+  if (!closure)
+    return method_bits;
+
+  ObjBoundMethod *bound = new ObjBoundMethod();
+  bound->obj.type = ObjType::BOUND_METHOD;
+  bound->receiver = instance_bits;
+  bound->method = method_bits;
+
+  allocated_objects.insert(bound);
+  return Value::object(bound).getBits();
+}
+
 void elx_cleanup_all_objects() {
   // Free all tracked objects except global built-ins and interned strings
   std::unordered_set<void *> persistent_objects;
@@ -909,15 +1193,19 @@ void elx_cleanup_all_objects() {
     }
   }
 
+  std::unordered_set<void *> remaining_objects;
+
   // Free non-persistent objects
   for (void *obj : allocated_objects) {
     if (persistent_objects.find(obj) == persistent_objects.end()) {
-      free(obj);
+      destroyObject(static_cast<Obj *>(obj));
+    } else {
+      remaining_objects.insert(obj);
     }
   }
 
   // Clear the registry but keep persistent objects alive
-  allocated_objects = persistent_objects;
+  allocated_objects = remaining_objects;
 }
 
 void elx_initialize_global_builtins() {
