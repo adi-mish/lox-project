@@ -2,12 +2,21 @@
 #include "Value.h"
 #include <cstdint>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace eloxir {
 
 // Object header for heap-allocated objects
-enum class ObjType { STRING, FUNCTION, CLOSURE, UPVALUE };
+enum class ObjType {
+  STRING,
+  FUNCTION,
+  CLOSURE,
+  UPVALUE,
+  CLASS,
+  INSTANCE,
+  BOUND_METHOD
+};
 
 struct Obj {
   ObjType type;
@@ -38,6 +47,24 @@ struct ObjClosure {
   ObjFunction *function;
   ObjUpvalue **upvalues; // Array of captured upvalues
   int upvalue_count;
+};
+
+struct ObjClass {
+  Obj obj;
+  ObjString *name;
+  std::unordered_map<std::string, uint64_t> methods;
+};
+
+struct ObjInstance {
+  Obj obj;
+  ObjClass *klass;
+  std::unordered_map<std::string, uint64_t> fields;
+};
+
+struct ObjBoundMethod {
+  Obj obj;
+  uint64_t receiver_bits;
+  uint64_t method_bits;
 };
 
 } // namespace eloxir
@@ -76,6 +103,18 @@ void elx_set_upvalue_value(uint64_t upvalue_bits, uint64_t value);
 void elx_close_upvalues(uint64_t *last_local);
 uint64_t elx_call_closure(uint64_t closure_bits, uint64_t *args, int arg_count);
 int elx_is_closure(uint64_t value_bits);
+
+// Class and instance functions
+uint64_t elx_allocate_class(uint64_t name_bits);
+void elx_class_set_method(uint64_t class_bits, const char *name,
+                          uint64_t method_bits);
+uint64_t elx_class_get_method(uint64_t class_bits, const char *name);
+uint64_t elx_instantiate_class(uint64_t class_bits);
+void elx_instance_set_property(uint64_t instance_bits, const char *name,
+                               uint64_t value_bits);
+uint64_t elx_instance_get_property(uint64_t instance_bits, const char *name);
+int elx_instance_has_property(uint64_t instance_bits, const char *name);
+uint64_t elx_bind_method(uint64_t receiver_bits, uint64_t method_bits);
 
 // Memory management
 void elx_cleanup_all_objects(); // Clean up all tracked objects
