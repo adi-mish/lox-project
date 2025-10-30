@@ -1100,6 +1100,35 @@ uint64_t elx_call_closure(uint64_t closure_bits, uint64_t *args,
       }
       break;
     }
+    case 3: {
+      if (closure->upvalue_count == 0) {
+        typedef uint64_t (*FunctionPtr3)(uint64_t, uint64_t, uint64_t);
+        FunctionPtr3 fn = reinterpret_cast<FunctionPtr3>(func->llvm_function);
+        result = fn(args[0], args[1], args[2]);
+      } else {
+        typedef uint64_t (*FunctionPtrUpvalue3)(uint64_t, uint64_t, uint64_t,
+                                               uint64_t *);
+        FunctionPtrUpvalue3 fn =
+            reinterpret_cast<FunctionPtrUpvalue3>(func->llvm_function);
+        result = fn(args[0], args[1], args[2], upvalue_args);
+      }
+      break;
+    }
+    case 4: {
+      if (closure->upvalue_count == 0) {
+        typedef uint64_t (*FunctionPtr4)(uint64_t, uint64_t, uint64_t,
+                                         uint64_t);
+        FunctionPtr4 fn = reinterpret_cast<FunctionPtr4>(func->llvm_function);
+        result = fn(args[0], args[1], args[2], args[3]);
+      } else {
+        typedef uint64_t (*FunctionPtrUpvalue4)(uint64_t, uint64_t, uint64_t,
+                                               uint64_t, uint64_t *);
+        FunctionPtrUpvalue4 fn =
+            reinterpret_cast<FunctionPtrUpvalue4>(func->llvm_function);
+        result = fn(args[0], args[1], args[2], args[3], upvalue_args);
+      }
+      break;
+    }
     default: {
       // For now, just support simple functions
       std::string error_msg = "Closures with " + std::to_string(arg_count) +
@@ -1155,6 +1184,21 @@ static uint64_t findMethodOnClass(ObjClass *klass, const std::string &name) {
   }
 
   return Value::nil().getBits();
+}
+
+uint64_t elx_validate_superclass(uint64_t superclass_bits) {
+  Value superclass_val = Value::fromBits(superclass_bits);
+  if (superclass_val.isNil()) {
+    return superclass_bits;
+  }
+
+  ObjClass *superclass = getClass(superclass_val);
+  if (!superclass) {
+    elx_runtime_error("Superclass must be a class.");
+    return Value::nil().getBits();
+  }
+
+  return superclass_bits;
 }
 
 uint64_t elx_allocate_class(uint64_t name_bits, uint64_t superclass_bits) {
@@ -1229,6 +1273,22 @@ uint64_t elx_instantiate_class(uint64_t class_bits) {
   return Value::object(instance).getBits();
 }
 
+uint64_t elx_get_instance_class(uint64_t instance_bits) {
+  Value instance_val = Value::fromBits(instance_bits);
+  ObjInstance *instance = getInstance(instance_val);
+  if (!instance) {
+    elx_runtime_error("Only instances have classes.");
+    return Value::nil().getBits();
+  }
+
+  ObjClass *klass = instance->klass;
+  if (!klass) {
+    return Value::nil().getBits();
+  }
+
+  return Value::object(klass).getBits();
+}
+
 uint64_t elx_get_instance_field(uint64_t instance_bits, uint64_t name_bits) {
   Value instance_val = Value::fromBits(instance_bits);
   ObjInstance *instance = getInstance(instance_val);
@@ -1246,11 +1306,6 @@ uint64_t elx_get_instance_field(uint64_t instance_bits, uint64_t name_bits) {
   auto it = instance->fields.find(field_name);
   if (it != instance->fields.end()) {
     return it->second;
-  }
-
-  uint64_t method_bits = findMethodOnClass(instance->klass, field_name);
-  if (method_bits != Value::nil().getBits()) {
-    return elx_bind_method(instance_bits, method_bits);
   }
 
   std::string error_msg = "Undefined property '" + field_name + "'.";

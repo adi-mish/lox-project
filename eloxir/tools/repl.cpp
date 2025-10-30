@@ -404,6 +404,7 @@ int runFile(const std::string &filename) {
 
     // Pass resolver upvalue information to code generator
     fileCG.setResolverUpvalues(&resolver.function_upvalues);
+    fileCG.setResolverLocals(&resolver.locals);
 
     // Create main function
     auto fnTy = FunctionType::get(fileCG.llvmValueTy(), {}, false);
@@ -544,6 +545,7 @@ void runREPL() {
 
       // Pass resolver upvalue information to code generator
       lineCG.setResolverUpvalues(&resolver.function_upvalues);
+      lineCG.setResolverLocals(&resolver.locals);
 
       // wrap in unique function name to avoid duplicates
       std::string fnName = "__expr" + std::to_string(lineCount++);

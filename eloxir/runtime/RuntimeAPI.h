@@ -107,11 +107,13 @@ uint64_t elx_call_closure(uint64_t closure_bits, uint64_t *args, int arg_count);
 int elx_is_closure(uint64_t value_bits);
 
 // Class and instance helpers
+uint64_t elx_validate_superclass(uint64_t superclass_bits);
 uint64_t elx_allocate_class(uint64_t name_bits, uint64_t superclass_bits);
 void elx_class_add_method(uint64_t class_bits, uint64_t name_bits,
                           uint64_t method_bits);
 uint64_t elx_class_find_method(uint64_t class_bits, uint64_t name_bits);
 uint64_t elx_instantiate_class(uint64_t class_bits);
+uint64_t elx_get_instance_class(uint64_t instance_bits);
 uint64_t elx_get_instance_field(uint64_t instance_bits, uint64_t name_bits);
 uint64_t elx_set_instance_field(uint64_t instance_bits, uint64_t name_bits,
                                 uint64_t value_bits);
