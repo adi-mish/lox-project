@@ -6,6 +6,7 @@
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/Module.h>
+#include <cstdint>
 #include <stack>
 #include <string>
 #include <unordered_map>
@@ -51,6 +52,8 @@ class CodeGenVisitor : public ExprVisitor, public StmtVisitor {
   std::vector<llvm::Value *> global_local_slots;
   std::unordered_set<llvm::Value *> global_captured_slots;
 
+  enum class MethodContext { NONE, METHOD, INITIALIZER };
+
   // Function context for closure support
   struct FunctionContext {
     llvm::Function *llvm_function;
@@ -65,6 +68,7 @@ class CodeGenVisitor : public ExprVisitor, public StmtVisitor {
     std::string debug_name;
     std::vector<llvm::Value *> local_slots;
     std::unordered_set<llvm::Value *> captured_slots;
+    MethodContext method_context = MethodContext::NONE;
   };
 
   std::stack<FunctionContext> function_stack;
@@ -73,6 +77,10 @@ class CodeGenVisitor : public ExprVisitor, public StmtVisitor {
 
   // Deferred function objects to create in global context
   std::vector<std::pair<std::string, int>> pendingFunctions; // name, arity
+
+  MethodContext method_context_override = MethodContext::NONE;
+  llvm::Value *current_class_value = nullptr;
+  std::string function_map_key_override;
 
 public:
   CodeGenVisitor(llvm::Module &m);
@@ -121,12 +129,17 @@ public:
   // Access to resolver upvalue information
   const std::unordered_map<const Function *, std::vector<std::string>>
       *resolver_upvalues;
+  const std::unordered_map<const Expr *, int> *resolver_locals;
 
 public:
   void setResolverUpvalues(
       const std::unordered_map<const Function *, std::vector<std::string>>
           *upvalues) {
     resolver_upvalues = upvalues;
+  }
+
+  void setResolverLocals(const std::unordered_map<const Expr *, int> *locals) {
+    resolver_locals = locals;
   }
 
   // Helper to create global function objects outside of function contexts

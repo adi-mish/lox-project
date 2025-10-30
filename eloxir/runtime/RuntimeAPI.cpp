@@ -273,8 +273,8 @@ uint64_t elx_print(uint64_t bits) {
     }
     case ObjType::FUNCTION: {
       ObjFunction *func = getFunction(v);
-      if (func) {
-        printFunctionObject(func, bits);
+      if (func && func->name) {
+        std::cout << "<fn " << func->name << ">";
       } else {
         std::cout << "<function>";
       }
@@ -799,7 +799,6 @@ uint64_t elx_call_value(uint64_t callee_bits, uint64_t *args, int arg_count) {
     }
 
     int call_arg_count = static_cast<int>(method_args.size());
-
     if (closure) {
       return elx_call_closure(bound->method, method_args.data(),
                               call_arg_count);

@@ -20,7 +20,8 @@ static constexpr uint64_t MASK_TAG = 0x7ULL << 48;
 
 CodeGenVisitor::CodeGenVisitor(llvm::Module &m)
     : builder(m.getContext()), ctx(m.getContext()), mod(m), value(nullptr),
-      currentFunction(nullptr), resolver_upvalues(nullptr) {
+      currentFunction(nullptr), resolver_upvalues(nullptr),
+      resolver_locals(nullptr) {
   // Declare external runtime fns
   llvm::FunctionType *printFnTy =
       llvm::FunctionType::get(llvmValueTy(), {llvmValueTy()}, false);
@@ -116,6 +117,40 @@ CodeGenVisitor::CodeGenVisitor(llvm::Module &m)
   llvm::FunctionType *initBuiltinsTy =
       llvm::FunctionType::get(llvm::Type::getVoidTy(ctx), {}, false);
   mod.getOrInsertFunction("elx_initialize_global_builtins", initBuiltinsTy);
+
+  // Class and instance helpers
+  llvm::FunctionType *allocateClassTy =
+      llvm::FunctionType::get(llvmValueTy(), {llvmValueTy(), llvmValueTy()},
+                              false);
+  mod.getOrInsertFunction("elx_allocate_class", allocateClassTy);
+
+  llvm::FunctionType *classAddMethodTy =
+      llvm::FunctionType::get(llvm::Type::getVoidTy(ctx),
+                              {llvmValueTy(), llvmValueTy(), llvmValueTy()},
+                              false);
+  mod.getOrInsertFunction("elx_class_add_method", classAddMethodTy);
+
+  llvm::FunctionType *classFindMethodTy =
+      llvm::FunctionType::get(llvmValueTy(), {llvmValueTy(), llvmValueTy()},
+                              false);
+  mod.getOrInsertFunction("elx_class_find_method", classFindMethodTy);
+
+  llvm::FunctionType *instantiateClassTy =
+      llvm::FunctionType::get(llvmValueTy(), {llvmValueTy()}, false);
+  mod.getOrInsertFunction("elx_instantiate_class", instantiateClassTy);
+
+  llvm::FunctionType *getInstanceFieldTy =
+      llvm::FunctionType::get(llvmValueTy(), {llvmValueTy(), llvmValueTy()},
+                              false);
+  mod.getOrInsertFunction("elx_get_instance_field", getInstanceFieldTy);
+
+  llvm::FunctionType *setInstanceFieldTy = llvm::FunctionType::get(
+      llvmValueTy(), {llvmValueTy(), llvmValueTy(), llvmValueTy()}, false);
+  mod.getOrInsertFunction("elx_set_instance_field", setInstanceFieldTy);
+
+  llvm::FunctionType *bindMethodTy = llvm::FunctionType::get(
+      llvmValueTy(), {llvmValueTy(), llvmValueTy()}, false);
+  mod.getOrInsertFunction("elx_bind_method", bindMethodTy);
 
   // Global environment functions for cross-line persistence
   auto i8PtrTy = llvm::PointerType::get(llvm::Type::getInt8Ty(ctx), 0);
@@ -1355,12 +1390,16 @@ void CodeGenVisitor::visitWhileStmt(While *s) {
 void CodeGenVisitor::declareFunctionSignature(Function *s) {
   const std::string &baseFuncName = s->name.getLexeme();
 
+  std::string mapKey =
+      function_map_key_override.empty() ? baseFuncName : function_map_key_override;
+
   // Check if function is already declared
-  if (functions.find(baseFuncName) != functions.end()) {
+  if (functions.find(mapKey) != functions.end()) {
     return; // Already declared
   }
 
-  size_t arity = s->params.size();
+  bool isMethod = (method_context_override != MethodContext::NONE);
+  size_t arity = s->params.size() + (isMethod ? 1 : 0);
   ensureParameterLimit(arity);
 
   // Get upvalues for this function from resolver
@@ -1392,10 +1431,12 @@ void CodeGenVisitor::declareFunctionSignature(Function *s) {
       funcType, llvm::Function::ExternalLinkage, funcName, &mod);
 
   // Store the function in the global function table using base name
-  functions[baseFuncName] = llvmFunc;
+  functions[mapKey] = llvmFunc;
 
-  // Track function for later object creation
-  pendingFunctions.push_back({baseFuncName, arity});
+  // Track function for later object creation (methods are handled immediately)
+  if (!isMethod && function_map_key_override.empty()) {
+    pendingFunctions.push_back({baseFuncName, arity});
+  }
 }
 
 llvm::Value *CodeGenVisitor::createFunctionObject(const std::string &funcName,
@@ -1434,6 +1475,23 @@ llvm::Value *CodeGenVisitor::createFunctionObject(const std::string &funcName,
   }
 
   return funcObj;
+}
+
+llvm::Value *CodeGenVisitor::createFunctionObjectImmediate(
+    const std::string &funcName, llvm::Function *llvmFunc, int arity) {
+  auto nameStr = builder.CreateGlobalStringPtr(funcName, "fname");
+  auto arityConst = llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), arity);
+  auto funcPtr = builder.CreateBitCast(
+      llvmFunc, llvm::PointerType::get(llvm::Type::getInt8Ty(ctx), 0));
+
+  auto allocFn = mod.getFunction("elx_allocate_function");
+  if (!allocFn) {
+    std::cerr << "    Error: elx_allocate_function not found\n";
+    return nilConst();
+  }
+
+  return builder.CreateCall(allocFn, {nameStr, arityConst, funcPtr},
+                            "funcobj");
 }
 
 void CodeGenVisitor::createGlobalFunctionObjects() {
@@ -1492,7 +1550,19 @@ void CodeGenVisitor::createGlobalFunctionObjects() {
 void CodeGenVisitor::visitFunctionStmt(Function *s) {
   const std::string &baseFuncName = s->name.getLexeme();
 
-  ensureParameterLimit(s->params.size());
+  MethodContext methodContext = method_context_override;
+  method_context_override = MethodContext::NONE;
+
+  std::string mapKey =
+      function_map_key_override.empty() ? baseFuncName : function_map_key_override;
+  function_map_key_override.clear();
+
+  bool isMethod = (methodContext != MethodContext::NONE);
+
+  size_t userParamCount = s->params.size();
+  size_t totalParamCount = userParamCount + (isMethod ? 1 : 0);
+
+  ensureParameterLimit(totalParamCount);
 
   // Get upvalues for this function from resolver
   std::vector<std::string> upvalues;
@@ -1516,14 +1586,18 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
     // upvalue
     bool is_self_reference = (upvalue_name == baseFuncName);
 
-    if (!is_parameter && !is_self_reference) {
+    bool is_this_binding = isMethod && upvalue_name == "this";
+    bool is_super_binding = isMethod && upvalue_name == "super";
+
+    if (!is_parameter && !is_self_reference && !is_this_binding &&
+        !is_super_binding) {
       filtered_upvalues.push_back(upvalue_name);
     }
   }
   upvalues = filtered_upvalues;
 
   // Get the already-declared function (from declareFunctionSignature)
-  auto it = functions.find(baseFuncName);
+  auto it = functions.find(mapKey);
   llvm::Function *llvmFunc;
 
   if (it != functions.end()) {
@@ -1532,10 +1606,12 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
   } else {
     // Fallback: declare it now (for cases where visitFunctionStmt is called
     // directly) - need to modify signature for upvalues
+    function_map_key_override = mapKey;
     declareFunctionSignature(s);
+    function_map_key_override.clear();
 
     // Check if declaration succeeded (might fail due to too many parameters)
-    auto it2 = functions.find(baseFuncName);
+    auto it2 = functions.find(mapKey);
     if (it2 == functions.end()) {
       // Declaration failed - set value to nil and return gracefully
       value = nilConst();
@@ -1547,12 +1623,22 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
 
   // Skip if function body is already defined
   if (!llvmFunc->empty()) {
-    // Create closure object instead of just nil
-    if (upvalues.empty()) {
-      value = createFunctionObject(baseFuncName, llvmFunc,
-                                   static_cast<int>(s->params.size()));
+    if (isMethod) {
+      int methodArity = static_cast<int>(totalParamCount);
+      if (upvalues.empty()) {
+        value = createFunctionObjectImmediate(baseFuncName, llvmFunc,
+                                              methodArity);
+      } else {
+        value = createDeferredClosure(llvmFunc, upvalues, methodArity);
+      }
     } else {
-      value = createClosureObject(llvmFunc, upvalues);
+      // Create closure object instead of just nil
+      if (upvalues.empty()) {
+        value = createFunctionObject(baseFuncName, llvmFunc,
+                                     static_cast<int>(userParamCount));
+      } else {
+        value = createClosureObject(llvmFunc, upvalues);
+      }
     }
     return;
   }
@@ -1595,7 +1681,13 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
 
   // Add parameters to local scope as direct values
   auto argIt = llvmFunc->arg_begin();
-  for (size_t i = 0; i < s->params.size(); ++i, ++argIt) {
+  if (isMethod && argIt != llvmFunc->arg_end()) {
+    argIt->setName("this");
+    locals["this"] = &*argIt;
+    directValues.insert("this");
+    ++argIt;
+  }
+  for (size_t i = 0; i < userParamCount && argIt != llvmFunc->arg_end(); ++i, ++argIt) {
     const std::string &paramName = s->params[i].getLexeme();
     argIt->setName(paramName);
     locals[paramName] = &*argIt;
@@ -1617,9 +1709,9 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
 
   // Create closure while we still have access to outer scope
   llvm::Value *closureValue = nullptr;
-  if (!upvalues.empty()) {
+  if (!upvalues.empty() && !isMethod) {
     closureValue = createDeferredClosure(llvmFunc, upvalues,
-                                         static_cast<int>(s->params.size()));
+                                         static_cast<int>(userParamCount));
   }
 
   // Now fully switch to function context
@@ -1639,7 +1731,18 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
 
   // Re-add parameters to local scope using stack slots so they can be captured
   argIt = llvmFunc->arg_begin();
-  for (size_t i = 0; i < s->params.size(); ++i, ++argIt) {
+  if (isMethod && argIt != llvmFunc->arg_end()) {
+    argIt->setName("this");
+    auto thisSlot = entryAllocaBuilder.CreateAlloca(llvmValueTy(), nullptr,
+                                                    "this_param");
+    builder.CreateStore(&*argIt, thisSlot);
+    locals["this"] = thisSlot;
+    locals["this_current"] = thisSlot;
+    variableStacks["this"].push_back(thisSlot);
+    paramSlots.push_back(thisSlot);
+    ++argIt;
+  }
+  for (size_t i = 0; i < userParamCount && argIt != llvmFunc->arg_end(); ++i, ++argIt) {
     const std::string &paramName = s->params[i].getLexeme();
     argIt->setName(paramName);
     auto slotName = paramName + "_param";
@@ -1663,6 +1766,7 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
   if (funcCtx.localCount > MAX_LOCAL_SLOTS) {
     throw CompileError("Too many local variables in function.");
   }
+  funcCtx.method_context = methodContext;
 
   function_stack.push(funcCtx);
 
@@ -1678,7 +1782,7 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
   } catch (const std::exception &e) {
     // Clean up and restore state
     llvmFunc->eraseFromParent();
-    functions.erase(baseFuncName); // Remove from functions map
+    functions.erase(mapKey); // Remove from functions map
     function_stack.pop();
     currentFunction = prevFunction;
     locals = std::move(prevLocals);
@@ -1697,7 +1801,7 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
               << "\n";
     llvmFunc->eraseFromParent();
     // Remove from functions map since verification failed
-    functions.erase(baseFuncName);
+    functions.erase(mapKey);
     // Restore state
     function_stack.pop();
     currentFunction = prevFunction;
@@ -1722,6 +1826,14 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
   variableStacks = std::move(prevVariableStacks); // Restore variable stacks
   if (prevBB) {
     builder.SetInsertPoint(prevBB);
+  }
+
+  if (methodContext != MethodContext::NONE) {
+    int methodArity = static_cast<int>(totalParamCount);
+    llvm::Value *callable =
+        createDeferredClosure(llvmFunc, upvalues, methodArity);
+    value = callable;
+    return;
   }
 
   // Create closure object or function object
@@ -1766,21 +1878,277 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
   }
 }
 void CodeGenVisitor::visitReturnStmt(Return *s) {
-  if (s->value) {
+  bool isInitializer =
+      !function_stack.empty() &&
+      function_stack.top().method_context == MethodContext::INITIALIZER;
+
+  llvm::Value *returnValue = nullptr;
+
+  if (isInitializer) {
+    if (s->value) {
+      s->value->accept(this);
+    }
+
+    Token thisToken(TokenType::THIS, "this", std::monostate{},
+                    s->keyword.getLine());
+    Variable thisVar(thisToken);
+    visitVariableExpr(&thisVar);
+    returnValue = value;
+  } else if (s->value) {
     s->value->accept(this);
-    closeAllCapturedLocals();
-    builder.CreateRet(value);
+    returnValue = value;
   } else {
-    closeAllCapturedLocals();
-    builder.CreateRet(nilConst());
+    returnValue = nilConst();
   }
+
+  closeAllCapturedLocals();
+  builder.CreateRet(returnValue);
+  value = returnValue;
 }
 
-void CodeGenVisitor::visitGetExpr(Get *e) { value = nilConst(); }
-void CodeGenVisitor::visitSetExpr(Set *e) { value = nilConst(); }
-void CodeGenVisitor::visitThisExpr(This *e) { value = nilConst(); }
-void CodeGenVisitor::visitSuperExpr(Super *e) { value = nilConst(); }
-void CodeGenVisitor::visitClassStmt(Class *s) {}
+void CodeGenVisitor::visitGetExpr(Get *e) {
+  e->object->accept(this);
+  llvm::Value *objectValue = value;
+
+  auto getFieldFn = mod.getFunction("elx_get_instance_field");
+  if (!getFieldFn) {
+    value = nilConst();
+    return;
+  }
+
+  auto nameValue = stringConst(e->name.getLexeme(), true);
+  value = builder.CreateCall(getFieldFn, {objectValue, nameValue}, "get_field");
+  checkRuntimeError(value);
+}
+
+void CodeGenVisitor::visitSetExpr(Set *e) {
+  e->object->accept(this);
+  llvm::Value *objectValue = value;
+
+  e->value->accept(this);
+  llvm::Value *assignedValue = value;
+
+  auto setFieldFn = mod.getFunction("elx_set_instance_field");
+  if (!setFieldFn) {
+    value = assignedValue;
+    return;
+  }
+
+  auto nameValue = stringConst(e->name.getLexeme(), true);
+  value = builder.CreateCall(setFieldFn,
+                             {objectValue, nameValue, assignedValue},
+                             "set_field");
+  checkRuntimeError(value);
+}
+
+void CodeGenVisitor::visitThisExpr(This *e) {
+  Variable fakeVar(e->keyword);
+  visitVariableExpr(&fakeVar);
+}
+
+void CodeGenVisitor::visitSuperExpr(Super *e) {
+  Variable superVar(e->keyword);
+  visitVariableExpr(&superVar);
+  llvm::Value *superClassValue = value;
+
+  Token thisToken(TokenType::THIS, "this", std::monostate{},
+                  e->keyword.getLine());
+  Variable thisVar(thisToken);
+  visitVariableExpr(&thisVar);
+  llvm::Value *thisValue = value;
+
+  auto findMethodFn = mod.getFunction("elx_class_find_method");
+  auto bindMethodFn = mod.getFunction("elx_bind_method");
+  if (!findMethodFn || !bindMethodFn) {
+    value = nilConst();
+    return;
+  }
+
+  auto methodName = stringConst(e->method.getLexeme(), true);
+  auto methodValue = builder.CreateCall(findMethodFn,
+                                        {superClassValue, methodName},
+                                        "super_method");
+
+  value = builder.CreateCall(bindMethodFn, {thisValue, methodValue},
+                             "bound_super");
+  checkRuntimeError(value);
+}
+
+void CodeGenVisitor::visitClassStmt(Class *s) {
+  const std::string className = s->name.getLexeme();
+
+  auto currentBlock = builder.GetInsertBlock();
+  llvm::Function *enclosingFunction =
+      currentBlock ? currentBlock->getParent() : nullptr;
+
+  bool isGlobal = ((currentFunction == nullptr) ||
+                   (enclosingFunction &&
+                    enclosingFunction->getName().str().find("__expr") == 0)) &&
+                  (blockDepth == 0);
+
+  auto createSlot = [&](const std::string &slotBase) -> llvm::Value * {
+    std::string slotName = slotBase + "_" + std::to_string(variableCounter++);
+    if (!enclosingFunction) {
+      return builder.CreateAlloca(llvmValueTy(), nullptr, slotName.c_str());
+    }
+    auto &entry = enclosingFunction->getEntryBlock();
+    auto insertPoint = entry.getFirstNonPHI();
+    llvm::IRBuilder<> slotBuilder(
+        &entry, insertPoint ? insertPoint->getIterator() : entry.begin());
+    return slotBuilder.CreateAlloca(llvmValueTy(), nullptr, slotName.c_str());
+  };
+
+  llvm::Value *superValue = nilConst();
+  bool hasSuper = static_cast<bool>(s->superclass);
+  if (hasSuper) {
+    s->superclass->accept(this);
+    superValue = value;
+  }
+
+  llvm::Value *classSlot = createSlot(className + "_class_slot");
+  builder.CreateStore(nilConst(), classSlot);
+
+  locals[className] = classSlot;
+  locals[className + "_current"] = classSlot;
+  variableStacks[className].push_back(classSlot);
+
+  if (isGlobal) {
+    globalVariables.insert(className);
+  }
+
+  auto classNameValue = stringConst(className, true);
+  auto allocateClassFn = mod.getFunction("elx_allocate_class");
+  if (!allocateClassFn) {
+    value = nilConst();
+    return;
+  }
+
+  llvm::Value *classValue = builder.CreateCall(
+      allocateClassFn,
+      {classNameValue, hasSuper ? superValue : nilConst()}, "klass");
+  checkRuntimeError(classValue);
+
+  builder.CreateStore(classValue, classSlot);
+  globals[className] = classValue;
+
+  if (isGlobal) {
+    auto setGlobalVarFn = mod.getFunction("elx_set_global_variable");
+    if (setGlobalVarFn) {
+      auto nameStr = builder.CreateGlobalStringPtr(className, "class_name");
+      builder.CreateCall(setGlobalVarFn, {nameStr, classValue});
+    }
+  }
+
+  struct SyntheticBindingState {
+    std::string name;
+    size_t previousStackSize;
+    bool hadLocal;
+    llvm::Value *previousLocal;
+    bool hadCurrent;
+    llvm::Value *previousCurrent;
+  };
+
+  std::vector<SyntheticBindingState> syntheticBindings;
+
+  auto pushSyntheticBinding = [&](const std::string &name,
+                                  llvm::Value *initialValue) {
+    SyntheticBindingState state{name, variableStacks[name].size(),
+                                false, nullptr, false, nullptr};
+
+    auto itLocal = locals.find(name);
+    if (itLocal != locals.end()) {
+      state.hadLocal = true;
+      state.previousLocal = itLocal->second;
+    }
+    auto itCurrent = locals.find(name + "_current");
+    if (itCurrent != locals.end()) {
+      state.hadCurrent = true;
+      state.previousCurrent = itCurrent->second;
+    }
+
+    llvm::Value *slot = createSlot(name + "_binding");
+    builder.CreateStore(initialValue, slot);
+    locals[name] = slot;
+    locals[name + "_current"] = slot;
+    variableStacks[name].push_back(slot);
+
+    syntheticBindings.push_back(state);
+  };
+
+  if (enclosingFunction) {
+    pushSyntheticBinding("this", nilConst());
+    if (hasSuper) {
+      pushSyntheticBinding("super", superValue);
+    }
+  }
+
+  llvm::Value *previousClassValue = current_class_value;
+  current_class_value = classValue;
+
+  auto addMethodFn = mod.getFunction("elx_class_add_method");
+  for (auto &method : s->methods) {
+    MethodContext methodCtx =
+        (method->name.getLexeme() == "init") ? MethodContext::INITIALIZER
+                                               : MethodContext::METHOD;
+
+    auto previousOverride = method_context_override;
+    auto previousKeyOverride = function_map_key_override;
+    method_context_override = methodCtx;
+    std::string uniqueMapKey =
+        className + "::" + method->name.getLexeme() + "#" +
+        std::to_string(reinterpret_cast<uintptr_t>(method.get()));
+    function_map_key_override = uniqueMapKey;
+
+    declareFunctionSignature(method.get());
+
+    llvm::Value *methodValue = nullptr;
+    try {
+      method->accept(this);
+      methodValue = value;
+    } catch (...) {
+      function_map_key_override = previousKeyOverride;
+      method_context_override = previousOverride;
+      throw;
+    }
+
+    method_context_override = previousOverride;
+    function_map_key_override = previousKeyOverride;
+
+    if (addMethodFn) {
+      auto methodNameValue = stringConst(method->name.getLexeme(), true);
+      builder.CreateCall(addMethodFn,
+                         {classValue, methodNameValue, methodValue});
+    }
+  }
+
+  current_class_value = previousClassValue;
+
+  for (auto it = syntheticBindings.rbegin(); it != syntheticBindings.rend();
+       ++it) {
+    const auto &state = *it;
+    auto &stack = variableStacks[state.name];
+    while (stack.size() > state.previousStackSize) {
+      stack.pop_back();
+    }
+    if (stack.empty()) {
+      variableStacks.erase(state.name);
+    }
+
+    if (state.hadLocal) {
+      locals[state.name] = state.previousLocal;
+    } else {
+      locals.erase(state.name);
+    }
+
+    if (state.hadCurrent) {
+      locals[state.name + "_current"] = state.previousCurrent;
+    } else {
+      locals.erase(state.name + "_current");
+    }
+  }
+
+  value = classValue;
+}
 
 void CodeGenVisitor::closeAllCapturedLocals() {
   if (function_stack.empty()) {
