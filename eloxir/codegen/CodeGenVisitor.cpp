@@ -62,6 +62,7 @@ CodeGenVisitor::CodeGenVisitor(llvm::Module &m)
        llvm::Type::getInt32Ty(ctx)},
       false);
   mod.getOrInsertFunction("elx_call_function", callFuncTy);
+  mod.getOrInsertFunction("elx_call_value", callFuncTy);
 
   // Closure and upvalue functions
   llvm::FunctionType *allocUpvalueTy = llvm::FunctionType::get(
@@ -1070,113 +1071,33 @@ void CodeGenVisitor::visitCallExpr(Call *e) {
     args.push_back(value);
   }
 
-  // Get runtime functions
-  llvm::Function *callFuncFn = mod.getFunction("elx_call_function");
-  llvm::Function *callClosureFn = mod.getFunction("elx_call_closure");
-  llvm::Function *isClosureFn = mod.getFunction("elx_is_closure");
-  llvm::Function *isFunctionFn = mod.getFunction("elx_is_function");
-
-  if (!callFuncFn || !callClosureFn) {
+  llvm::Function *callValueFn = mod.getFunction("elx_call_value");
+  if (!callValueFn) {
     value = nilConst();
     return;
   }
 
-  // Create arguments array
   llvm::Value *argArray = nullptr;
   llvm::Value *argCount =
       llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), args.size());
 
   if (!args.empty()) {
-    // Create an array on the stack for arguments
     argArray = builder.CreateAlloca(
         llvmValueTy(),
         llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), args.size()),
         "args");
 
-    // Store each argument in the array
     for (size_t i = 0; i < args.size(); ++i) {
       llvm::Value *idx = llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), i);
       llvm::Value *elemPtr = builder.CreateGEP(llvmValueTy(), argArray, idx);
       builder.CreateStore(args[i], elemPtr);
     }
   } else {
-    // No arguments case
     argArray = llvm::ConstantPointerNull::get(
         llvm::PointerType::get(llvmValueTy(), 0));
   }
 
-  // Determine call type based on callee type
-  auto fn = builder.GetInsertBlock()->getParent();
-  auto checkClosureBB = llvm::BasicBlock::Create(ctx, "check_closure", fn);
-  auto callClosureBB = llvm::BasicBlock::Create(ctx, "call_closure", fn);
-  auto checkFunctionBB = llvm::BasicBlock::Create(ctx, "check_function", fn);
-  auto callFunctionBB = llvm::BasicBlock::Create(ctx, "call_function", fn);
-  auto errorBB = llvm::BasicBlock::Create(ctx, "call_error", fn);
-  auto contBB = llvm::BasicBlock::Create(ctx, "cont", fn);
-
-  // First check if it's a closure
-  builder.CreateBr(checkClosureBB);
-
-  // Check closure
-  builder.SetInsertPoint(checkClosureBB);
-  llvm::Value *isClosureResult = nullptr;
-  if (isClosureFn) {
-    isClosureResult = builder.CreateCall(isClosureFn, {callee}, "is_closure");
-    auto zero = llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0);
-    auto isClosureBool =
-        builder.CreateICmpNE(isClosureResult, zero, "closure_check");
-    builder.CreateCondBr(isClosureBool, callClosureBB, checkFunctionBB);
-  } else {
-    // No type checking available, proceed to function check
-    builder.CreateBr(checkFunctionBB);
-  }
-
-  // Call as closure
-  builder.SetInsertPoint(callClosureBB);
-  llvm::Value *closureResult =
-      builder.CreateCall(callClosureFn, {callee, argArray, argCount});
-  builder.CreateBr(contBB);
-
-  // Check function
-  builder.SetInsertPoint(checkFunctionBB);
-  llvm::Value *isFunctionResult = nullptr;
-  if (isFunctionFn) {
-    isFunctionResult =
-        builder.CreateCall(isFunctionFn, {callee}, "is_function");
-    auto zero = llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0);
-    auto isFunctionBool =
-        builder.CreateICmpNE(isFunctionResult, zero, "function_check");
-    builder.CreateCondBr(isFunctionBool, callFunctionBB, errorBB);
-  } else {
-    // No type checking available, try function call anyway
-    builder.CreateBr(callFunctionBB);
-  }
-
-  // Call as function
-  builder.SetInsertPoint(callFunctionBB);
-  llvm::Value *funcResult =
-      builder.CreateCall(callFuncFn, {callee, argArray, argCount});
-  builder.CreateBr(contBB);
-
-  // Error case
-  builder.SetInsertPoint(errorBB);
-  llvm::Function *errorFn = mod.getFunction("elx_runtime_error");
-  if (errorFn) {
-    auto errorMsg = builder.CreateGlobalStringPtr(
-        "Can only call functions and closures.", "call_error_msg");
-    builder.CreateCall(errorFn, {errorMsg});
-  }
-  llvm::Value *errorResult = nilConst();
-  builder.CreateBr(contBB);
-
-  // Merge results
-  builder.SetInsertPoint(contBB);
-  auto phi = builder.CreatePHI(llvmValueTy(), 3, "call_result");
-  phi->addIncoming(closureResult, callClosureBB);
-  phi->addIncoming(funcResult, callFunctionBB);
-  phi->addIncoming(errorResult, errorBB);
-
-  value = phi;
+  value = builder.CreateCall(callValueFn, {callee, argArray, argCount});
   checkRuntimeError(value);
 }
 
