@@ -1,0 +1,16 @@
+class Foo {
+  init(value) {
+    this.value = value;
+  }
+
+  getValueGetter() {
+    return this.valueGetter;
+  }
+
+  valueGetter() {
+    return this.value;
+  }
+}
+
+var getter = Foo("ok").getValueGetter();
+print getter(); // expect: ok
