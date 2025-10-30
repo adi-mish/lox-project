@@ -51,6 +51,21 @@ struct CallDepthGuard {
 private:
   bool active = false;
 };
+
+static std::string formatArityError(const char *name, int expected, int got) {
+  std::string display_name =
+      (name && name[0] != '\0') ? name : std::string("<anonymous>");
+  return "Expected " + std::to_string(expected) + " arguments but got " +
+         std::to_string(got) + " for " + display_name + ".";
+}
+
+static std::string formatArityError(const ObjFunction *func, int got) {
+  if (!func)
+    return formatArityError("<anonymous>", 0, got);
+
+  const char *name = func->name;
+  return formatArityError(name, func->arity, got);
+}
 } // namespace
 
 static const char *getString(Value v) {
@@ -196,6 +211,8 @@ static ObjBoundMethod *getBoundMethod(Value v) {
     return nullptr;
   return bound;
 }
+
+static uint64_t findMethodOnClass(ObjClass *klass, const std::string &name);
 
 static bool extractStringKey(uint64_t string_bits, std::string &out) {
   Value string_val = Value::fromBits(string_bits);
@@ -510,9 +527,7 @@ uint64_t elx_call_function(uint64_t func_bits, uint64_t *args, int arg_count) {
   }
 
   if (arg_count != func->arity) {
-    std::string error_msg = "Expected " + std::to_string(func->arity) +
-                            " arguments but got " + std::to_string(arg_count) +
-                            ".";
+    std::string error_msg = formatArityError(func, arg_count);
     elx_runtime_error(error_msg.c_str());
     return Value::nil().getBits();
   }
@@ -675,6 +690,130 @@ uint64_t elx_call_function(uint64_t func_bits, uint64_t *args, int arg_count) {
     return Value::nil().getBits();
   } catch (...) {
     elx_runtime_error("Unknown exception during function call.");
+    return Value::nil().getBits();
+  }
+}
+
+uint64_t elx_call_value(uint64_t callee_bits, uint64_t *args, int arg_count) {
+  // Start each call without a pending runtime error.
+  elx_clear_runtime_error();
+
+  Value callee_val = Value::fromBits(callee_bits);
+  if (!callee_val.isObj()) {
+    elx_runtime_error("Can only call functions and classes.");
+    return Value::nil().getBits();
+  }
+
+  void *obj_ptr = callee_val.asObj();
+  if (obj_ptr == nullptr) {
+    elx_runtime_error("Can only call functions and classes.");
+    return Value::nil().getBits();
+  }
+
+  Obj *obj = static_cast<Obj *>(obj_ptr);
+
+  switch (obj->type) {
+  case ObjType::FUNCTION:
+    return elx_call_function(callee_bits, args, arg_count);
+  case ObjType::CLOSURE:
+    return elx_call_closure(callee_bits, args, arg_count);
+  case ObjType::CLASS: {
+    ObjClass *klass = static_cast<ObjClass *>(obj_ptr);
+
+    uint64_t instance_bits = elx_instantiate_class(callee_bits);
+    if (elx_has_runtime_error())
+      return Value::nil().getBits();
+
+    uint64_t initializer_bits = findMethodOnClass(klass, "init");
+    if (initializer_bits != Value::nil().getBits()) {
+      Value initializer_val = Value::fromBits(initializer_bits);
+      ObjClosure *init_closure = getClosure(initializer_val);
+      ObjFunction *init_func =
+          init_closure ? init_closure->function : getFunction(initializer_val);
+
+      const char *init_name = "init";
+      int expected_user_args = 0;
+      if (init_func) {
+        if (init_func->name && init_func->name[0] != '\0')
+          init_name = init_func->name;
+        int expected_total = init_func->arity;
+        expected_user_args = expected_total > 0 ? expected_total - 1 : 0;
+      }
+
+      if (arg_count != expected_user_args) {
+        std::string error_msg =
+            formatArityError(init_name, expected_user_args, arg_count);
+        elx_runtime_error(error_msg.c_str());
+        return Value::nil().getBits();
+      }
+
+      uint64_t bound_bits = elx_bind_method(instance_bits, initializer_bits);
+      if (elx_has_runtime_error())
+        return Value::nil().getBits();
+
+      elx_call_value(bound_bits, args, arg_count);
+      if (elx_has_runtime_error())
+        return Value::nil().getBits();
+    } else if (arg_count != 0) {
+      const char *class_name =
+          (klass->name && klass->name->chars && klass->name->length > 0)
+              ? klass->name->chars
+              : "<anonymous>";
+      std::string error_msg = formatArityError(class_name, 0, arg_count);
+      elx_runtime_error(error_msg.c_str());
+      return Value::nil().getBits();
+    }
+
+    return instance_bits;
+  }
+  case ObjType::BOUND_METHOD: {
+    ObjBoundMethod *bound = getBoundMethod(callee_val);
+    if (!bound) {
+      elx_runtime_error("Can only call functions and classes.");
+      return Value::nil().getBits();
+    }
+
+    Value method_val = Value::fromBits(bound->method);
+    ObjClosure *closure = getClosure(method_val);
+    ObjFunction *func =
+        closure ? closure->function : getFunction(method_val);
+
+    const char *method_name = (func && func->name && func->name[0] != '\0')
+                                  ? func->name
+                                  : "<anonymous>";
+    if (func) {
+      int expected_total = func->arity;
+      int expected_user_args = expected_total > 0 ? expected_total - 1 : 0;
+      if (arg_count != expected_user_args) {
+        std::string error_msg =
+            formatArityError(method_name, expected_user_args, arg_count);
+        elx_runtime_error(error_msg.c_str());
+        return Value::nil().getBits();
+      }
+    }
+
+    std::vector<uint64_t> method_args(static_cast<size_t>(arg_count) + 1);
+    method_args[0] = bound->receiver;
+    for (int i = 0; i < arg_count; ++i) {
+      method_args[i + 1] = args ? args[i] : Value::nil().getBits();
+    }
+
+    int call_arg_count = static_cast<int>(method_args.size());
+
+    if (closure) {
+      return elx_call_closure(bound->method, method_args.data(),
+                              call_arg_count);
+    }
+
+    if (func) {
+      return elx_call_function(bound->method, method_args.data(),
+                               call_arg_count);
+    }
+
+    return elx_call_value(bound->method, method_args.data(), call_arg_count);
+  }
+  default:
+    elx_runtime_error("Can only call functions and classes.");
     return Value::nil().getBits();
   }
 }
@@ -861,7 +1000,7 @@ uint64_t elx_call_closure(uint64_t closure_bits, uint64_t *args,
   ObjClosure *closure = getClosure(closure_val);
 
   if (!closure) {
-    elx_runtime_error("Can only call functions and closures.");
+    elx_runtime_error("Can only call functions and classes.");
     return Value::nil().getBits();
   }
 
@@ -872,9 +1011,7 @@ uint64_t elx_call_closure(uint64_t closure_bits, uint64_t *args,
   }
 
   if (arg_count != func->arity) {
-    std::string error_msg = "Expected " + std::to_string(func->arity) +
-                            " arguments but got " + std::to_string(arg_count) +
-                            ".";
+    std::string error_msg = formatArityError(func, arg_count);
     elx_runtime_error(error_msg.c_str());
     return Value::nil().getBits();
   }

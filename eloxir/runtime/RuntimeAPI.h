@@ -90,6 +90,7 @@ int elx_strings_equal(uint64_t a_bits, uint64_t b_bits);
 uint64_t elx_allocate_function(const char *name, int arity,
                                void *llvm_function);
 uint64_t elx_call_function(uint64_t func_bits, uint64_t *args, int arg_count);
+uint64_t elx_call_value(uint64_t callee_bits, uint64_t *args, int arg_count);
 int elx_is_function(uint64_t value_bits);
 
 // Closure and upvalue functions
