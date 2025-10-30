@@ -1028,6 +1028,10 @@ uint64_t elx_call_closure(uint64_t closure_bits, uint64_t *args,
     return Value::nil().getBits();
   }
 
+  if (closure->upvalue_count == 0) {
+    return elx_call_function(Value::object(func).getBits(), args, arg_count);
+  }
+
   CallDepthGuard depth_guard;
   if (!depth_guard.entered()) {
     elx_runtime_error("Stack overflow.");
@@ -1057,80 +1061,156 @@ uint64_t elx_call_closure(uint64_t closure_bits, uint64_t *args,
 
   try {
     uint64_t result;
-    // Call function with original args plus upvalues
-    // For now, support simple case - we'll need to extend this based on calling
-    // convention
+    // Call function with original args plus upvalues pointer as the final
+    // parameter. Support up to 16 user arguments (matching elx_call_function).
     switch (arg_count) {
     case 0: {
-      if (closure->upvalue_count == 0) {
-        typedef uint64_t (*FunctionPtr0)();
-        FunctionPtr0 fn = reinterpret_cast<FunctionPtr0>(func->llvm_function);
-        result = fn();
-      } else {
-        typedef uint64_t (*FunctionPtrUpvalue0)(uint64_t *);
-        FunctionPtrUpvalue0 fn =
-            reinterpret_cast<FunctionPtrUpvalue0>(func->llvm_function);
-        result = fn(upvalue_args);
-      }
+      typedef uint64_t (*FunctionPtr)(uint64_t *);
+      FunctionPtr fn = reinterpret_cast<FunctionPtr>(func->llvm_function);
+      result = fn(upvalue_args);
       break;
     }
     case 1: {
-      if (closure->upvalue_count == 0) {
-        typedef uint64_t (*FunctionPtr1)(uint64_t);
-        FunctionPtr1 fn = reinterpret_cast<FunctionPtr1>(func->llvm_function);
-        result = fn(args[0]);
-      } else {
-        typedef uint64_t (*FunctionPtrUpvalue1)(uint64_t, uint64_t *);
-        FunctionPtrUpvalue1 fn =
-            reinterpret_cast<FunctionPtrUpvalue1>(func->llvm_function);
-        result = fn(args[0], upvalue_args);
-      }
+      typedef uint64_t (*FunctionPtr)(uint64_t, uint64_t *);
+      FunctionPtr fn = reinterpret_cast<FunctionPtr>(func->llvm_function);
+      result = fn(args[0], upvalue_args);
       break;
     }
     case 2: {
-      if (closure->upvalue_count == 0) {
-        typedef uint64_t (*FunctionPtr2)(uint64_t, uint64_t);
-        FunctionPtr2 fn = reinterpret_cast<FunctionPtr2>(func->llvm_function);
-        result = fn(args[0], args[1]);
-      } else {
-        typedef uint64_t (*FunctionPtrUpvalue2)(uint64_t, uint64_t, uint64_t *);
-        FunctionPtrUpvalue2 fn =
-            reinterpret_cast<FunctionPtrUpvalue2>(func->llvm_function);
-        result = fn(args[0], args[1], upvalue_args);
-      }
+      typedef uint64_t (*FunctionPtr)(uint64_t, uint64_t, uint64_t *);
+      FunctionPtr fn = reinterpret_cast<FunctionPtr>(func->llvm_function);
+      result = fn(args[0], args[1], upvalue_args);
       break;
     }
     case 3: {
-      if (closure->upvalue_count == 0) {
-        typedef uint64_t (*FunctionPtr3)(uint64_t, uint64_t, uint64_t);
-        FunctionPtr3 fn = reinterpret_cast<FunctionPtr3>(func->llvm_function);
-        result = fn(args[0], args[1], args[2]);
-      } else {
-        typedef uint64_t (*FunctionPtrUpvalue3)(uint64_t, uint64_t, uint64_t,
-                                               uint64_t *);
-        FunctionPtrUpvalue3 fn =
-            reinterpret_cast<FunctionPtrUpvalue3>(func->llvm_function);
-        result = fn(args[0], args[1], args[2], upvalue_args);
-      }
+      typedef uint64_t (*FunctionPtr)(uint64_t, uint64_t, uint64_t, uint64_t *);
+      FunctionPtr fn = reinterpret_cast<FunctionPtr>(func->llvm_function);
+      result = fn(args[0], args[1], args[2], upvalue_args);
       break;
     }
     case 4: {
-      if (closure->upvalue_count == 0) {
-        typedef uint64_t (*FunctionPtr4)(uint64_t, uint64_t, uint64_t,
-                                         uint64_t);
-        FunctionPtr4 fn = reinterpret_cast<FunctionPtr4>(func->llvm_function);
-        result = fn(args[0], args[1], args[2], args[3]);
-      } else {
-        typedef uint64_t (*FunctionPtrUpvalue4)(uint64_t, uint64_t, uint64_t,
-                                               uint64_t, uint64_t *);
-        FunctionPtrUpvalue4 fn =
-            reinterpret_cast<FunctionPtrUpvalue4>(func->llvm_function);
-        result = fn(args[0], args[1], args[2], args[3], upvalue_args);
-      }
+      typedef uint64_t (*FunctionPtr)(uint64_t, uint64_t, uint64_t, uint64_t,
+                                      uint64_t *);
+      FunctionPtr fn = reinterpret_cast<FunctionPtr>(func->llvm_function);
+      result = fn(args[0], args[1], args[2], args[3], upvalue_args);
+      break;
+    }
+    case 5: {
+      typedef uint64_t (*FunctionPtr)(uint64_t, uint64_t, uint64_t, uint64_t,
+                                      uint64_t, uint64_t *);
+      FunctionPtr fn = reinterpret_cast<FunctionPtr>(func->llvm_function);
+      result = fn(args[0], args[1], args[2], args[3], args[4], upvalue_args);
+      break;
+    }
+    case 6: {
+      typedef uint64_t (*FunctionPtr)(uint64_t, uint64_t, uint64_t, uint64_t,
+                                      uint64_t, uint64_t, uint64_t *);
+      FunctionPtr fn = reinterpret_cast<FunctionPtr>(func->llvm_function);
+      result = fn(args[0], args[1], args[2], args[3], args[4], args[5],
+                  upvalue_args);
+      break;
+    }
+    case 7: {
+      typedef uint64_t (*FunctionPtr)(uint64_t, uint64_t, uint64_t, uint64_t,
+                                      uint64_t, uint64_t, uint64_t,
+                                      uint64_t *);
+      FunctionPtr fn = reinterpret_cast<FunctionPtr>(func->llvm_function);
+      result = fn(args[0], args[1], args[2], args[3], args[4], args[5], args[6],
+                  upvalue_args);
+      break;
+    }
+    case 8: {
+      typedef uint64_t (*FunctionPtr)(uint64_t, uint64_t, uint64_t, uint64_t,
+                                      uint64_t, uint64_t, uint64_t, uint64_t,
+                                      uint64_t *);
+      FunctionPtr fn = reinterpret_cast<FunctionPtr>(func->llvm_function);
+      result = fn(args[0], args[1], args[2], args[3], args[4], args[5], args[6],
+                  args[7], upvalue_args);
+      break;
+    }
+    case 9: {
+      typedef uint64_t (*FunctionPtr)(uint64_t, uint64_t, uint64_t, uint64_t,
+                                      uint64_t, uint64_t, uint64_t, uint64_t,
+                                      uint64_t, uint64_t *);
+      FunctionPtr fn = reinterpret_cast<FunctionPtr>(func->llvm_function);
+      result = fn(args[0], args[1], args[2], args[3], args[4], args[5], args[6],
+                  args[7], args[8], upvalue_args);
+      break;
+    }
+    case 10: {
+      typedef uint64_t (*FunctionPtr)(uint64_t, uint64_t, uint64_t, uint64_t,
+                                      uint64_t, uint64_t, uint64_t, uint64_t,
+                                      uint64_t, uint64_t, uint64_t *);
+      FunctionPtr fn = reinterpret_cast<FunctionPtr>(func->llvm_function);
+      result = fn(args[0], args[1], args[2], args[3], args[4], args[5], args[6],
+                  args[7], args[8], args[9], upvalue_args);
+      break;
+    }
+    case 11: {
+      typedef uint64_t (*FunctionPtr)(uint64_t, uint64_t, uint64_t, uint64_t,
+                                      uint64_t, uint64_t, uint64_t, uint64_t,
+                                      uint64_t, uint64_t, uint64_t, uint64_t *);
+      FunctionPtr fn = reinterpret_cast<FunctionPtr>(func->llvm_function);
+      result = fn(args[0], args[1], args[2], args[3], args[4], args[5], args[6],
+                  args[7], args[8], args[9], args[10], upvalue_args);
+      break;
+    }
+    case 12: {
+      typedef uint64_t (*FunctionPtr)(uint64_t, uint64_t, uint64_t, uint64_t,
+                                      uint64_t, uint64_t, uint64_t, uint64_t,
+                                      uint64_t, uint64_t, uint64_t, uint64_t,
+                                      uint64_t *);
+      FunctionPtr fn = reinterpret_cast<FunctionPtr>(func->llvm_function);
+      result = fn(args[0], args[1], args[2], args[3], args[4], args[5], args[6],
+                  args[7], args[8], args[9], args[10], args[11], upvalue_args);
+      break;
+    }
+    case 13: {
+      typedef uint64_t (*FunctionPtr)(uint64_t, uint64_t, uint64_t, uint64_t,
+                                      uint64_t, uint64_t, uint64_t, uint64_t,
+                                      uint64_t, uint64_t, uint64_t, uint64_t,
+                                      uint64_t, uint64_t *);
+      FunctionPtr fn = reinterpret_cast<FunctionPtr>(func->llvm_function);
+      result = fn(args[0], args[1], args[2], args[3], args[4], args[5], args[6],
+                  args[7], args[8], args[9], args[10], args[11], args[12],
+                  upvalue_args);
+      break;
+    }
+    case 14: {
+      typedef uint64_t (*FunctionPtr)(uint64_t, uint64_t, uint64_t, uint64_t,
+                                      uint64_t, uint64_t, uint64_t, uint64_t,
+                                      uint64_t, uint64_t, uint64_t, uint64_t,
+                                      uint64_t, uint64_t, uint64_t *);
+      FunctionPtr fn = reinterpret_cast<FunctionPtr>(func->llvm_function);
+      result = fn(args[0], args[1], args[2], args[3], args[4], args[5], args[6],
+                  args[7], args[8], args[9], args[10], args[11], args[12],
+                  args[13], upvalue_args);
+      break;
+    }
+    case 15: {
+      typedef uint64_t (*FunctionPtr)(uint64_t, uint64_t, uint64_t, uint64_t,
+                                      uint64_t, uint64_t, uint64_t, uint64_t,
+                                      uint64_t, uint64_t, uint64_t, uint64_t,
+                                      uint64_t, uint64_t, uint64_t, uint64_t *);
+      FunctionPtr fn = reinterpret_cast<FunctionPtr>(func->llvm_function);
+      result = fn(args[0], args[1], args[2], args[3], args[4], args[5], args[6],
+                  args[7], args[8], args[9], args[10], args[11], args[12],
+                  args[13], args[14], upvalue_args);
+      break;
+    }
+    case 16: {
+      typedef uint64_t (*FunctionPtr)(uint64_t, uint64_t, uint64_t, uint64_t,
+                                      uint64_t, uint64_t, uint64_t, uint64_t,
+                                      uint64_t, uint64_t, uint64_t, uint64_t,
+                                      uint64_t, uint64_t, uint64_t, uint64_t,
+                                      uint64_t *);
+      FunctionPtr fn = reinterpret_cast<FunctionPtr>(func->llvm_function);
+      result = fn(args[0], args[1], args[2], args[3], args[4], args[5], args[6],
+                  args[7], args[8], args[9], args[10], args[11], args[12],
+                  args[13], args[14], args[15], upvalue_args);
       break;
     }
     default: {
-      // For now, just support simple functions
       std::string error_msg = "Closures with " + std::to_string(arg_count) +
                               " arguments are not yet fully supported.";
       elx_runtime_error(error_msg.c_str());
@@ -1309,7 +1389,7 @@ uint64_t elx_get_instance_field(uint64_t instance_bits, uint64_t name_bits) {
   }
 
   std::string error_msg = "Undefined property '" + field_name + "'.";
-  elx_runtime_error(error_msg.c_str());
+  elx_runtime_error_silent(error_msg.c_str());
   return Value::nil().getBits();
 }
 
@@ -1452,9 +1532,27 @@ int elx_has_global_function(const char *name) {
 }
 
 // Error handling functions
-void elx_runtime_error(const char *message) {
+static void set_runtime_error(const char *message, bool print_immediately) {
   runtime_error_flag = true;
   runtime_error_message = std::string(message);
+  if (print_immediately) {
+    std::cerr << "Runtime error: " << message << std::endl;
+  }
+}
+
+void elx_runtime_error(const char *message) {
+  set_runtime_error(message, true);
+}
+
+void elx_runtime_error_silent(const char *message) {
+  set_runtime_error(message, false);
+}
+
+void elx_emit_runtime_error() {
+  if (!runtime_error_flag)
+    return;
+
+  const char *message = runtime_error_message.c_str();
   std::cerr << "Runtime error: " << message << std::endl;
 }
 
