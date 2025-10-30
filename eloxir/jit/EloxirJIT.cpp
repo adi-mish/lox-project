@@ -167,6 +167,33 @@ llvm::Expected<std::unique_ptr<EloxirJIT>> EloxirJIT::Create() {
       llvm::orc::ExecutorAddr::fromPtr(&elx_safe_divide),
       llvm::JITSymbolFlags::Exported);
 
+  // Class and instance helpers
+  runtimeSymbols[mangle("elx_allocate_class")] = llvm::orc::ExecutorSymbolDef(
+      llvm::orc::ExecutorAddr::fromPtr(&elx_allocate_class),
+      llvm::JITSymbolFlags::Exported);
+  runtimeSymbols[mangle("elx_class_add_method")] = llvm::orc::ExecutorSymbolDef(
+      llvm::orc::ExecutorAddr::fromPtr(&elx_class_add_method),
+      llvm::JITSymbolFlags::Exported);
+  runtimeSymbols[mangle("elx_class_find_method")] =
+      llvm::orc::ExecutorSymbolDef(
+          llvm::orc::ExecutorAddr::fromPtr(&elx_class_find_method),
+          llvm::JITSymbolFlags::Exported);
+  runtimeSymbols[mangle("elx_instantiate_class")] =
+      llvm::orc::ExecutorSymbolDef(
+          llvm::orc::ExecutorAddr::fromPtr(&elx_instantiate_class),
+          llvm::JITSymbolFlags::Exported);
+  runtimeSymbols[mangle("elx_get_instance_field")] =
+      llvm::orc::ExecutorSymbolDef(
+          llvm::orc::ExecutorAddr::fromPtr(&elx_get_instance_field),
+          llvm::JITSymbolFlags::Exported);
+  runtimeSymbols[mangle("elx_set_instance_field")] =
+      llvm::orc::ExecutorSymbolDef(
+          llvm::orc::ExecutorAddr::fromPtr(&elx_set_instance_field),
+          llvm::JITSymbolFlags::Exported);
+  runtimeSymbols[mangle("elx_bind_method")] = llvm::orc::ExecutorSymbolDef(
+      llvm::orc::ExecutorAddr::fromPtr(&elx_bind_method),
+      llvm::JITSymbolFlags::Exported);
+
   llvm::cantFail(j->jit->getMainJITDylib().define(
       llvm::orc::absoluteSymbols(runtimeSymbols)));
 
