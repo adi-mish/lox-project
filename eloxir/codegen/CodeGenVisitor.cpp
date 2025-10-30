@@ -62,7 +62,6 @@ CodeGenVisitor::CodeGenVisitor(llvm::Module &m)
       {llvmValueTy(), llvm::PointerType::get(llvmValueTy(), 0),
        llvm::Type::getInt32Ty(ctx)},
       false);
-  mod.getOrInsertFunction("elx_call_function", callFuncTy);
   mod.getOrInsertFunction("elx_call_value", callFuncTy);
 
   // Closure and upvalue functions
@@ -91,22 +90,6 @@ CodeGenVisitor::CodeGenVisitor(llvm::Module &m)
       llvm::Type::getVoidTy(ctx), {llvm::PointerType::get(llvmValueTy(), 0)},
       false);
   mod.getOrInsertFunction("elx_close_upvalues", closeUpvaluesTy);
-
-  llvm::FunctionType *callClosureTy = llvm::FunctionType::get(
-      llvmValueTy(),
-      {llvmValueTy(), llvm::PointerType::get(llvmValueTy(), 0),
-       llvm::Type::getInt32Ty(ctx)},
-      false);
-  mod.getOrInsertFunction("elx_call_closure", callClosureTy);
-
-  // Type checking functions
-  llvm::FunctionType *isClosureTy = llvm::FunctionType::get(
-      llvm::Type::getInt32Ty(ctx), {llvmValueTy()}, false);
-  mod.getOrInsertFunction("elx_is_closure", isClosureTy);
-
-  llvm::FunctionType *isFunctionTy = llvm::FunctionType::get(
-      llvm::Type::getInt32Ty(ctx), {llvmValueTy()}, false);
-  mod.getOrInsertFunction("elx_is_function", isFunctionTy);
 
   // Global built-ins functions
   llvm::FunctionType *getBuiltinTy = llvm::FunctionType::get(
