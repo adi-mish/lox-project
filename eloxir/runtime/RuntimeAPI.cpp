@@ -4,6 +4,7 @@
 #include <cstring>
 #include <iostream>
 #include <memory>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -255,21 +256,8 @@ uint64_t elx_print(uint64_t bits) {
     }
     case ObjType::FUNCTION: {
       ObjFunction *func = getFunction(v);
-      if (func && func->name) {
-        // Check if this is a built-in function
-        bool is_builtin = false;
-        for (const auto &pair : global_builtins) {
-          if (pair.second == bits) {
-            is_builtin = true;
-            break;
-          }
-        }
-
-        if (is_builtin) {
-          std::cout << "<native fn>";
-        } else {
-          std::cout << "<fn " << func->name << ">";
-        }
+      if (func) {
+        printFunctionObject(func, bits);
       } else {
         std::cout << "<function>";
       }
