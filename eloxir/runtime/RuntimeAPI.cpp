@@ -4,6 +4,7 @@
 #include <cstring>
 #include <iostream>
 #include <memory>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -128,6 +129,118 @@ static ObjUpvalue *getUpvalue(Value v) {
   return upvalue;
 }
 
+static ObjClass *getClass(Value v) {
+  if (!v.isObj())
+    return nullptr;
+
+  void *obj_ptr = v.asObj();
+  if (obj_ptr == nullptr)
+    return nullptr;
+
+  if (allocated_objects.find(obj_ptr) == allocated_objects.end()) {
+    std::cerr << "ERROR: Object pointer " << obj_ptr
+              << " not found in allocated objects!" << std::endl;
+    return nullptr;
+  }
+
+  ObjClass *klass = static_cast<ObjClass *>(obj_ptr);
+  if (klass->obj.type != ObjType::CLASS)
+    return nullptr;
+  return klass;
+}
+
+static ObjInstance *getInstance(Value v) {
+  if (!v.isObj())
+    return nullptr;
+
+  void *obj_ptr = v.asObj();
+  if (obj_ptr == nullptr)
+    return nullptr;
+
+  if (allocated_objects.find(obj_ptr) == allocated_objects.end()) {
+    std::cerr << "ERROR: Object pointer " << obj_ptr
+              << " not found in allocated objects!" << std::endl;
+    return nullptr;
+  }
+
+  ObjInstance *instance = static_cast<ObjInstance *>(obj_ptr);
+  if (instance->obj.type != ObjType::INSTANCE)
+    return nullptr;
+  return instance;
+}
+
+static ObjBoundMethod *getBoundMethod(Value v) {
+  if (!v.isObj())
+    return nullptr;
+
+  void *obj_ptr = v.asObj();
+  if (obj_ptr == nullptr)
+    return nullptr;
+
+  if (allocated_objects.find(obj_ptr) == allocated_objects.end()) {
+    std::cerr << "ERROR: Object pointer " << obj_ptr
+              << " not found in allocated objects!" << std::endl;
+    return nullptr;
+  }
+
+  ObjBoundMethod *bound = static_cast<ObjBoundMethod *>(obj_ptr);
+  if (bound->obj.type != ObjType::BOUND_METHOD)
+    return nullptr;
+  return bound;
+}
+
+static void destroyObject(Obj *obj) {
+  if (!obj)
+    return;
+
+  switch (obj->type) {
+  case ObjType::STRING:
+  case ObjType::FUNCTION:
+  case ObjType::CLOSURE:
+  case ObjType::UPVALUE:
+    free(obj);
+    break;
+  case ObjType::CLASS: {
+    auto *klass = reinterpret_cast<ObjClass *>(obj);
+    delete klass;
+    break;
+  }
+  case ObjType::INSTANCE: {
+    auto *instance = reinterpret_cast<ObjInstance *>(obj);
+    delete instance;
+    break;
+  }
+  case ObjType::BOUND_METHOD: {
+    auto *bound = reinterpret_cast<ObjBoundMethod *>(obj);
+    delete bound;
+    break;
+  }
+  default:
+    free(obj);
+    break;
+  }
+}
+
+static void printFunctionObject(ObjFunction *func, uint64_t bits) {
+  if (func && func->name) {
+    bool is_builtin = false;
+    for (const auto &pair : global_builtins) {
+      if (pair.second == bits) {
+        is_builtin = true;
+        break;
+      }
+    }
+
+    if (is_builtin) {
+      std::cout << "<native fn>";
+    } else {
+      std::cout << "<fn " << func->name << ">";
+    }
+  } else {
+    std::cout << "<function>";
+  }
+}
+
 uint64_t elx_print(uint64_t bits) {
   Value v = Value::fromBits(bits);
   switch (v.tag()) {
@@ -160,21 +273,8 @@ uint64_t elx_print(uint64_t bits) {
     }
     case ObjType::FUNCTION: {
       ObjFunction *func = getFunction(v);
-      if (func && func->name) {
-        // Check if this is a built-in function
-        bool is_builtin = false;
-        for (const auto &pair : global_builtins) {
-          if (pair.second == bits) {
-            is_builtin = true;
-            break;
-          }
-        }
-
-        if (is_builtin) {
-          std::cout << "<native fn>";
-        } else {
-          std::cout << "<fn " << func->name << ">";
-        }
+      if (func) {
+        printFunctionObject(func, bits);
       } else {
         std::cout << "<function>";
       }
@@ -191,6 +291,46 @@ uint64_t elx_print(uint64_t bits) {
     }
     case ObjType::UPVALUE: {
       std::cout << "<upvalue>";
+      break;
+    }
+    case ObjType::CLASS: {
+      ObjClass *klass = getClass(v);
+      if (klass && klass->name && klass->name->chars) {
+        std::cout << klass->name->chars;
+      } else {
+        std::cout << "<class>";
+      }
+      break;
+    }
+    case ObjType::INSTANCE: {
+      ObjInstance *instance = getInstance(v);
+      if (instance && instance->klass && instance->klass->name &&
+          instance->klass->name->chars) {
+        std::cout << instance->klass->name->chars << " instance";
+      } else {
+        std::cout << "<instance>";
+      }
+      break;
+    }
+    case ObjType::BOUND_METHOD: {
+      ObjBoundMethod *bound = getBoundMethod(v);
+      if (bound) {
+        Value method_val = Value::fromBits(bound->method_bits);
+        ObjClosure *closure = getClosure(method_val);
+        if (closure && closure->function) {
+          uint64_t func_bits = Value::object(closure->function).getBits();
+          printFunctionObject(closure->function, func_bits);
+        } else {
+          ObjFunction *func = getFunction(method_val);
+          if (func) {
+            printFunctionObject(func, bound->method_bits);
+          } else {
+            std::cout << "<bound method>";
+          }
+        }
+      } else {
+        std::cout << "<bound method>";
+      }
       break;
     }
     default:
@@ -283,7 +423,7 @@ void elx_free_object(uint64_t obj_bits) {
   // Remove from tracking registry
   allocated_objects.erase(obj);
 
-  free(obj);
+  destroyObject(obj);
 }
 
 uint64_t elx_concatenate_strings(uint64_t a_bits, uint64_t b_bits) {
@@ -889,6 +1029,160 @@ int elx_is_closure(uint64_t value_bits) {
   return result ? 1 : 0;
 }
 
+uint64_t elx_allocate_class(uint64_t name_bits) {
+  Value name_val = Value::fromBits(name_bits);
+  ObjString *name = nullptr;
+  if (name_val.isObj()) {
+    void *obj_ptr = name_val.asObj();
+    if (obj_ptr && allocated_objects.find(obj_ptr) != allocated_objects.end()) {
+      Obj *obj = static_cast<Obj *>(obj_ptr);
+      if (obj->type == ObjType::STRING) {
+        name = static_cast<ObjString *>(obj_ptr);
+      }
+    }
+  }
+
+  auto *klass = new ObjClass();
+  klass->obj.type = ObjType::CLASS;
+  klass->name = name;
+
+  allocated_objects.insert(klass);
+
+  return Value::object(klass).getBits();
+}
+
+void elx_class_set_method(uint64_t class_bits, const char *name,
+                          uint64_t method_bits) {
+  Value class_val = Value::fromBits(class_bits);
+  ObjClass *klass = getClass(class_val);
+
+  if (!klass) {
+    elx_runtime_error("Cannot set method on non-class object.");
+    return;
+  }
+
+  if (!name) {
+    elx_runtime_error("Method name cannot be null.");
+    return;
+  }
+
+  klass->methods[std::string(name)] = method_bits;
+}
+
+uint64_t elx_class_get_method(uint64_t class_bits, const char *name) {
+  Value class_val = Value::fromBits(class_bits);
+  ObjClass *klass = getClass(class_val);
+
+  if (!klass || !name) {
+    return Value::nil().getBits();
+  }
+
+  auto it = klass->methods.find(std::string(name));
+  if (it != klass->methods.end()) {
+    return it->second;
+  }
+
+  return Value::nil().getBits();
+}
+
+uint64_t elx_instantiate_class(uint64_t class_bits) {
+  Value class_val = Value::fromBits(class_bits);
+  ObjClass *klass = getClass(class_val);
+
+  if (!klass) {
+    elx_runtime_error("Can only instantiate classes.");
+    return Value::nil().getBits();
+  }
+
+  auto *instance = new ObjInstance();
+  instance->obj.type = ObjType::INSTANCE;
+  instance->klass = klass;
+
+  allocated_objects.insert(instance);
+
+  return Value::object(instance).getBits();
+}
+
+void elx_instance_set_property(uint64_t instance_bits, const char *name,
+                               uint64_t value_bits) {
+  Value instance_val = Value::fromBits(instance_bits);
+  ObjInstance *instance = getInstance(instance_val);
+
+  if (!instance) {
+    elx_runtime_error("Only instances have fields.");
+    return;
+  }
+
+  if (!name) {
+    elx_runtime_error("Property name cannot be null.");
+    return;
+  }
+
+  instance->fields[std::string(name)] = value_bits;
+}
+
+uint64_t elx_instance_get_property(uint64_t instance_bits, const char *name) {
+  Value instance_val = Value::fromBits(instance_bits);
+  ObjInstance *instance = getInstance(instance_val);
+
+  if (!instance || !name) {
+    return Value::nil().getBits();
+  }
+
+  auto it = instance->fields.find(std::string(name));
+  if (it != instance->fields.end()) {
+    return it->second;
+  }
+
+  return Value::nil().getBits();
+}
+
+int elx_instance_has_property(uint64_t instance_bits, const char *name) {
+  Value instance_val = Value::fromBits(instance_bits);
+  ObjInstance *instance = getInstance(instance_val);
+
+  if (!instance || !name) {
+    return 0;
+  }
+
+  auto it = instance->fields.find(std::string(name));
+  return it != instance->fields.end() ? 1 : 0;
+}
+
+uint64_t elx_bind_method(uint64_t receiver_bits, uint64_t method_bits) {
+  Value receiver_val = Value::fromBits(receiver_bits);
+  ObjInstance *instance = getInstance(receiver_val);
+
+  if (!instance) {
+    elx_runtime_error("Only instances have methods.");
+    return Value::nil().getBits();
+  }
+
+  Value method_val = Value::fromBits(method_bits);
+  ObjClosure *closure = getClosure(method_val);
+  ObjFunction *func = nullptr;
+
+  if (closure && closure->function) {
+    func = closure->function;
+  } else {
+    func = getFunction(method_val);
+  }
+
+  if (!func) {
+    elx_runtime_error("Method must be a function or closure.");
+    return Value::nil().getBits();
+  }
+
+  auto *bound = new ObjBoundMethod();
+  bound->obj.type = ObjType::BOUND_METHOD;
+  bound->receiver_bits = receiver_bits;
+  bound->method_bits = method_bits;
+
+  allocated_objects.insert(bound);
+
+  return Value::object(bound).getBits();
+}
+
 void elx_cleanup_all_objects() {
   // Free all tracked objects except global built-ins and interned strings
   std::unordered_set<void *> persistent_objects;
@@ -910,9 +1204,9 @@ void elx_cleanup_all_objects() {
   }
 
   // Free non-persistent objects
-  for (void *obj : allocated_objects) {
-    if (persistent_objects.find(obj) == persistent_objects.end()) {
-      free(obj);
+  for (void *obj_ptr : allocated_objects) {
+    if (persistent_objects.find(obj_ptr) == persistent_objects.end()) {
+      destroyObject(static_cast<Obj *>(obj_ptr));
     }
   }
 
