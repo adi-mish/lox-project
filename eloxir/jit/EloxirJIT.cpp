@@ -168,6 +168,10 @@ llvm::Expected<std::unique_ptr<EloxirJIT>> EloxirJIT::Create() {
       llvm::JITSymbolFlags::Exported);
 
   // Class and instance helpers
+  runtimeSymbols[mangle("elx_validate_superclass")] =
+      llvm::orc::ExecutorSymbolDef(
+          llvm::orc::ExecutorAddr::fromPtr(&elx_validate_superclass),
+          llvm::JITSymbolFlags::Exported);
   runtimeSymbols[mangle("elx_allocate_class")] = llvm::orc::ExecutorSymbolDef(
       llvm::orc::ExecutorAddr::fromPtr(&elx_allocate_class),
       llvm::JITSymbolFlags::Exported);
@@ -181,6 +185,10 @@ llvm::Expected<std::unique_ptr<EloxirJIT>> EloxirJIT::Create() {
   runtimeSymbols[mangle("elx_instantiate_class")] =
       llvm::orc::ExecutorSymbolDef(
           llvm::orc::ExecutorAddr::fromPtr(&elx_instantiate_class),
+          llvm::JITSymbolFlags::Exported);
+  runtimeSymbols[mangle("elx_get_instance_class")] =
+      llvm::orc::ExecutorSymbolDef(
+          llvm::orc::ExecutorAddr::fromPtr(&elx_get_instance_class),
           llvm::JITSymbolFlags::Exported);
   runtimeSymbols[mangle("elx_get_instance_field")] =
       llvm::orc::ExecutorSymbolDef(

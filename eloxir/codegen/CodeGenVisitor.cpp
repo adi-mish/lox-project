@@ -119,6 +119,10 @@ CodeGenVisitor::CodeGenVisitor(llvm::Module &m)
   mod.getOrInsertFunction("elx_initialize_global_builtins", initBuiltinsTy);
 
   // Class and instance helpers
+  llvm::FunctionType *validateSuperTy =
+      llvm::FunctionType::get(llvmValueTy(), {llvmValueTy()}, false);
+  mod.getOrInsertFunction("elx_validate_superclass", validateSuperTy);
+
   llvm::FunctionType *allocateClassTy =
       llvm::FunctionType::get(llvmValueTy(), {llvmValueTy(), llvmValueTy()},
                               false);
@@ -138,6 +142,10 @@ CodeGenVisitor::CodeGenVisitor(llvm::Module &m)
   llvm::FunctionType *instantiateClassTy =
       llvm::FunctionType::get(llvmValueTy(), {llvmValueTy()}, false);
   mod.getOrInsertFunction("elx_instantiate_class", instantiateClassTy);
+
+  llvm::FunctionType *getInstanceClassTy =
+      llvm::FunctionType::get(llvmValueTy(), {llvmValueTy()}, false);
+  mod.getOrInsertFunction("elx_get_instance_class", getInstanceClassTy);
 
   llvm::FunctionType *getInstanceFieldTy =
       llvm::FunctionType::get(llvmValueTy(), {llvmValueTy(), llvmValueTy()},
@@ -1586,15 +1594,30 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
     // upvalue
     bool is_self_reference = (upvalue_name == baseFuncName);
 
-    bool is_this_binding = isMethod && upvalue_name == "this";
-    bool is_super_binding = isMethod && upvalue_name == "super";
-
-    if (!is_parameter && !is_self_reference && !is_this_binding &&
-        !is_super_binding) {
+    if (!is_parameter && !is_self_reference) {
       filtered_upvalues.push_back(upvalue_name);
     }
   }
   upvalues = filtered_upvalues;
+
+  if (isMethod) {
+    upvalues.erase(std::remove(upvalues.begin(), upvalues.end(), "this"),
+                   upvalues.end());
+  } else {
+    bool hasSuperUpvalue = false;
+    bool hasThisUpvalue = false;
+    for (const auto &name : upvalues) {
+      if (name == "super") {
+        hasSuperUpvalue = true;
+      } else if (name == "this") {
+        hasThisUpvalue = true;
+      }
+    }
+
+    if (hasSuperUpvalue && !hasThisUpvalue) {
+      upvalues.push_back("this");
+    }
+  }
 
   // Get the already-declared function (from declareFunctionSignature)
   auto it = functions.find(mapKey);
@@ -1911,13 +1934,82 @@ void CodeGenVisitor::visitGetExpr(Get *e) {
   llvm::Value *objectValue = value;
 
   auto getFieldFn = mod.getFunction("elx_get_instance_field");
-  if (!getFieldFn) {
+  auto hasErrorFn = mod.getFunction("elx_has_runtime_error");
+  if (!getFieldFn || !hasErrorFn) {
     value = nilConst();
     return;
   }
 
   auto nameValue = stringConst(e->name.getLexeme(), true);
-  value = builder.CreateCall(getFieldFn, {objectValue, nameValue}, "get_field");
+  llvm::Value *fieldValue =
+      builder.CreateCall(getFieldFn, {objectValue, nameValue}, "get_field");
+
+  auto errorFlag =
+      builder.CreateCall(hasErrorFn, {}, "get_field_error");
+  auto errorCond = builder.CreateICmpNE(
+      errorFlag, llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0),
+      "has_field_error");
+
+  llvm::Function *fn = builder.GetInsertBlock()->getParent();
+  auto fallbackBB = llvm::BasicBlock::Create(ctx, "get.fallback", fn);
+  auto successBB = llvm::BasicBlock::Create(ctx, "get.success", fn);
+  auto contBB = llvm::BasicBlock::Create(ctx, "get.cont", fn);
+
+  builder.CreateCondBr(errorCond, fallbackBB, successBB);
+
+  builder.SetInsertPoint(successBB);
+  builder.CreateBr(contBB);
+  llvm::BasicBlock *successEndBB = builder.GetInsertBlock();
+
+  builder.SetInsertPoint(fallbackBB);
+  auto getClassFn = mod.getFunction("elx_get_instance_class");
+  auto findMethodFn = mod.getFunction("elx_class_find_method");
+  auto bindMethodFn = mod.getFunction("elx_bind_method");
+  auto clearErrorFn = mod.getFunction("elx_clear_runtime_error");
+
+  llvm::BasicBlock *methodFoundBB = nullptr;
+  llvm::Value *methodResult = nullptr;
+  llvm::BasicBlock *methodMissingBB = nullptr;
+
+  if (!getClassFn || !findMethodFn || !bindMethodFn) {
+    builder.CreateBr(contBB);
+    methodMissingBB = builder.GetInsertBlock();
+  } else {
+    auto classValue =
+        builder.CreateCall(getClassFn, {objectValue}, "instance_class");
+    auto methodValue = builder.CreateCall(findMethodFn, {classValue, nameValue},
+                                          "super_method");
+
+    auto methodIsNil =
+        builder.CreateICmpEQ(methodValue, nilConst(), "method_missing");
+
+    methodMissingBB = llvm::BasicBlock::Create(ctx, "get.no_method", fn);
+    methodFoundBB = llvm::BasicBlock::Create(ctx, "get.method", fn);
+    builder.CreateCondBr(methodIsNil, methodMissingBB, methodFoundBB);
+
+    builder.SetInsertPoint(methodFoundBB);
+    if (clearErrorFn) {
+      builder.CreateCall(clearErrorFn, {});
+    }
+    methodResult = builder.CreateCall(bindMethodFn,
+                                      {objectValue, methodValue}, "bound_method");
+    builder.CreateBr(contBB);
+    methodFoundBB = builder.GetInsertBlock();
+
+    builder.SetInsertPoint(methodMissingBB);
+    builder.CreateBr(contBB);
+    methodMissingBB = builder.GetInsertBlock();
+  }
+
+  builder.SetInsertPoint(contBB);
+  auto phi = builder.CreatePHI(llvmValueTy(), 3, "get.result");
+  phi->addIncoming(fieldValue, successEndBB); // ensure success path uses field
+  if (methodFoundBB && methodResult) {
+    phi->addIncoming(methodResult, methodFoundBB);
+  }
+  phi->addIncoming(nilConst(), methodMissingBB);
+
+  value = phi;
   checkRuntimeError(value);
 }
 
@@ -1925,23 +2017,72 @@ void CodeGenVisitor::visitSetExpr(Set *e) {
   e->object->accept(this);
   llvm::Value *objectValue = value;
 
-  e->value->accept(this);
-  llvm::Value *assignedValue = value;
-
+  auto hasErrorFn = mod.getFunction("elx_has_runtime_error");
   auto setFieldFn = mod.getFunction("elx_set_instance_field");
-  if (!setFieldFn) {
-    value = assignedValue;
+  if (!setFieldFn || !hasErrorFn) {
+    e->value->accept(this);
+    llvm::Value *assignedValue = value;
+    if (setFieldFn) {
+      auto nameValue = stringConst(e->name.getLexeme(), true);
+      value = builder.CreateCall(setFieldFn,
+                                 {objectValue, nameValue, assignedValue},
+                                 "set_field");
+      checkRuntimeError(value);
+    } else {
+      value = assignedValue;
+    }
     return;
   }
 
+  auto errorFlag = builder.CreateCall(hasErrorFn, {}, "set_object_error");
+  auto hasError = builder.CreateICmpNE(
+      errorFlag, llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0),
+      "object_error");
+
+  llvm::Function *fn = builder.GetInsertBlock()->getParent();
+  auto skipValueBB = llvm::BasicBlock::Create(ctx, "set.skip", fn);
+  auto evalValueBB = llvm::BasicBlock::Create(ctx, "set.eval", fn);
+  auto contBB = llvm::BasicBlock::Create(ctx, "set.cont", fn);
+
+  builder.CreateCondBr(hasError, skipValueBB, evalValueBB);
+
+  builder.SetInsertPoint(evalValueBB);
+  e->value->accept(this);
+  llvm::Value *assignedValue = value;
   auto nameValue = stringConst(e->name.getLexeme(), true);
-  value = builder.CreateCall(setFieldFn,
-                             {objectValue, nameValue, assignedValue},
-                             "set_field");
-  checkRuntimeError(value);
+  llvm::Value *setResult = builder.CreateCall(
+      setFieldFn, {objectValue, nameValue, assignedValue}, "set_field");
+  checkRuntimeError(setResult);
+  llvm::Value *successValue = value;
+  builder.CreateBr(contBB);
+  llvm::BasicBlock *successBB = builder.GetInsertBlock();
+
+  builder.SetInsertPoint(skipValueBB);
+  llvm::Value *skipValue = nilConst();
+  builder.CreateBr(contBB);
+  llvm::BasicBlock *skipEndBB = builder.GetInsertBlock();
+
+  builder.SetInsertPoint(contBB);
+  auto phi = builder.CreatePHI(llvmValueTy(), 2, "set.result");
+  phi->addIncoming(successValue, successBB);
+  phi->addIncoming(skipValue, skipEndBB);
+  value = phi;
 }
 
 void CodeGenVisitor::visitThisExpr(This *e) {
+  auto stackIt = variableStacks.find("this");
+  if (stackIt != variableStacks.end() && !stackIt->second.empty()) {
+    llvm::Value *slot = stackIt->second.back();
+    value = builder.CreateLoad(llvmValueTy(), slot, "this");
+    return;
+  }
+
+  auto currentIt = locals.find("this_current");
+  if (currentIt != locals.end()) {
+    value = builder.CreateLoad(llvmValueTy(), currentIt->second, "this");
+    return;
+  }
+
   Variable fakeVar(e->keyword);
   visitVariableExpr(&fakeVar);
 }
@@ -1986,8 +2127,22 @@ void CodeGenVisitor::visitClassStmt(Class *s) {
                     enclosingFunction->getName().str().find("__expr") == 0)) &&
                   (blockDepth == 0);
 
-  auto createSlot = [&](const std::string &slotBase) -> llvm::Value * {
-    std::string slotName = slotBase + "_" + std::to_string(variableCounter++);
+  llvm::Value *superValue = nilConst();
+  bool hasSuper = static_cast<bool>(s->superclass);
+  if (hasSuper) {
+    s->superclass->accept(this);
+    superValue = value;
+
+    auto validateSuperFn = mod.getFunction("elx_validate_superclass");
+    if (validateSuperFn) {
+      auto validated = builder.CreateCall(validateSuperFn, {superValue},
+                                          "validated_super");
+      checkRuntimeError(validated);
+      superValue = value;
+    }
+  }
+
+  auto makeAllocaInEntry = [&](const std::string &slotName) -> llvm::Value * {
     if (!enclosingFunction) {
       return builder.CreateAlloca(llvmValueTy(), nullptr, slotName.c_str());
     }
@@ -1998,45 +2153,22 @@ void CodeGenVisitor::visitClassStmt(Class *s) {
     return slotBuilder.CreateAlloca(llvmValueTy(), nullptr, slotName.c_str());
   };
 
-  llvm::Value *superValue = nilConst();
-  bool hasSuper = static_cast<bool>(s->superclass);
-  if (hasSuper) {
-    s->superclass->accept(this);
-    superValue = value;
-  }
-
-  llvm::Value *classSlot = createSlot(className + "_class_slot");
+  int slotId = variableCounter++;
+  std::string slotName =
+      className + "_class_slot_" + std::to_string(slotId);
+  llvm::Value *classSlot = makeAllocaInEntry(slotName);
   builder.CreateStore(nilConst(), classSlot);
 
-  locals[className] = classSlot;
-  locals[className + "_current"] = classSlot;
+  std::string uniqueKey = className + "#" + std::to_string(blockDepth) + "#" +
+                          std::to_string(slotId);
+  locals[uniqueKey] = classSlot;
+  if (variableStacks[className].empty()) {
+    locals[className + "_current"] = classSlot;
+  }
   variableStacks[className].push_back(classSlot);
 
   if (isGlobal) {
     globalVariables.insert(className);
-  }
-
-  auto classNameValue = stringConst(className, true);
-  auto allocateClassFn = mod.getFunction("elx_allocate_class");
-  if (!allocateClassFn) {
-    value = nilConst();
-    return;
-  }
-
-  llvm::Value *classValue = builder.CreateCall(
-      allocateClassFn,
-      {classNameValue, hasSuper ? superValue : nilConst()}, "klass");
-  checkRuntimeError(classValue);
-
-  builder.CreateStore(classValue, classSlot);
-  globals[className] = classValue;
-
-  if (isGlobal) {
-    auto setGlobalVarFn = mod.getFunction("elx_set_global_variable");
-    if (setGlobalVarFn) {
-      auto nameStr = builder.CreateGlobalStringPtr(className, "class_name");
-      builder.CreateCall(setGlobalVarFn, {nameStr, classValue});
-    }
   }
 
   struct SyntheticBindingState {
@@ -2066,7 +2198,10 @@ void CodeGenVisitor::visitClassStmt(Class *s) {
       state.previousCurrent = itCurrent->second;
     }
 
-    llvm::Value *slot = createSlot(name + "_binding");
+    int bindingId = variableCounter++;
+    std::string bindingName =
+        name + "_binding_" + std::to_string(bindingId);
+    llvm::Value *slot = makeAllocaInEntry(bindingName);
     builder.CreateStore(initialValue, slot);
     locals[name] = slot;
     locals[name + "_current"] = slot;
@@ -2082,10 +2217,9 @@ void CodeGenVisitor::visitClassStmt(Class *s) {
     }
   }
 
-  llvm::Value *previousClassValue = current_class_value;
-  current_class_value = classValue;
+  std::vector<std::pair<std::string, llvm::Value *>> methodTable;
+  methodTable.reserve(s->methods.size());
 
-  auto addMethodFn = mod.getFunction("elx_class_add_method");
   for (auto &method : s->methods) {
     MethodContext methodCtx =
         (method->name.getLexeme() == "init") ? MethodContext::INITIALIZER
@@ -2113,14 +2247,42 @@ void CodeGenVisitor::visitClassStmt(Class *s) {
 
     method_context_override = previousOverride;
     function_map_key_override = previousKeyOverride;
+    methodTable.emplace_back(method->name.getLexeme(), methodValue);
+  }
 
-    if (addMethodFn) {
-      auto methodNameValue = stringConst(method->name.getLexeme(), true);
-      builder.CreateCall(addMethodFn,
-                         {classValue, methodNameValue, methodValue});
+  auto classNameValue = stringConst(className, true);
+  auto allocateClassFn = mod.getFunction("elx_allocate_class");
+  if (!allocateClassFn) {
+    value = nilConst();
+    return;
+  }
+
+  llvm::Value *classValue = builder.CreateCall(
+      allocateClassFn,
+      {classNameValue, hasSuper ? superValue : nilConst()}, "klass");
+  checkRuntimeError(classValue);
+
+  builder.CreateStore(classValue, classSlot);
+  globals[className] = classValue;
+
+  if (isGlobal) {
+    auto setGlobalVarFn = mod.getFunction("elx_set_global_variable");
+    if (setGlobalVarFn) {
+      auto nameStr = builder.CreateGlobalStringPtr(className, "class_name");
+      builder.CreateCall(setGlobalVarFn, {nameStr, classValue});
     }
   }
 
+  auto addMethodFn = mod.getFunction("elx_class_add_method");
+  llvm::Value *previousClassValue = current_class_value;
+  current_class_value = classValue;
+  if (addMethodFn) {
+    for (const auto &entry : methodTable) {
+      auto methodNameValue = stringConst(entry.first, true);
+      builder.CreateCall(addMethodFn,
+                         {classValue, methodNameValue, entry.second});
+    }
+  }
   current_class_value = previousClassValue;
 
   for (auto it = syntheticBindings.rbegin(); it != syntheticBindings.rend();
