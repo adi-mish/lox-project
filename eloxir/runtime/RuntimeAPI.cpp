@@ -119,6 +119,23 @@ static ObjFunction *getFunction(Value v) {
   return func;
 }
 
+static ObjNative *getNative(Value v) {
+  if (!v.isObj())
+    return nullptr;
+
+  void *obj_ptr = v.asObj();
+  if (obj_ptr == nullptr)
+    return nullptr;
+
+  if (allocated_objects.find(obj_ptr) == allocated_objects.end())
+    return nullptr;
+
+  ObjNative *native = static_cast<ObjNative *>(obj_ptr);
+  if (native->obj.type != ObjType::NATIVE)
+    return nullptr;
+  return native;
+}
+
 static ObjClosure *getClosure(Value v) {
   if (!v.isObj())
     return nullptr;
@@ -235,6 +252,9 @@ static void destroyObject(Obj *obj) {
   case ObjType::BOUND_METHOD:
     delete reinterpret_cast<ObjBoundMethod *>(obj);
     break;
+  case ObjType::NATIVE:
+    free(obj);
+    break;
   default:
     free(obj);
     break;
@@ -278,6 +298,12 @@ uint64_t elx_print(uint64_t bits) {
       } else {
         std::cout << "<function>";
       }
+      break;
+    }
+    case ObjType::NATIVE: {
+      ObjNative *native = static_cast<ObjNative *>(obj_ptr);
+      (void)native; // Name retained for future introspection.
+      std::cout << "<native fn>";
       break;
     }
     case ObjType::CLOSURE: {
@@ -357,6 +383,25 @@ uint64_t elx_readLine() {
   } else {
     return Value::nil().getBits();
   }
+}
+
+static uint64_t native_clock_adapter(int arg_count, const uint64_t * /*args*/) {
+  if (arg_count != 0) {
+    std::string error_msg = formatArityError("clock", 0, arg_count);
+    elx_runtime_error(error_msg.c_str());
+    return Value::nil().getBits();
+  }
+  return elx_clock();
+}
+
+static uint64_t native_readLine_adapter(int arg_count,
+                                        const uint64_t * /*args*/) {
+  if (arg_count != 0) {
+    std::string error_msg = formatArityError("readLine", 0, arg_count);
+    elx_runtime_error(error_msg.c_str());
+    return Value::nil().getBits();
+  }
+  return elx_readLine();
 }
 
 uint64_t elx_debug_string_address(uint64_t str_bits) {
@@ -518,6 +563,21 @@ uint64_t elx_allocate_function(const char *name, int arity,
   allocated_objects.insert(func);
 
   return Value::object(func).getBits();
+}
+
+uint64_t elx_allocate_native(const char *name, NativeFn function) {
+  ObjNative *native = static_cast<ObjNative *>(malloc(sizeof(ObjNative)));
+  if (!native) {
+    return Value::nil().getBits();
+  }
+
+  native->obj.type = ObjType::NATIVE;
+  native->function = function;
+  native->name = name;
+
+  allocated_objects.insert(native);
+
+  return Value::object(native).getBits();
 }
 
 uint64_t elx_call_function(uint64_t func_bits, uint64_t *args, int arg_count) {
@@ -721,6 +781,31 @@ uint64_t elx_call_value(uint64_t callee_bits, uint64_t *args, int arg_count) {
   switch (obj->type) {
   case ObjType::FUNCTION:
     return elx_call_function(callee_bits, args, arg_count);
+  case ObjType::NATIVE: {
+    ObjNative *native = getNative(callee_val);
+    if (!native || !native->function) {
+      elx_runtime_error("Can only call functions and classes.");
+      return Value::nil().getBits();
+    }
+
+    CallDepthGuard depth_guard;
+    if (!depth_guard.entered()) {
+      elx_runtime_error("Stack overflow.");
+      return Value::nil().getBits();
+    }
+
+    try {
+      return native->function(arg_count, args);
+    } catch (const std::exception &e) {
+      std::string error_msg =
+          "Exception during native call: " + std::string(e.what());
+      elx_runtime_error(error_msg.c_str());
+      return Value::nil().getBits();
+    } catch (...) {
+      elx_runtime_error("Unknown exception during native call.");
+      return Value::nil().getBits();
+    }
+  }
   case ObjType::CLOSURE:
     return elx_call_closure(callee_bits, args, arg_count);
   case ObjType::CLASS: {
@@ -1478,15 +1563,17 @@ void elx_initialize_global_builtins() {
     return; // Already initialized
   }
 
-  // Initialize clock function - create the actual function object
-  auto clock_obj =
-      elx_allocate_function("clock", 0, reinterpret_cast<void *>(&elx_clock));
-  global_builtins["clock"] = clock_obj;
+  // Initialize clock native function
+  auto clock_obj = elx_allocate_native("clock", &native_clock_adapter);
+  if (clock_obj != Value::nil().getBits()) {
+    global_builtins["clock"] = clock_obj;
+  }
 
-  // Initialize readLine function - create the actual function object
-  auto readLine_obj = elx_allocate_function(
-      "readLine", 0, reinterpret_cast<void *>(&elx_readLine));
-  global_builtins["readLine"] = readLine_obj;
+  // Initialize readLine native function
+  auto readLine_obj = elx_allocate_native("readLine", &native_readLine_adapter);
+  if (readLine_obj != Value::nil().getBits()) {
+    global_builtins["readLine"] = readLine_obj;
+  }
 
   global_builtins_initialized = true;
 }

@@ -79,6 +79,14 @@ class RuntimeRegressionTests(unittest.TestCase):
         self.assertEqual(actual_lines, expected_lines)
         self.assertEqual(result.stderr.strip(), "")
 
+    def test_native_functions_print_canonically(self) -> None:
+        result = self._run_fixture("print_native.lox")
+        self.assertEqual(result.returncode, 0)
+        expected_lines = ["<native fn>", "<native fn>"]
+        actual_lines = [line.strip() for line in result.stdout.splitlines() if line]
+        self.assertEqual(actual_lines, expected_lines)
+        self.assertEqual(result.stderr.strip(), "")
+
     @pytest.mark.xfail(
         reason=(
             "Loop closures still read stale loop indices; tracked by official test"
