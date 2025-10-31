@@ -406,11 +406,6 @@ llvm::Value *CodeGenVisitor::valuesEqual(llvm::Value *L, llvm::Value *R) {
   builder.CreateBr(contBB);
   auto objPtrResBB = builder.GetInsertBlock();
 
-  // Non-string heap objects: compare identity
-  builder.SetInsertPoint(objOtherBB);
-  auto objIdentityEqual = builder.CreateICmpEQ(L, R, "objeq");
-  builder.CreateBr(contBB);
-
   // For bool/nil, do bitwise comparison
   builder.SetInsertPoint(isBoolOrNilBB);
   auto bitsEqual = builder.CreateICmpEQ(L, R, "bitseq");
@@ -698,52 +693,25 @@ void CodeGenVisitor::visitUnaryExpr(Unary *e) {
 void CodeGenVisitor::visitVariableExpr(Variable *e) {
   const std::string &varName = e->name.getLexeme();
 
-  // CRITICAL FIX: Check upvalues FIRST when inside any function
-  // This ensures closures ALWAYS access captured values, not current lexical
-  // bindings
-  if (!function_stack.empty()) {
-    const FunctionContext &current_ctx = function_stack.top();
-    auto upvalue_it = current_ctx.upvalue_indices.find(varName);
-    if (upvalue_it != current_ctx.upvalue_indices.end()) {
-      int upvalue_index = upvalue_it->second;
-      value = accessUpvalue(varName, upvalue_index);
-      return;
-    }
-  }
+  // First, consult any lexical bindings (stacked locals or direct locals).
+  bool captured = isUpvalue(varName);
 
-  // Use variable stacks for lexical scope correctness (for non-upvalue access)
-  // Skip this check if inside a function and the variable is an upvalue
   auto stackIt = variableStacks.find(varName);
   if (stackIt != variableStacks.end() && !stackIt->second.empty()) {
-    // Skip variable stack lookup if we're in a function and this is an upvalue
-    bool skipForUpvalue = !function_stack.empty() && isUpvalue(varName);
-    if (!skipForUpvalue) {
-      // Get the storage that is current in this lexical scope (top of stack)
-      llvm::Value *current_storage = stackIt->second.back();
+    llvm::Value *current_storage = stackIt->second.back();
 
-      if (directValues.count(varName)) {
-        value = current_storage; // Direct value, no load needed
-      } else {
-        value =
-            builder.CreateLoad(llvmValueTy(), current_storage, varName.c_str());
-      }
-      return;
+    if (directValues.count(varName)) {
+      value = current_storage; // Direct value, no load needed
+    } else {
+      value =
+          builder.CreateLoad(llvmValueTy(), current_storage, varName.c_str());
     }
-  }
-
-  // For global variables, check the persistent global system AFTER local stacks
-  if (globalVariables.count(varName)) {
-    auto getGlobalVarFn = mod.getFunction("elx_get_global_variable");
-    if (getGlobalVarFn) {
-      auto nameStr = builder.CreateGlobalStringPtr(varName, "var_name");
-      value = builder.CreateCall(getGlobalVarFn, {nameStr}, "global_var");
-      return;
-    }
+    return;
   }
 
   // Fall back to "_current" binding for variables not using the stack system
   auto currentIt = locals.find(varName + "_current");
-  if (currentIt != locals.end()) {
+  if (!captured && currentIt != locals.end()) {
     // Check if this is a direct value (like a parameter) or needs to be loaded
     if (directValues.count(varName)) {
       value = currentIt->second; // Direct value, no load needed
@@ -756,7 +724,7 @@ void CodeGenVisitor::visitVariableExpr(Variable *e) {
 
   // Fallback to original lookup for variables declared before this system
   auto it = locals.find(varName);
-  if (it != locals.end()) {
+  if (!captured && it != locals.end()) {
     // Check if this is a direct value (like a parameter) or needs to be loaded
     if (directValues.count(varName)) {
       value = it->second; // Direct value, no load needed
@@ -764,6 +732,27 @@ void CodeGenVisitor::visitVariableExpr(Variable *e) {
       value = builder.CreateLoad(llvmValueTy(), it->second, varName.c_str());
     }
     return;
+  }
+
+  // If no lexical binding exists, captured upvalues are the next choice.
+  if (!function_stack.empty()) {
+    const FunctionContext &current_ctx = function_stack.top();
+    auto upvalue_it = current_ctx.upvalue_indices.find(varName);
+    if (upvalue_it != current_ctx.upvalue_indices.end()) {
+      int upvalue_index = upvalue_it->second;
+      value = accessUpvalue(varName, upvalue_index);
+      return;
+    }
+  }
+
+  // For global variables, check the persistent global system after locals.
+  if (globalVariables.count(varName)) {
+    auto getGlobalVarFn = mod.getFunction("elx_get_global_variable");
+    if (getGlobalVarFn) {
+      auto nameStr = builder.CreateGlobalStringPtr(varName, "var_name");
+      value = builder.CreateCall(getGlobalVarFn, {nameStr}, "global_var");
+      return;
+    }
   }
 
   // Check globals (current module scope)
@@ -917,9 +906,83 @@ void CodeGenVisitor::visitAssignExpr(Assign *e) {
 
   const std::string &varName = e->name.getLexeme();
 
-  // CRITICAL FIX: Check upvalues FIRST when inside a function for assignments
-  // This ensures assignments to captured variables update the captured value
-  if (!function_stack.empty() && isUpvalue(varName)) {
+  bool captured = isUpvalue(varName);
+
+  // Update lexical bindings first (stack-based bindings take precedence).
+  auto stackIt = variableStacks.find(varName);
+  if (stackIt != variableStacks.end() && !stackIt->second.empty()) {
+    llvm::Value *current_storage = stackIt->second.back();
+
+    if (directValues.count(varName)) {
+      auto fn = builder.GetInsertBlock()->getParent();
+      auto &entry = fn->getEntryBlock();
+      llvm::IRBuilder<> save(entry.getFirstNonPHI());
+      auto slot = save.CreateAlloca(llvmValueTy(), nullptr, varName.c_str());
+      builder.CreateStore(current_storage, slot);
+      stackIt->second.back() = slot;
+      directValues.erase(varName);
+      current_storage = slot;
+    }
+
+    builder.CreateStore(assignValue, current_storage);
+
+    if (captured && !function_stack.empty()) {
+      const FunctionContext &current_ctx = function_stack.top();
+      if (current_ctx.captured_slots.count(current_storage) > 0) {
+        auto upvalue_it = current_ctx.upvalue_indices.find(varName);
+        if (upvalue_it != current_ctx.upvalue_indices.end() &&
+            current_ctx.upvalue_array) {
+          int upvalue_index = upvalue_it->second;
+          auto idxVal = llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx),
+                                               upvalue_index);
+          auto ptr = builder.CreateGEP(llvmValueTy(), current_ctx.upvalue_array,
+                                       idxVal);
+          auto upvalue_bits = builder.CreateLoad(llvmValueTy(), ptr);
+          if (auto set_upvalue_fn = mod.getFunction("elx_set_upvalue_value")) {
+            builder.CreateCall(set_upvalue_fn, {upvalue_bits, assignValue});
+          }
+        }
+      }
+    }
+
+    value = assignValue;
+    return;
+  }
+
+  auto currentIt = locals.find(varName + "_current");
+  if (!captured && currentIt != locals.end()) {
+    if (directValues.count(varName)) {
+      auto fn = builder.GetInsertBlock()->getParent();
+      auto &entry = fn->getEntryBlock();
+      llvm::IRBuilder<> save(entry.getFirstNonPHI());
+      auto slot = save.CreateAlloca(llvmValueTy(), nullptr, varName.c_str());
+      locals[varName + "_current"] = slot;
+      directValues.erase(varName);
+      currentIt->second = slot;
+    }
+    builder.CreateStore(assignValue, currentIt->second);
+    value = assignValue;
+    return;
+  }
+
+  auto localIt = locals.find(varName);
+  if (!captured && localIt != locals.end()) {
+    if (directValues.count(varName)) {
+      auto fn = builder.GetInsertBlock()->getParent();
+      auto &entry = fn->getEntryBlock();
+      llvm::IRBuilder<> save(entry.getFirstNonPHI());
+      auto slot = save.CreateAlloca(llvmValueTy(), nullptr, varName.c_str());
+      locals[varName] = slot;
+      directValues.erase(varName);
+      localIt->second = slot;
+    }
+    builder.CreateStore(assignValue, localIt->second);
+    value = assignValue;
+    return;
+  }
+
+  // No lexical binding exists; captured upvalues are the next option.
+  if (!function_stack.empty()) {
     const FunctionContext &current_ctx = function_stack.top();
     auto upvalue_it = current_ctx.upvalue_indices.find(varName);
     if (upvalue_it != current_ctx.upvalue_indices.end()) {
@@ -939,109 +1002,38 @@ void CodeGenVisitor::visitAssignExpr(Assign *e) {
     }
   }
 
-  // CRITICAL FIX: Use variable stacks for lexical scope correctness in
-  // assignments This ensures assignments respect the same scoping as variable
-  // access
-  auto stackIt = variableStacks.find(varName);
-  if (stackIt != variableStacks.end() && !stackIt->second.empty()) {
-    // Skip variable stack lookup if we're in a function and this is an upvalue
-    bool skipForUpvalue = !function_stack.empty() && isUpvalue(varName);
-    if (!skipForUpvalue) {
-      // Get the storage that is current in this lexical scope (top of stack)
-      llvm::Value *current_storage = stackIt->second.back();
-
-      if (directValues.count(varName)) {
-        // This shouldn't happen for variable stack entries, but handle it
-        // Convert to storage-based
-        auto fn = builder.GetInsertBlock()->getParent();
-        auto &entry = fn->getEntryBlock();
-        llvm::IRBuilder<> save(entry.getFirstNonPHI());
-        auto slot = save.CreateAlloca(llvmValueTy(), nullptr, varName.c_str());
-        builder.CreateStore(current_storage, slot);
-        stackIt->second.back() = slot; // Update the stack entry
-        directValues.erase(varName);
-        current_storage = slot;
-      }
-
-      builder.CreateStore(assignValue, current_storage);
-      value = assignValue; // Assignment returns the assigned value
-      return;
-    }
-  }
-
-  // For global variables AFTER checking local stacks
   if (globalVariables.count(varName)) {
-    // Update local storage if it exists
     auto localIt = locals.find(varName);
     if (localIt != locals.end()) {
       if (directValues.count(varName)) {
-        // This is a parameter or direct value - we need to create storage for
-        // it
         auto fn = builder.GetInsertBlock()->getParent();
         auto &entry = fn->getEntryBlock();
         llvm::IRBuilder<> save(entry.getFirstNonPHI());
         auto slot = save.CreateAlloca(llvmValueTy(), nullptr, varName.c_str());
         locals[varName] = slot;
         directValues.erase(varName);
+        localIt->second = slot;
       }
       builder.CreateStore(assignValue, localIt->second);
     }
 
-    // Always update the persistent global system for global variables
     auto setGlobalVarFn = mod.getFunction("elx_set_global_variable");
     if (setGlobalVarFn) {
       auto nameStr = builder.CreateGlobalStringPtr(varName, "var_name");
       builder.CreateCall(setGlobalVarFn, {nameStr, assignValue});
     }
 
-    value = assignValue; // Assignment returns the assigned value
+    value = assignValue;
     return;
   }
 
-  // Check locals for truly local variables - use "_current" binding
-  auto currentIt = locals.find(varName + "_current");
-  if (currentIt != locals.end()) {
-    if (directValues.count(varName)) {
-      // This is a parameter or direct value - we need to create storage for it
-      auto fn = builder.GetInsertBlock()->getParent();
-      auto &entry = fn->getEntryBlock();
-      llvm::IRBuilder<> save(entry.getFirstNonPHI());
-      auto slot = save.CreateAlloca(llvmValueTy(), nullptr, varName.c_str());
-      locals[varName + "_current"] = slot;
-      directValues.erase(varName);
-    }
-    builder.CreateStore(assignValue, currentIt->second);
-    value = assignValue; // Assignment returns the assigned value
-    return;
-  }
-
-  // Fallback to original lookup
-  auto localIt = locals.find(varName);
-  if (localIt != locals.end()) {
-    if (directValues.count(varName)) {
-      // This is a parameter or direct value - we need to create storage for it
-      auto fn = builder.GetInsertBlock()->getParent();
-      auto &entry = fn->getEntryBlock();
-      llvm::IRBuilder<> save(entry.getFirstNonPHI());
-      auto slot = save.CreateAlloca(llvmValueTy(), nullptr, varName.c_str());
-      locals[varName] = slot;
-      directValues.erase(varName);
-    }
-    builder.CreateStore(assignValue, localIt->second);
-    value = assignValue; // Assignment returns the assigned value
-    return;
-  }
-
-  // Check if it's a global variable (current module)
   auto globalIt = globals.find(varName);
   if (globalIt != globals.end()) {
-    // For globals, we update the globals map
     globals[varName] = assignValue;
     value = assignValue;
     return;
   }
 
-  // Check if it's a global variable (persistent across REPL lines)
   auto hasGlobalVarFn = mod.getFunction("elx_has_global_variable");
   auto setGlobalVarFn = mod.getFunction("elx_set_global_variable");
   if (hasGlobalVarFn && setGlobalVarFn) {
@@ -1058,17 +1050,14 @@ void CodeGenVisitor::visitAssignExpr(Assign *e) {
 
     builder.CreateCondBr(hasVarBool, assignGlobalBB, errorBB);
 
-    // Assign to global variable
     builder.SetInsertPoint(assignGlobalBB);
     builder.CreateCall(setGlobalVarFn, {nameStr, assignValue});
     builder.CreateBr(contBB);
 
-    // Variable not found - error
     builder.SetInsertPoint(errorBB);
     emitRuntimeError("Undefined variable '" + varName + "'.");
     builder.CreateBr(contBB);
 
-    // Continuation
     builder.SetInsertPoint(contBB);
     auto phi = builder.CreatePHI(llvmValueTy(), 2, "assign_result");
     phi->addIncoming(assignValue, assignGlobalBB);
@@ -1077,7 +1066,6 @@ void CodeGenVisitor::visitAssignExpr(Assign *e) {
     return;
   }
 
-  // Variable not found - this is an error in Lox
   emitRuntimeError("Undefined variable '" + varName + "'.");
   value = nilConst();
 }
