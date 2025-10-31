@@ -438,7 +438,7 @@ llvm::Value *CodeGenVisitor::checkBothNumbers(llvm::Value *L, llvm::Value *R,
 
   // Error case - generate runtime error instead of trap
   builder.SetInsertPoint(errorBB);
-  emitRuntimeError("Runtime error: Operands must be numbers.");
+  emitRuntimeError("Operands must be numbers.");
   // Don't return here - let the caller handle control flow
 
   return both;
@@ -525,8 +525,7 @@ void CodeGenVisitor::visitBinaryExpr(Binary *e) {
 
     // Type error
     builder.SetInsertPoint(errorBB);
-    emitRuntimeError(
-        "Runtime error: Operands must be numbers or strings for +.");
+    emitRuntimeError("Operands must be numbers or strings for +.");
     auto errorResult = nilConst();
     builder.CreateBr(contBB);
 
@@ -661,8 +660,7 @@ void CodeGenVisitor::visitUnaryExpr(Unary *e) {
     builder.CreateBr(contBB);
 
     builder.SetInsertPoint(slowBB);
-    emitRuntimeError(
-        "Runtime error: Operand must be a number for negation.");
+    emitRuntimeError("Operand must be a number for negation.");
     auto errorResult = nilConst();
     builder.CreateBr(contBB);
 
@@ -794,7 +792,7 @@ void CodeGenVisitor::visitVariableExpr(Variable *e) {
 
       // Function not found - runtime error
       builder.SetInsertPoint(notFoundBB);
-      emitRuntimeError("Runtime error: Undefined function '" + varName + "'.");
+      emitRuntimeError("Undefined function '" + varName + "'.");
       auto notFoundValue = nilConst();
       builder.CreateBr(contBB);
 
@@ -878,8 +876,7 @@ void CodeGenVisitor::visitVariableExpr(Variable *e) {
 
         // Variable not found - runtime error
         builder.SetInsertPoint(notFoundBB);
-        emitRuntimeError("Runtime error: Undefined variable '" + varName +
-                         "'.");
+        emitRuntimeError("Undefined variable '" + varName + "'.");
         auto notFoundValue = nilConst();
         builder.CreateBr(contBB);
 
@@ -897,7 +894,7 @@ void CodeGenVisitor::visitVariableExpr(Variable *e) {
   }
 
   // Fallback - return nil and print error
-  emitRuntimeError("Runtime error: Undefined variable '" + varName + "'.");
+  emitRuntimeError("Undefined variable '" + varName + "'.");
   value = nilConst();
 }
 
@@ -1055,7 +1052,7 @@ void CodeGenVisitor::visitAssignExpr(Assign *e) {
 
     // Variable not found - error
     builder.SetInsertPoint(errorBB);
-    emitRuntimeError("Runtime error: Undefined variable '" + varName + "'.");
+    emitRuntimeError("Undefined variable '" + varName + "'.");
     builder.CreateBr(contBB);
 
     // Continuation
@@ -1068,7 +1065,7 @@ void CodeGenVisitor::visitAssignExpr(Assign *e) {
   }
 
   // Variable not found - this is an error in Lox
-  emitRuntimeError("Runtime error: Undefined variable '" + varName + "'.");
+  emitRuntimeError("Undefined variable '" + varName + "'.");
   value = nilConst();
 }
 
@@ -2014,7 +2011,7 @@ void CodeGenVisitor::visitGetExpr(Get *e) {
       builder.CreateCall(emitErrorFn, {});
     } else {
       std::string message =
-          "Runtime error: Undefined property '" + e->name.getLexeme() + "'.";
+          "Undefined property '" + e->name.getLexeme() + "'.";
       emitRuntimeError(message);
     }
     builder.CreateBr(contBB);
