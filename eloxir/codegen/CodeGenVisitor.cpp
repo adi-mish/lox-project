@@ -1,5 +1,6 @@
 #include "CodeGenVisitor.h"
 #include "../frontend/CompileError.h"
+#include "../runtime/RuntimeAPI.h"
 #include "../runtime/Value.h"
 #include <algorithm>
 #include <cstdint>
@@ -47,6 +48,10 @@ CodeGenVisitor::CodeGenVisitor(llvm::Module &m)
   llvm::FunctionType *strEqualTy = llvm::FunctionType::get(
       llvm::Type::getInt32Ty(ctx), {llvmValueTy(), llvmValueTy()}, false);
   mod.getOrInsertFunction("elx_strings_equal", strEqualTy);
+
+  llvm::FunctionType *objTypeTy =
+      llvm::FunctionType::get(llvm::Type::getInt32Ty(ctx), {llvmValueTy()}, false);
+  mod.getOrInsertFunction("elx_value_obj_type", objTypeTy);
 
   // Function functions
   llvm::FunctionType *allocFuncTy = llvm::FunctionType::get(
@@ -291,7 +296,15 @@ llvm::Value *CodeGenVisitor::isString(llvm::Value *v) {
   auto objTag = llvm::ConstantInt::get(llvmValueTy(),
                                        (static_cast<uint64_t>(Tag::OBJ) << 48));
   auto tag = tagOf(v);
-  return builder.CreateICmpEQ(tag, objTag, "isstr");
+  auto isObj = builder.CreateICmpEQ(tag, objTag, "isobj");
+
+  auto objTypeFn = mod.getFunction("elx_value_obj_type");
+  auto objType = builder.CreateCall(objTypeFn, {v}, "objtype");
+  auto stringTypeConst = llvm::ConstantInt::get(
+      llvm::Type::getInt32Ty(ctx), static_cast<int>(ObjType::STRING));
+  auto isStringType = builder.CreateICmpEQ(objType, stringTypeConst, "isstringtype");
+
+  return builder.CreateAnd(isObj, isStringType, "isstr");
 }
 
 llvm::Value *CodeGenVisitor::stringConst(const std::string &str,
@@ -366,13 +379,30 @@ llvm::Value *CodeGenVisitor::valuesEqual(llvm::Value *L, llvm::Value *R) {
   auto numEqual = builder.CreateFCmpOEQ(Ld, Rd, "numeq");
   builder.CreateBr(contBB);
 
-  // Objects: call string comparison function
+  // Objects: dispatch by ObjType
   builder.SetInsertPoint(isObjBB);
+  auto objTypeFn = mod.getFunction("elx_value_obj_type");
+  auto objType = builder.CreateCall(objTypeFn, {L}, "objtype_eq");
+  auto stringType = llvm::ConstantInt::get(
+      llvm::Type::getInt32Ty(ctx), static_cast<int>(ObjType::STRING));
+  auto isStringObj = builder.CreateICmpEQ(objType, stringType, "isstringobj");
+
+  auto objStringBB = llvm::BasicBlock::Create(ctx, "eq.obj.string", fn);
+  auto objOtherBB = llvm::BasicBlock::Create(ctx, "eq.obj.other", fn);
+  builder.CreateCondBr(isStringObj, objStringBB, objOtherBB);
+
+  // String objects: use content comparison
+  builder.SetInsertPoint(objStringBB);
   auto strEqualFn = mod.getFunction("elx_strings_equal");
   auto objEqual = builder.CreateCall(strEqualFn, {L, R}, "streq");
   auto objEqualBool = builder.CreateICmpNE(
       objEqual, llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0),
       "streqbool");
+  builder.CreateBr(contBB);
+
+  // Non-string heap objects: compare identity
+  builder.SetInsertPoint(objOtherBB);
+  auto objIdentityEqual = builder.CreateICmpEQ(L, R, "objeq");
   builder.CreateBr(contBB);
 
   // For bool/nil, do bitwise comparison
@@ -382,10 +412,11 @@ llvm::Value *CodeGenVisitor::valuesEqual(llvm::Value *L, llvm::Value *R) {
 
   // Merge results
   builder.SetInsertPoint(contBB);
-  auto phi = builder.CreatePHI(builder.getInt1Ty(), 4, "eq.res");
+  auto phi = builder.CreatePHI(builder.getInt1Ty(), 5, "eq.res");
   phi->addIncoming(builder.getFalse(), diffTypeBB);
   phi->addIncoming(numEqual, isNumBB);
-  phi->addIncoming(objEqualBool, isObjBB);
+  phi->addIncoming(objEqualBool, objStringBB);
+  phi->addIncoming(objIdentityEqual, objOtherBB);
   phi->addIncoming(bitsEqual, isBoolOrNilBB);
 
   return phi;
