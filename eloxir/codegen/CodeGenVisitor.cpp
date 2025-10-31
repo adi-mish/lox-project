@@ -298,13 +298,30 @@ llvm::Value *CodeGenVisitor::isString(llvm::Value *v) {
   auto tag = tagOf(v);
   auto isObj = builder.CreateICmpEQ(tag, objTag, "isobj");
 
+  auto fn = builder.GetInsertBlock()->getParent();
+  auto checkObjBB = llvm::BasicBlock::Create(ctx, "isstring.obj", fn);
+  auto notObjBB = llvm::BasicBlock::Create(ctx, "isstring.notobj", fn);
+  auto contBB = llvm::BasicBlock::Create(ctx, "isstring.cont", fn);
+
+  builder.CreateCondBr(isObj, checkObjBB, notObjBB);
+
+  builder.SetInsertPoint(checkObjBB);
   auto objTypeFn = mod.getFunction("elx_value_obj_type");
   auto objType = builder.CreateCall(objTypeFn, {v}, "objtype");
   auto stringTypeConst = llvm::ConstantInt::get(
       llvm::Type::getInt32Ty(ctx), static_cast<int>(ObjType::STRING));
   auto isStringType = builder.CreateICmpEQ(objType, stringTypeConst, "isstringtype");
+  builder.CreateBr(contBB);
 
-  return builder.CreateAnd(isObj, isStringType, "isstr");
+  builder.SetInsertPoint(notObjBB);
+  builder.CreateBr(contBB);
+
+  builder.SetInsertPoint(contBB);
+  auto phi = builder.CreatePHI(builder.getInt1Ty(), 2, "isstr");
+  phi->addIncoming(builder.getFalse(), notObjBB);
+  phi->addIncoming(isStringType, checkObjBB);
+
+  return phi;
 }
 
 llvm::Value *CodeGenVisitor::stringConst(const std::string &str,
@@ -479,8 +496,6 @@ void CodeGenVisitor::visitBinaryExpr(Binary *e) {
   if (e->op.getType() == TokenType::PLUS) {
     auto bothAreNumbers =
         builder.CreateAnd(isNumber(L), isNumber(R), "bothnum");
-    auto bothAreObjects =
-        builder.CreateAnd(isString(L), isString(R), "bothstr");
 
     auto isNumAddBB = llvm::BasicBlock::Create(ctx, "plus.numadd", fn);
     auto isStrConcatBB = llvm::BasicBlock::Create(ctx, "plus.strconcat", fn);
@@ -488,12 +503,21 @@ void CodeGenVisitor::visitBinaryExpr(Binary *e) {
     auto contBB = llvm::BasicBlock::Create(ctx, "plus.cont", fn);
 
     // Check if both are numbers first
-    auto checkStrBB = llvm::BasicBlock::Create(ctx, "plus.checkstr", fn);
-    builder.CreateCondBr(bothAreNumbers, isNumAddBB, checkStrBB);
+    auto checkStrLeftBB =
+        llvm::BasicBlock::Create(ctx, "plus.checkstr.left", fn);
+    auto checkStrRightBB =
+        llvm::BasicBlock::Create(ctx, "plus.checkstr.right", fn);
+    builder.CreateCondBr(bothAreNumbers, isNumAddBB, checkStrLeftBB);
 
-    // Check if both are strings
-    builder.SetInsertPoint(checkStrBB);
-    builder.CreateCondBr(bothAreObjects, isStrConcatBB, errorBB);
+    // Validate left operand is a string object
+    builder.SetInsertPoint(checkStrLeftBB);
+    auto leftIsString = isString(L);
+    builder.CreateCondBr(leftIsString, checkStrRightBB, errorBB);
+
+    // Validate right operand is a string object
+    builder.SetInsertPoint(checkStrRightBB);
+    auto rightIsString = isString(R);
+    builder.CreateCondBr(rightIsString, isStrConcatBB, errorBB);
 
     // Number addition
     builder.SetInsertPoint(isNumAddBB);
