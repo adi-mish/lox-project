@@ -198,6 +198,27 @@ CodeGenVisitor::CodeGenVisitor(llvm::Module &m)
   // Built-ins will be initialized when first generating code
 }
 
+void CodeGenVisitor::enterLoop() { loopInstructionCounts.push_back(0); }
+
+void CodeGenVisitor::exitLoop() {
+  if (!loopInstructionCounts.empty()) {
+    loopInstructionCounts.pop_back();
+  }
+}
+
+void CodeGenVisitor::addLoopInstructions(uint32_t amount) {
+  if (amount == 0 || loopInstructionCounts.empty()) {
+    return;
+  }
+
+  for (auto &count : loopInstructionCounts) {
+    if (count > MAX_LOOP_INSTRUCTIONS - amount) {
+      throw CompileError("Loop body too large.");
+    }
+    count += amount;
+  }
+}
+
 llvm::Type *CodeGenVisitor::llvmValueTy() const {
   return llvm::Type::getInt64Ty(ctx);
 }
@@ -1159,12 +1180,14 @@ void CodeGenVisitor::visitCallExpr(Call *e) {
 // --------- Stmt visitors -------------------------------------------------
 void CodeGenVisitor::visitExpressionStmt(Expression *s) {
   s->expression->accept(this);
+  addLoopInstructions(2);
 }
 
 void CodeGenVisitor::visitPrintStmt(Print *s) {
   s->expression->accept(this);
   llvm::Function *printFn = mod.getFunction("elx_print");
   builder.CreateCall(printFn, {value});
+  addLoopInstructions(2);
 }
 
 void CodeGenVisitor::visitVarStmt(Var *s) {
@@ -1263,6 +1286,8 @@ void CodeGenVisitor::visitVarStmtWithExecution(Var *s, int blockExecution) {
 
     // Don't add to directValues since this needs to be loaded
   }
+
+  addLoopInstructions(2);
 }
 
 void CodeGenVisitor::visitBlockStmt(Block *s) {
@@ -1347,6 +1372,7 @@ void CodeGenVisitor::visitBlockStmt(Block *s) {
 void CodeGenVisitor::visitIfStmt(If *s) {
   s->condition->accept(this);
   llvm::Value *cond = value;
+  addLoopInstructions(1);
 
   auto fn = builder.GetInsertBlock()->getParent();
   auto thenBB = llvm::BasicBlock::Create(ctx, "if.then", fn);
@@ -1358,6 +1384,7 @@ void CodeGenVisitor::visitIfStmt(If *s) {
   // Convert condition to boolean
   auto condI1 = isTruthy(cond);
   builder.CreateCondBr(condI1, thenBB, elseBB);
+  addLoopInstructions(1);
 
   // Generate then branch
   builder.SetInsertPoint(thenBB);
@@ -1365,6 +1392,7 @@ void CodeGenVisitor::visitIfStmt(If *s) {
   // Only create branch if block doesn't already have a terminator
   if (!builder.GetInsertBlock()->getTerminator()) {
     builder.CreateBr(mergeBB);
+    addLoopInstructions(1);
   }
 
   // Generate else branch
@@ -1375,6 +1403,7 @@ void CodeGenVisitor::visitIfStmt(If *s) {
   // Only create branch if block doesn't already have a terminator
   if (!builder.GetInsertBlock()->getTerminator()) {
     builder.CreateBr(mergeBB);
+    addLoopInstructions(1);
   }
 
   builder.SetInsertPoint(mergeBB);
@@ -1388,23 +1417,32 @@ void CodeGenVisitor::visitWhileStmt(While *s) {
   auto endBB = llvm::BasicBlock::Create(ctx, "while.end", fn);
 
   builder.CreateBr(condBB);
+  enterLoop();
+  try {
+    builder.SetInsertPoint(condBB);
+    s->condition->accept(this);
+    llvm::Value *cond = value;
+    addLoopInstructions(1);
 
-  builder.SetInsertPoint(condBB);
-  s->condition->accept(this);
-  llvm::Value *cond = value;
+    // Use the simplified truthiness check
+    auto condI1 = isTruthy(cond);
+    builder.CreateCondBr(condI1, bodyBB, endBB);
+    addLoopInstructions(1);
 
-  // Use the simplified truthiness check
-  auto condI1 = isTruthy(cond);
-  builder.CreateCondBr(condI1, bodyBB, endBB);
+    builder.SetInsertPoint(bodyBB);
+    s->body->accept(this);
+    // Only create branch if block doesn't already have a terminator
+    if (!builder.GetInsertBlock()->getTerminator()) {
+      builder.CreateBr(condBB);
+      addLoopInstructions(1);
+    }
 
-  builder.SetInsertPoint(bodyBB);
-  s->body->accept(this);
-  // Only create branch if block doesn't already have a terminator
-  if (!builder.GetInsertBlock()->getTerminator()) {
-    builder.CreateBr(condBB);
+    builder.SetInsertPoint(endBB);
+  } catch (...) {
+    exitLoop();
+    throw;
   }
-
-  builder.SetInsertPoint(endBB);
+  exitLoop();
   value = nilConst();
 }
 
@@ -1570,6 +1608,7 @@ void CodeGenVisitor::createGlobalFunctionObjects() {
 
 void CodeGenVisitor::visitFunctionStmt(Function *s) {
   const std::string &baseFuncName = s->name.getLexeme();
+  addLoopInstructions(1);
 
   MethodContext methodContext = method_context_override;
   method_context_override = MethodContext::NONE;
@@ -1962,6 +2001,7 @@ void CodeGenVisitor::visitReturnStmt(Return *s) {
   closeAllCapturedLocals();
   builder.CreateRet(returnValue);
   value = returnValue;
+  addLoopInstructions(1);
 }
 
 void CodeGenVisitor::visitGetExpr(Get *e) {
@@ -2160,6 +2200,7 @@ void CodeGenVisitor::visitSuperExpr(Super *e) {
 
 void CodeGenVisitor::visitClassStmt(Class *s) {
   const std::string className = s->name.getLexeme();
+  addLoopInstructions(1);
 
   auto currentBlock = builder.GetInsertBlock();
   llvm::Function *enclosingFunction =

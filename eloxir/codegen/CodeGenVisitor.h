@@ -33,6 +33,7 @@ class CodeGenVisitor : public ExprVisitor, public StmtVisitor {
   static constexpr int MAX_LOCAL_SLOTS = 256;
   static constexpr int MAX_USER_LOCAL_SLOTS = MAX_LOCAL_SLOTS - 1;
   static constexpr int MAX_UPVALUES = 256;
+  static constexpr uint32_t MAX_LOOP_INSTRUCTIONS = 65535;
 
   // Track block nesting depth to distinguish true globals from block-scoped
   // variables
@@ -52,6 +53,7 @@ class CodeGenVisitor : public ExprVisitor, public StmtVisitor {
   std::unordered_map<std::string, std::vector<llvm::Value *>> variableStacks;
   std::vector<llvm::Value *> global_local_slots;
   std::unordered_set<llvm::Value *> global_captured_slots;
+  std::vector<uint32_t> loopInstructionCounts;
 
   enum class MethodContext { NONE, METHOD, INITIALIZER };
 
@@ -176,6 +178,10 @@ public:
   void visitClassStmt(Class *s) override;
 
 private:
+  void enterLoop();
+  void exitLoop();
+  void addLoopInstructions(uint32_t amount);
+
   llvm::Value *tagOf(llvm::Value *v);
   llvm::Value *isNumber(llvm::Value *v);
   llvm::Value *isString(llvm::Value *v);
