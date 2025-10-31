@@ -1,5 +1,6 @@
 #include "CodeGenVisitor.h"
 #include "../frontend/CompileError.h"
+#include "../runtime/RuntimeAPI.h"
 #include "../runtime/Value.h"
 #include <algorithm>
 #include <cstdint>
@@ -405,6 +406,11 @@ llvm::Value *CodeGenVisitor::valuesEqual(llvm::Value *L, llvm::Value *R) {
   builder.CreateBr(contBB);
   auto objPtrResBB = builder.GetInsertBlock();
 
+  // Non-string heap objects: compare identity
+  builder.SetInsertPoint(objOtherBB);
+  auto objIdentityEqual = builder.CreateICmpEQ(L, R, "objeq");
+  builder.CreateBr(contBB);
+
   // For bool/nil, do bitwise comparison
   builder.SetInsertPoint(isBoolOrNilBB);
   auto bitsEqual = builder.CreateICmpEQ(L, R, "bitseq");
@@ -479,8 +485,6 @@ void CodeGenVisitor::visitBinaryExpr(Binary *e) {
   if (e->op.getType() == TokenType::PLUS) {
     auto bothAreNumbers =
         builder.CreateAnd(isNumber(L), isNumber(R), "bothnum");
-    auto bothAreObjects =
-        builder.CreateAnd(isString(L), isString(R), "bothstr");
 
     auto isNumAddBB = llvm::BasicBlock::Create(ctx, "plus.numadd", fn);
     auto isStrConcatBB = llvm::BasicBlock::Create(ctx, "plus.strconcat", fn);
@@ -488,12 +492,21 @@ void CodeGenVisitor::visitBinaryExpr(Binary *e) {
     auto contBB = llvm::BasicBlock::Create(ctx, "plus.cont", fn);
 
     // Check if both are numbers first
-    auto checkStrBB = llvm::BasicBlock::Create(ctx, "plus.checkstr", fn);
-    builder.CreateCondBr(bothAreNumbers, isNumAddBB, checkStrBB);
+    auto checkStrLeftBB =
+        llvm::BasicBlock::Create(ctx, "plus.checkstr.left", fn);
+    auto checkStrRightBB =
+        llvm::BasicBlock::Create(ctx, "plus.checkstr.right", fn);
+    builder.CreateCondBr(bothAreNumbers, isNumAddBB, checkStrLeftBB);
 
-    // Check if both are strings
-    builder.SetInsertPoint(checkStrBB);
-    builder.CreateCondBr(bothAreObjects, isStrConcatBB, errorBB);
+    // Validate left operand is a string object
+    builder.SetInsertPoint(checkStrLeftBB);
+    auto leftIsString = isString(L);
+    builder.CreateCondBr(leftIsString, checkStrRightBB, errorBB);
+
+    // Validate right operand is a string object
+    builder.SetInsertPoint(checkStrRightBB);
+    auto rightIsString = isString(R);
+    builder.CreateCondBr(rightIsString, isStrConcatBB, errorBB);
 
     // Number addition
     builder.SetInsertPoint(isNumAddBB);
