@@ -1358,11 +1358,10 @@ static uint64_t findMethodOnClass(ObjClass *klass, const std::string &name) {
 }
 
 uint64_t elx_validate_superclass(uint64_t superclass_bits) {
-  Value superclass_val = Value::fromBits(superclass_bits);
-  if (superclass_val.isNil()) {
-    return superclass_bits;
-  }
+  // Ensure a clean slate before validating so previous failures do not linger.
+  elx_clear_runtime_error();
 
+  Value superclass_val = Value::fromBits(superclass_bits);
   ObjClass *superclass = getClass(superclass_val);
   if (!superclass) {
     elx_runtime_error("Superclass must be a class.");
@@ -1382,12 +1381,17 @@ uint64_t elx_allocate_class(uint64_t name_bits, uint64_t superclass_bits) {
 
   ObjClass *superclass = nullptr;
   Value superclass_val = Value::fromBits(superclass_bits);
+  if (elx_has_runtime_error() && superclass_val.isNil()) {
+    return Value::nil().getBits();
+  }
   if (!superclass_val.isNil()) {
-    superclass = getClass(superclass_val);
-    if (!superclass) {
-      elx_runtime_error("Superclass must be a class.");
+    uint64_t validated_super_bits = elx_validate_superclass(superclass_bits);
+    Value validated_super_val = Value::fromBits(validated_super_bits);
+    if (elx_has_runtime_error() && validated_super_val.isNil()) {
       return Value::nil().getBits();
     }
+
+    superclass = getClass(validated_super_val);
   }
 
   ObjClass *klass = new ObjClass();
