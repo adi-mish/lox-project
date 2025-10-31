@@ -31,6 +31,7 @@ class CodeGenVisitor : public ExprVisitor, public StmtVisitor {
   static constexpr int MAX_PARAMETERS = 255;
   static constexpr int MAX_CONSTANTS = 256;
   static constexpr int MAX_LOCAL_SLOTS = 256;
+  static constexpr int MAX_USER_LOCAL_SLOTS = MAX_LOCAL_SLOTS - 1;
   static constexpr int MAX_UPVALUES = 256;
 
   // Track block nesting depth to distinguish true globals from block-scoped

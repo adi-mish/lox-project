@@ -478,18 +478,10 @@ int elx_strings_equal(uint64_t a_bits, uint64_t b_bits) {
   return std::memcmp(str_a->chars, str_b->chars, str_a->length) == 0 ? 1 : 0;
 }
 
-int elx_value_obj_type(uint64_t value_bits) {
+int elx_value_is_string(uint64_t value_bits) {
   Value value = Value::fromBits(value_bits);
-  if (!value.isObj()) {
-    return -1;
-  }
-
-  auto *obj = static_cast<Obj *>(value.asObj());
-  if (!obj) {
-    return -1;
-  }
-
-  return static_cast<int>(obj->type);
+  ObjString *string_obj = getStringObject(value);
+  return string_obj != nullptr ? 1 : 0;
 }
 
 uint64_t elx_allocate_function(const char *name, int arity,

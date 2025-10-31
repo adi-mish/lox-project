@@ -49,9 +49,9 @@ CodeGenVisitor::CodeGenVisitor(llvm::Module &m)
       llvm::Type::getInt32Ty(ctx), {llvmValueTy(), llvmValueTy()}, false);
   mod.getOrInsertFunction("elx_strings_equal", strEqualTy);
 
-  llvm::FunctionType *objTypeTy =
-      llvm::FunctionType::get(llvm::Type::getInt32Ty(ctx), {llvmValueTy()}, false);
-  mod.getOrInsertFunction("elx_value_obj_type", objTypeTy);
+  llvm::FunctionType *isStringFnTy = llvm::FunctionType::get(
+      llvm::Type::getInt32Ty(ctx), {llvmValueTy()}, false);
+  mod.getOrInsertFunction("elx_value_is_string", isStringFnTy);
 
   // Function functions
   llvm::FunctionType *allocFuncTy = llvm::FunctionType::get(
@@ -296,32 +296,19 @@ llvm::Value *CodeGenVisitor::isString(llvm::Value *v) {
   auto objTag = llvm::ConstantInt::get(llvmValueTy(),
                                        (static_cast<uint64_t>(Tag::OBJ) << 48));
   auto tag = tagOf(v);
-  auto isObj = builder.CreateICmpEQ(tag, objTag, "isobj");
+  auto isObj = builder.CreateICmpEQ(tag, objTag, "isobj.str");
 
-  auto fn = builder.GetInsertBlock()->getParent();
-  auto checkObjBB = llvm::BasicBlock::Create(ctx, "isstring.obj", fn);
-  auto notObjBB = llvm::BasicBlock::Create(ctx, "isstring.notobj", fn);
-  auto contBB = llvm::BasicBlock::Create(ctx, "isstring.cont", fn);
+  auto isStringFn = mod.getFunction("elx_value_is_string");
+  if (!isStringFn) {
+    return builder.getFalse();
+  }
 
-  builder.CreateCondBr(isObj, checkObjBB, notObjBB);
+  auto call = builder.CreateCall(isStringFn, {v}, "isstring.call");
+  auto asBool = builder.CreateICmpNE(
+      call, llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0),
+      "isstring.bool");
 
-  builder.SetInsertPoint(checkObjBB);
-  auto objTypeFn = mod.getFunction("elx_value_obj_type");
-  auto objType = builder.CreateCall(objTypeFn, {v}, "objtype");
-  auto stringTypeConst = llvm::ConstantInt::get(
-      llvm::Type::getInt32Ty(ctx), static_cast<int>(ObjType::STRING));
-  auto isStringType = builder.CreateICmpEQ(objType, stringTypeConst, "isstringtype");
-  builder.CreateBr(contBB);
-
-  builder.SetInsertPoint(notObjBB);
-  builder.CreateBr(contBB);
-
-  builder.SetInsertPoint(contBB);
-  auto phi = builder.CreatePHI(builder.getInt1Ty(), 2, "isstr");
-  phi->addIncoming(builder.getFalse(), notObjBB);
-  phi->addIncoming(isStringType, checkObjBB);
-
-  return phi;
+  return builder.CreateAnd(isObj, asBool, "isstr");
 }
 
 llvm::Value *CodeGenVisitor::stringConst(const std::string &str,
@@ -396,26 +383,28 @@ llvm::Value *CodeGenVisitor::valuesEqual(llvm::Value *L, llvm::Value *R) {
   auto numEqual = builder.CreateFCmpOEQ(Ld, Rd, "numeq");
   builder.CreateBr(contBB);
 
-  // Objects: dispatch by ObjType
+  // Objects: compare strings structurally and other objects by identity
   builder.SetInsertPoint(isObjBB);
-  auto objTypeFn = mod.getFunction("elx_value_obj_type");
-  auto objType = builder.CreateCall(objTypeFn, {L}, "objtype_eq");
-  auto stringType = llvm::ConstantInt::get(
-      llvm::Type::getInt32Ty(ctx), static_cast<int>(ObjType::STRING));
-  auto isStringObj = builder.CreateICmpEQ(objType, stringType, "isstringobj");
+  auto stringsBB = llvm::BasicBlock::Create(ctx, "eq.str", fn);
+  auto objPtrBB = llvm::BasicBlock::Create(ctx, "eq.objptr", fn);
+  auto bothStrings = builder.CreateAnd(isString(L), isString(R), "eq.bothstr");
+  builder.CreateCondBr(bothStrings, stringsBB, objPtrBB);
 
-  auto objStringBB = llvm::BasicBlock::Create(ctx, "eq.obj.string", fn);
-  auto objOtherBB = llvm::BasicBlock::Create(ctx, "eq.obj.other", fn);
-  builder.CreateCondBr(isStringObj, objStringBB, objOtherBB);
-
-  // String objects: use content comparison
-  builder.SetInsertPoint(objStringBB);
-  auto strEqualFn = mod.getFunction("elx_strings_equal");
-  auto objEqual = builder.CreateCall(strEqualFn, {L, R}, "streq");
-  auto objEqualBool = builder.CreateICmpNE(
-      objEqual, llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0),
-      "streqbool");
+  builder.SetInsertPoint(stringsBB);
+  llvm::Value *stringEqualBool = builder.getFalse();
+  if (auto strEqualFn = mod.getFunction("elx_strings_equal")) {
+    auto strEqual = builder.CreateCall(strEqualFn, {L, R}, "streq");
+    stringEqualBool = builder.CreateICmpNE(
+        strEqual, llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0),
+        "streqbool");
+  }
   builder.CreateBr(contBB);
+  auto stringsResBB = builder.GetInsertBlock();
+
+  builder.SetInsertPoint(objPtrBB);
+  auto objEqualBool = builder.CreateICmpEQ(L, R, "objeq");
+  builder.CreateBr(contBB);
+  auto objPtrResBB = builder.GetInsertBlock();
 
   // Non-string heap objects: compare identity
   builder.SetInsertPoint(objOtherBB);
@@ -432,8 +421,8 @@ llvm::Value *CodeGenVisitor::valuesEqual(llvm::Value *L, llvm::Value *R) {
   auto phi = builder.CreatePHI(builder.getInt1Ty(), 5, "eq.res");
   phi->addIncoming(builder.getFalse(), diffTypeBB);
   phi->addIncoming(numEqual, isNumBB);
-  phi->addIncoming(objEqualBool, objStringBB);
-  phi->addIncoming(objIdentityEqual, objOtherBB);
+  phi->addIncoming(stringEqualBool, stringsResBB);
+  phi->addIncoming(objEqualBool, objPtrResBB);
   phi->addIncoming(bitsEqual, isBoolOrNilBB);
 
   return phi;
@@ -1243,7 +1232,7 @@ void CodeGenVisitor::visitVarStmtWithExecution(Var *s, int blockExecution) {
     if (!function_stack.empty()) {
       FunctionContext &ctx = function_stack.top();
       if (ctx.local_slots.size() >=
-          static_cast<size_t>(MAX_LOCAL_SLOTS - 1)) {
+          static_cast<size_t>(MAX_USER_LOCAL_SLOTS)) {
         throw CompileError("Too many local variables in function.");
       }
     }
@@ -1824,7 +1813,7 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
 
   funcCtx.local_slots = paramSlots;
   funcCtx.localCount = static_cast<int>(paramSlots.size());
-  if (funcCtx.localCount > MAX_LOCAL_SLOTS - 1) {
+  if (funcCtx.localCount > MAX_USER_LOCAL_SLOTS) {
     throw CompileError("Too many local variables in function.");
   }
   funcCtx.method_context = methodContext;
@@ -2679,7 +2668,7 @@ llvm::Value *CodeGenVisitor::captureUpvalue(const std::string &name) {
         *it = slot;
       } else {
         if (ctx.local_slots.size() >=
-            static_cast<size_t>(MAX_LOCAL_SLOTS - 1)) {
+            static_cast<size_t>(MAX_USER_LOCAL_SLOTS)) {
           throw CompileError("Too many local variables in function.");
         }
         ctx.local_slots.push_back(slot);
@@ -2698,7 +2687,7 @@ llvm::Value *CodeGenVisitor::captureUpvalue(const std::string &name) {
         if (std::find(ctx.local_slots.begin(), ctx.local_slots.end(), slot) ==
             ctx.local_slots.end()) {
           if (ctx.local_slots.size() >=
-              static_cast<size_t>(MAX_LOCAL_SLOTS - 1)) {
+              static_cast<size_t>(MAX_USER_LOCAL_SLOTS)) {
             throw CompileError("Too many local variables in function.");
           }
           ctx.local_slots.push_back(slot);

@@ -1,10 +1,6 @@
 class Foo {}
-class Greeter {
-  hello() {}
-}
+class Bar {}
 
-"" + Foo; // expect runtime error: Runtime error: Operands must be numbers or strings for +.
-
-// Bound methods should also not concatenate. The VM halts on the first
-// runtime error, so reaching this line would raise the same message.
-Greeter().hello + "";
+var foo = Foo();
+var bar = Bar();
+foo + bar; // expect runtime error: Operands must be numbers or strings for +.
