@@ -48,6 +48,10 @@ CodeGenVisitor::CodeGenVisitor(llvm::Module &m)
       llvm::Type::getInt32Ty(ctx), {llvmValueTy(), llvmValueTy()}, false);
   mod.getOrInsertFunction("elx_strings_equal", strEqualTy);
 
+  llvm::FunctionType *isStringFnTy = llvm::FunctionType::get(
+      llvm::Type::getInt32Ty(ctx), {llvmValueTy()}, false);
+  mod.getOrInsertFunction("elx_value_is_string", isStringFnTy);
+
   // Function functions
   llvm::FunctionType *allocFuncTy = llvm::FunctionType::get(
       llvmValueTy(),
@@ -291,7 +295,19 @@ llvm::Value *CodeGenVisitor::isString(llvm::Value *v) {
   auto objTag = llvm::ConstantInt::get(llvmValueTy(),
                                        (static_cast<uint64_t>(Tag::OBJ) << 48));
   auto tag = tagOf(v);
-  return builder.CreateICmpEQ(tag, objTag, "isstr");
+  auto isObj = builder.CreateICmpEQ(tag, objTag, "isobj.str");
+
+  auto isStringFn = mod.getFunction("elx_value_is_string");
+  if (!isStringFn) {
+    return builder.getFalse();
+  }
+
+  auto call = builder.CreateCall(isStringFn, {v}, "isstring.call");
+  auto asBool = builder.CreateICmpNE(
+      call, llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0),
+      "isstring.bool");
+
+  return builder.CreateAnd(isObj, asBool, "isstr");
 }
 
 llvm::Value *CodeGenVisitor::stringConst(const std::string &str,
@@ -366,14 +382,28 @@ llvm::Value *CodeGenVisitor::valuesEqual(llvm::Value *L, llvm::Value *R) {
   auto numEqual = builder.CreateFCmpOEQ(Ld, Rd, "numeq");
   builder.CreateBr(contBB);
 
-  // Objects: call string comparison function
+  // Objects: compare strings structurally and other objects by identity
   builder.SetInsertPoint(isObjBB);
-  auto strEqualFn = mod.getFunction("elx_strings_equal");
-  auto objEqual = builder.CreateCall(strEqualFn, {L, R}, "streq");
-  auto objEqualBool = builder.CreateICmpNE(
-      objEqual, llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0),
-      "streqbool");
+  auto stringsBB = llvm::BasicBlock::Create(ctx, "eq.str", fn);
+  auto objPtrBB = llvm::BasicBlock::Create(ctx, "eq.objptr", fn);
+  auto bothStrings = builder.CreateAnd(isString(L), isString(R), "eq.bothstr");
+  builder.CreateCondBr(bothStrings, stringsBB, objPtrBB);
+
+  builder.SetInsertPoint(stringsBB);
+  llvm::Value *stringEqualBool = builder.getFalse();
+  if (auto strEqualFn = mod.getFunction("elx_strings_equal")) {
+    auto strEqual = builder.CreateCall(strEqualFn, {L, R}, "streq");
+    stringEqualBool = builder.CreateICmpNE(
+        strEqual, llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0),
+        "streqbool");
+  }
   builder.CreateBr(contBB);
+  auto stringsResBB = builder.GetInsertBlock();
+
+  builder.SetInsertPoint(objPtrBB);
+  auto objEqualBool = builder.CreateICmpEQ(L, R, "objeq");
+  builder.CreateBr(contBB);
+  auto objPtrResBB = builder.GetInsertBlock();
 
   // For bool/nil, do bitwise comparison
   builder.SetInsertPoint(isBoolOrNilBB);
@@ -382,10 +412,11 @@ llvm::Value *CodeGenVisitor::valuesEqual(llvm::Value *L, llvm::Value *R) {
 
   // Merge results
   builder.SetInsertPoint(contBB);
-  auto phi = builder.CreatePHI(builder.getInt1Ty(), 4, "eq.res");
+  auto phi = builder.CreatePHI(builder.getInt1Ty(), 5, "eq.res");
   phi->addIncoming(builder.getFalse(), diffTypeBB);
   phi->addIncoming(numEqual, isNumBB);
-  phi->addIncoming(objEqualBool, isObjBB);
+  phi->addIncoming(stringEqualBool, stringsResBB);
+  phi->addIncoming(objEqualBool, objPtrResBB);
   phi->addIncoming(bitsEqual, isBoolOrNilBB);
 
   return phi;
@@ -407,7 +438,7 @@ llvm::Value *CodeGenVisitor::checkBothNumbers(llvm::Value *L, llvm::Value *R,
 
   // Error case - generate runtime error instead of trap
   builder.SetInsertPoint(errorBB);
-  emitRuntimeError("Runtime error: Operands must be numbers.");
+  emitRuntimeError("Operands must be numbers.");
   // Don't return here - let the caller handle control flow
 
   return both;
@@ -494,8 +525,7 @@ void CodeGenVisitor::visitBinaryExpr(Binary *e) {
 
     // Type error
     builder.SetInsertPoint(errorBB);
-    emitRuntimeError(
-        "Runtime error: Operands must be numbers or strings for +.");
+    emitRuntimeError("Operands must be numbers or strings for +.");
     auto errorResult = nilConst();
     builder.CreateBr(contBB);
 
@@ -630,8 +660,7 @@ void CodeGenVisitor::visitUnaryExpr(Unary *e) {
     builder.CreateBr(contBB);
 
     builder.SetInsertPoint(slowBB);
-    emitRuntimeError(
-        "Runtime error: Operand must be a number for negation.");
+    emitRuntimeError("Operand must be a number for negation.");
     auto errorResult = nilConst();
     builder.CreateBr(contBB);
 
@@ -763,7 +792,7 @@ void CodeGenVisitor::visitVariableExpr(Variable *e) {
 
       // Function not found - runtime error
       builder.SetInsertPoint(notFoundBB);
-      emitRuntimeError("Runtime error: Undefined function '" + varName + "'.");
+      emitRuntimeError("Undefined function '" + varName + "'.");
       auto notFoundValue = nilConst();
       builder.CreateBr(contBB);
 
@@ -847,8 +876,7 @@ void CodeGenVisitor::visitVariableExpr(Variable *e) {
 
         // Variable not found - runtime error
         builder.SetInsertPoint(notFoundBB);
-        emitRuntimeError("Runtime error: Undefined variable '" + varName +
-                         "'.");
+        emitRuntimeError("Undefined variable '" + varName + "'.");
         auto notFoundValue = nilConst();
         builder.CreateBr(contBB);
 
@@ -866,7 +894,7 @@ void CodeGenVisitor::visitVariableExpr(Variable *e) {
   }
 
   // Fallback - return nil and print error
-  emitRuntimeError("Runtime error: Undefined variable '" + varName + "'.");
+  emitRuntimeError("Undefined variable '" + varName + "'.");
   value = nilConst();
 }
 
@@ -1024,7 +1052,7 @@ void CodeGenVisitor::visitAssignExpr(Assign *e) {
 
     // Variable not found - error
     builder.SetInsertPoint(errorBB);
-    emitRuntimeError("Runtime error: Undefined variable '" + varName + "'.");
+    emitRuntimeError("Undefined variable '" + varName + "'.");
     builder.CreateBr(contBB);
 
     // Continuation
@@ -1037,7 +1065,7 @@ void CodeGenVisitor::visitAssignExpr(Assign *e) {
   }
 
   // Variable not found - this is an error in Lox
-  emitRuntimeError("Runtime error: Undefined variable '" + varName + "'.");
+  emitRuntimeError("Undefined variable '" + varName + "'.");
   value = nilConst();
 }
 
@@ -1190,7 +1218,8 @@ void CodeGenVisitor::visitVarStmtWithExecution(Var *s, int blockExecution) {
 
     if (!function_stack.empty()) {
       FunctionContext &ctx = function_stack.top();
-      if (ctx.local_slots.size() >= static_cast<size_t>(MAX_LOCAL_SLOTS)) {
+      if (ctx.local_slots.size() >=
+          static_cast<size_t>(MAX_USER_LOCAL_SLOTS)) {
         throw CompileError("Too many local variables in function.");
       }
     }
@@ -1771,7 +1800,7 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
 
   funcCtx.local_slots = paramSlots;
   funcCtx.localCount = static_cast<int>(paramSlots.size());
-  if (funcCtx.localCount > MAX_LOCAL_SLOTS) {
+  if (funcCtx.localCount > MAX_USER_LOCAL_SLOTS) {
     throw CompileError("Too many local variables in function.");
   }
   funcCtx.method_context = methodContext;
@@ -1982,7 +2011,7 @@ void CodeGenVisitor::visitGetExpr(Get *e) {
       builder.CreateCall(emitErrorFn, {});
     } else {
       std::string message =
-          "Runtime error: Undefined property '" + e->name.getLexeme() + "'.";
+          "Undefined property '" + e->name.getLexeme() + "'.";
       emitRuntimeError(message);
     }
     builder.CreateBr(contBB);
@@ -2625,7 +2654,8 @@ llvm::Value *CodeGenVisitor::captureUpvalue(const std::string &name) {
       if (it != ctx.local_slots.end()) {
         *it = slot;
       } else {
-        if (ctx.local_slots.size() >= static_cast<size_t>(MAX_LOCAL_SLOTS)) {
+        if (ctx.local_slots.size() >=
+            static_cast<size_t>(MAX_USER_LOCAL_SLOTS)) {
           throw CompileError("Too many local variables in function.");
         }
         ctx.local_slots.push_back(slot);
@@ -2643,7 +2673,8 @@ llvm::Value *CodeGenVisitor::captureUpvalue(const std::string &name) {
         ctx.captured_slots.insert(slot);
         if (std::find(ctx.local_slots.begin(), ctx.local_slots.end(), slot) ==
             ctx.local_slots.end()) {
-          if (ctx.local_slots.size() >= static_cast<size_t>(MAX_LOCAL_SLOTS)) {
+          if (ctx.local_slots.size() >=
+              static_cast<size_t>(MAX_USER_LOCAL_SLOTS)) {
             throw CompileError("Too many local variables in function.");
           }
           ctx.local_slots.push_back(slot);
