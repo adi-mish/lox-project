@@ -93,9 +93,6 @@ static ObjString *getStringObject(Value v) {
   if (obj_ptr == nullptr)
     return nullptr;
 
-  if (allocated_objects.find(obj_ptr) == allocated_objects.end())
-    return nullptr;
-
   ObjString *str = static_cast<ObjString *>(obj_ptr);
   if (str->obj.type != ObjType::STRING)
     return nullptr;
@@ -109,13 +106,6 @@ static ObjFunction *getFunction(Value v) {
   void *obj_ptr = v.asObj();
   if (obj_ptr == nullptr)
     return nullptr;
-
-  // Add bounds checking for the allocated objects
-  if (allocated_objects.find(obj_ptr) == allocated_objects.end()) {
-    std::cerr << "ERROR: Object pointer " << obj_ptr
-              << " not found in allocated objects!" << std::endl;
-    return nullptr;
-  }
 
   ObjFunction *func = static_cast<ObjFunction *>(obj_ptr);
   if (func->obj.type != ObjType::FUNCTION)
@@ -148,13 +138,6 @@ static ObjClosure *getClosure(Value v) {
   if (obj_ptr == nullptr)
     return nullptr;
 
-  // Add bounds checking for the allocated objects
-  if (allocated_objects.find(obj_ptr) == allocated_objects.end()) {
-    std::cerr << "ERROR: Object pointer " << obj_ptr
-              << " not found in allocated objects!" << std::endl;
-    return nullptr;
-  }
-
   ObjClosure *closure = static_cast<ObjClosure *>(obj_ptr);
   if (closure->obj.type != ObjType::CLOSURE)
     return nullptr;
@@ -169,13 +152,6 @@ static ObjUpvalue *getUpvalue(Value v) {
   if (obj_ptr == nullptr)
     return nullptr;
 
-  // Add bounds checking for the allocated objects
-  if (allocated_objects.find(obj_ptr) == allocated_objects.end()) {
-    std::cerr << "ERROR: Object pointer " << obj_ptr
-              << " not found in allocated objects!" << std::endl;
-    return nullptr;
-  }
-
   ObjUpvalue *upvalue = static_cast<ObjUpvalue *>(obj_ptr);
   if (upvalue->obj.type != ObjType::UPVALUE)
     return nullptr;
@@ -188,9 +164,6 @@ static ObjClass *getClass(Value v) {
 
   void *obj_ptr = v.asObj();
   if (obj_ptr == nullptr)
-    return nullptr;
-
-  if (allocated_objects.find(obj_ptr) == allocated_objects.end())
     return nullptr;
 
   ObjClass *klass = static_cast<ObjClass *>(obj_ptr);
@@ -207,9 +180,6 @@ static ObjInstance *getInstance(Value v) {
   if (obj_ptr == nullptr)
     return nullptr;
 
-  if (allocated_objects.find(obj_ptr) == allocated_objects.end())
-    return nullptr;
-
   ObjInstance *instance = static_cast<ObjInstance *>(obj_ptr);
   if (instance->obj.type != ObjType::INSTANCE)
     return nullptr;
@@ -222,9 +192,6 @@ static ObjBoundMethod *getBoundMethod(Value v) {
 
   void *obj_ptr = v.asObj();
   if (obj_ptr == nullptr)
-    return nullptr;
-
-  if (allocated_objects.find(obj_ptr) == allocated_objects.end())
     return nullptr;
 
   ObjBoundMethod *bound = static_cast<ObjBoundMethod *>(obj_ptr);
@@ -241,25 +208,25 @@ static ObjNative *getNative(Value v) {
   if (obj_ptr == nullptr)
     return nullptr;
 
-  if (allocated_objects.find(obj_ptr) == allocated_objects.end())
-    return nullptr;
-
   ObjNative *native = static_cast<ObjNative *>(obj_ptr);
   if (native->obj.type != ObjType::NATIVE)
     return nullptr;
   return native;
 }
 
-static uint64_t findMethodOnClass(ObjClass *klass, const std::string &name);
+static uint64_t findMethodOnClass(ObjClass *klass, ObjString *name);
 
-static bool extractStringKey(uint64_t string_bits, std::string &out) {
+static ObjString *extractStringKey(uint64_t string_bits, std::string *out) {
   Value string_val = Value::fromBits(string_bits);
   ObjString *str = getStringObject(string_val);
   if (!str)
-    return false;
+    return nullptr;
 
-  out.assign(str->chars, str->length);
-  return true;
+  if (out) {
+    out->assign(str->chars, str->length);
+  }
+
+  return str;
 }
 
 static void destroyObject(Obj *obj) {
@@ -633,7 +600,6 @@ uint64_t elx_call_function(uint64_t func_bits, uint64_t *args, int arg_count) {
 
   Value func_val = Value::fromBits(func_bits);
   ObjFunction *func = getFunction(func_val);
-
   if (!func) {
     elx_runtime_error("Can only call functions and classes.");
     return Value::nil().getBits();
@@ -915,7 +881,10 @@ uint64_t elx_call_value(uint64_t callee_bits, uint64_t *args, int arg_count) {
     if (elx_has_runtime_error())
       return Value::nil().getBits();
 
-    uint64_t initializer_bits = findMethodOnClass(klass, "init");
+    uint64_t init_bits = elx_intern_string("init", 4);
+    ObjString *init_name = getStringObject(Value::fromBits(init_bits));
+    uint64_t initializer_bits =
+        init_name ? findMethodOnClass(klass, init_name) : Value::nil().getBits();
     if (initializer_bits != Value::nil().getBits()) {
       Value initializer_val = Value::fromBits(initializer_bits);
       ObjClosure *init_closure = getClosure(initializer_val);
@@ -1449,7 +1418,7 @@ int elx_is_closure(uint64_t value_bits) {
   return result ? 1 : 0;
 }
 
-static uint64_t findMethodOnClass(ObjClass *klass, const std::string &name) {
+static uint64_t findMethodOnClass(ObjClass *klass, ObjString *name) {
   for (ObjClass *current = klass; current != nullptr;
        current = current->superclass) {
     auto it = current->methods.find(name);
@@ -1513,6 +1482,7 @@ uint64_t elx_allocate_class(uint64_t name_bits, uint64_t superclass_bits) {
   klass->name = name_str;
   klass->superclass = superclass;
   klass->methods.clear();
+  klass->fieldSlots.clear();
 
   allocated_objects.insert(klass);
   return Value::object(klass).getBits();
@@ -1525,8 +1495,8 @@ void elx_class_add_method(uint64_t class_bits, uint64_t name_bits,
   if (!klass)
     return;
 
-  std::string method_name;
-  if (!extractStringKey(name_bits, method_name))
+  ObjString *method_name = extractStringKey(name_bits, nullptr);
+  if (!method_name)
     return;
 
   klass->methods[method_name] = method_bits;
@@ -1538,8 +1508,8 @@ uint64_t elx_class_find_method(uint64_t class_bits, uint64_t name_bits) {
   if (!klass)
     return Value::nil().getBits();
 
-  std::string method_name;
-  if (!extractStringKey(name_bits, method_name))
+  ObjString *method_name = extractStringKey(name_bits, nullptr);
+  if (!method_name)
     return Value::nil().getBits();
 
   return findMethodOnClass(klass, method_name);
@@ -1556,7 +1526,9 @@ uint64_t elx_instantiate_class(uint64_t class_bits) {
   ObjInstance *instance = new ObjInstance();
   instance->obj.type = ObjType::INSTANCE;
   instance->klass = klass;
-  instance->fields.clear();
+  size_t slotCount = klass ? klass->fieldSlots.size() : 0;
+  instance->fieldValues.assign(slotCount, Value::nil().getBits());
+  instance->fieldPresence.assign(slotCount, 0);
 
   allocated_objects.insert(instance);
   return Value::object(instance).getBits();
@@ -1587,14 +1559,23 @@ uint64_t elx_get_instance_field(uint64_t instance_bits, uint64_t name_bits) {
   }
 
   std::string field_name;
-  if (!extractStringKey(name_bits, field_name)) {
+  ObjString *field_key = extractStringKey(name_bits, &field_name);
+  if (!field_key) {
     elx_runtime_error("Property name must be a string.");
     return Value::nil().getBits();
   }
 
-  auto it = instance->fields.find(field_name);
-  if (it != instance->fields.end()) {
-    return it->second;
+  ObjClass *klass = instance->klass;
+  if (klass) {
+    auto slotIt = klass->fieldSlots.find(field_key);
+    if (slotIt != klass->fieldSlots.end()) {
+      size_t slot = slotIt->second;
+      if (slot < instance->fieldValues.size() &&
+          slot < instance->fieldPresence.size() &&
+          instance->fieldPresence[slot]) {
+        return instance->fieldValues[slot];
+      }
+    }
   }
 
   std::string error_msg = "Undefined property '" + field_name + "'.";
@@ -1611,14 +1592,66 @@ uint64_t elx_set_instance_field(uint64_t instance_bits, uint64_t name_bits,
     return Value::nil().getBits();
   }
 
-  std::string field_name;
-  if (!extractStringKey(name_bits, field_name)) {
+  ObjString *field_key = extractStringKey(name_bits, nullptr);
+  if (!field_key) {
     elx_runtime_error("Property name must be a string.");
     return Value::nil().getBits();
   }
 
-  instance->fields[field_name] = value_bits;
+  ObjClass *klass = instance->klass;
+  size_t slot = 0;
+  if (klass) {
+    auto slotIt = klass->fieldSlots.find(field_key);
+    if (slotIt == klass->fieldSlots.end()) {
+      slot = klass->fieldSlots.size();
+      klass->fieldSlots[field_key] = slot;
+    } else {
+      slot = slotIt->second;
+    }
+  }
+
+  if (instance->fieldValues.size() <= slot) {
+    instance->fieldValues.resize(slot + 1, Value::nil().getBits());
+    instance->fieldPresence.resize(slot + 1, 0);
+  }
+
+  instance->fieldValues[slot] = value_bits;
+  instance->fieldPresence[slot] = 1;
   return value_bits;
+}
+
+int elx_try_get_instance_field(uint64_t instance_bits, uint64_t name_bits,
+                               uint64_t *out_value) {
+  Value instance_val = Value::fromBits(instance_bits);
+  ObjInstance *instance = getInstance(instance_val);
+  if (!instance) {
+    elx_runtime_error("Only instances have properties.");
+    return -1;
+  }
+
+  std::string field_name;
+  ObjString *field_key = extractStringKey(name_bits, &field_name);
+  if (!field_key) {
+    elx_runtime_error("Property name must be a string.");
+    return -1;
+  }
+
+  ObjClass *klass = instance->klass;
+  if (klass) {
+    auto slotIt = klass->fieldSlots.find(field_key);
+    if (slotIt != klass->fieldSlots.end()) {
+      size_t slot = slotIt->second;
+      if (slot < instance->fieldValues.size() &&
+          slot < instance->fieldPresence.size() &&
+          instance->fieldPresence[slot]) {
+        if (out_value)
+          *out_value = instance->fieldValues[slot];
+        return 1;
+      }
+    }
+  }
+
+  return 0;
 }
 
 uint64_t elx_bind_method(uint64_t instance_bits, uint64_t method_bits) {
@@ -1725,10 +1758,16 @@ int elx_has_global_variable(const char *name) {
 }
 
 void elx_set_global_function(const char *name, uint64_t func_obj) {
+  if (!name)
+    return;
+
   global_functions[std::string(name)] = func_obj;
 }
 
 uint64_t elx_get_global_function(const char *name) {
+  if (!name)
+    return Value::nil().getBits();
+
   auto it = global_functions.find(std::string(name));
   if (it != global_functions.end()) {
     return it->second;

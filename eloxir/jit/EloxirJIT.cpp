@@ -4,6 +4,7 @@
 #include <llvm/ExecutionEngine/Orc/JITTargetMachineBuilder.h>
 #include <llvm/ExecutionEngine/Orc/LLJIT.h>
 #include <llvm/ExecutionEngine/Orc/ThreadSafeModule.h>
+#include <llvm/Support/CodeGen.h>
 #include <llvm/Support/Error.h>
 #include <thread>
 
@@ -13,11 +14,18 @@ llvm::Expected<std::unique_ptr<EloxirJIT>> EloxirJIT::Create() {
   auto jtmb = llvm::orc::JITTargetMachineBuilder::detectHost();
   if (!jtmb)
     return jtmb.takeError();
+  jtmb->setCodeGenOptLevel(llvm::CodeGenOptLevel::Aggressive);
   auto dl = jtmb->getDefaultDataLayoutForTarget();
   if (!dl)
     return dl.takeError();
 
+  auto tm = jtmb->createTargetMachine();
+  if (!tm)
+    return tm.takeError();
+
   auto j = std::unique_ptr<EloxirJIT>(new EloxirJIT());
+  j->targetTriple = jtmb->getTargetTriple();
+  j->targetMachine = std::move(*tm);
   auto builder = llvm::orc::LLJITBuilder();
   builder.setJITTargetMachineBuilder(*jtmb)
       .setDataLayout(*dl)
@@ -198,6 +206,10 @@ llvm::Expected<std::unique_ptr<EloxirJIT>> EloxirJIT::Create() {
       llvm::orc::ExecutorSymbolDef(
           llvm::orc::ExecutorAddr::fromPtr(&elx_get_instance_field),
           llvm::JITSymbolFlags::Exported);
+  runtimeSymbols[mangle("elx_try_get_instance_field")] =
+      llvm::orc::ExecutorSymbolDef(
+          llvm::orc::ExecutorAddr::fromPtr(&elx_try_get_instance_field),
+          llvm::JITSymbolFlags::Exported);
   runtimeSymbols[mangle("elx_set_instance_field")] =
       llvm::orc::ExecutorSymbolDef(
           llvm::orc::ExecutorAddr::fromPtr(&elx_set_instance_field),
@@ -211,9 +223,9 @@ llvm::Expected<std::unique_ptr<EloxirJIT>> EloxirJIT::Create() {
 
   // Optional: optimisation layer intercept
   j->jit->getIRTransformLayer().setTransform(
-      [](llvm::orc::ThreadSafeModule tsm,
-         const llvm::orc::MaterializationResponsibility &) {
-        optimise(tsm); // see OptimisationPipeline.h
+      [tmPtr = j->targetMachine.get()](llvm::orc::ThreadSafeModule tsm,
+                                       const llvm::orc::MaterializationResponsibility &) {
+        optimise(tsm, tmPtr); // see OptimisationPipeline.h
         return tsm;
       });
 
@@ -232,6 +244,18 @@ llvm::Expected<llvm::JITEvaluatedSymbol> EloxirJIT::lookup(std::string name) {
   // Convert ExecutorAddr to JITEvaluatedSymbol
   return llvm::JITEvaluatedSymbol(addrResult->getValue(),
                                   llvm::JITSymbolFlags::Exported);
+}
+
+const llvm::DataLayout &EloxirJIT::getDataLayout() const {
+  return jit->getDataLayout();
+}
+
+const llvm::Triple &EloxirJIT::getTargetTriple() const {
+  return targetTriple;
+}
+
+llvm::TargetMachine *EloxirJIT::getTargetMachine() const {
+  return targetMachine.get();
 }
 
 } // namespace eloxir

@@ -4,6 +4,7 @@
 #include "../frontend/CompileError.h"
 #include "../frontend/Scanner.h"
 #include "../jit/EloxirJIT.h"
+#include "../jit/OptimisationPipeline.h"
 #include "../runtime/RuntimeAPI.h"
 #include <fstream>
 #include <iostream>
@@ -26,33 +27,10 @@ using namespace llvm;
 
 namespace {
 
-void submitModuleWithOptimisation(eloxir::EloxirJIT &jit,
-                                  std::unique_ptr<Module> module,
-                                  std::unique_ptr<LLVMContext> context) {
-  module->setDataLayout(jit.getDataLayout());
-  module->setTargetTriple(jit.getTargetTriple().getTriple());
-
-  if (eloxir::optimisationsEnabled()) {
-    PassBuilder passBuilder;
-    LoopAnalysisManager loopAnalysisManager;
-    FunctionAnalysisManager functionAnalysisManager;
-    CGSCCAnalysisManager cgsccAnalysisManager;
-    ModuleAnalysisManager moduleAnalysisManager;
-
-    passBuilder.registerModuleAnalyses(moduleAnalysisManager);
-    passBuilder.registerCGSCCAnalyses(cgsccAnalysisManager);
-    passBuilder.registerFunctionAnalyses(functionAnalysisManager);
-    passBuilder.registerLoopAnalyses(loopAnalysisManager);
-    passBuilder.crossRegisterProxies(loopAnalysisManager, functionAnalysisManager,
-                                     cgsccAnalysisManager, moduleAnalysisManager);
-
-    ModulePassManager modulePassManager =
-        passBuilder.buildPerModuleDefaultPipeline(OptimizationLevel::O2);
-    modulePassManager.run(*module, moduleAnalysisManager);
-  }
-
-  cantFail(jit.addModule(
-      orc::ThreadSafeModule(std::move(module), std::move(context))));
+orc::ThreadSafeModule
+makeThreadSafeModule(std::unique_ptr<Module> module,
+                     std::unique_ptr<LLVMContext> context) {
+  return orc::ThreadSafeModule(std::move(module), std::move(context));
 }
 
 enum class ExitCode : int {
@@ -435,6 +413,8 @@ int runFile(const std::string &filename) {
     // Create context and module for the entire file
     auto fileCtx = std::make_unique<LLVMContext>();
     auto fileMod = std::make_unique<Module>("file_module", *fileCtx);
+    fileMod->setDataLayout(jit->getDataLayout());
+    fileMod->setTargetTriple(jit->getTargetTriple().str());
     eloxir::CodeGenVisitor fileCG(*fileMod);
 
     // Pass resolver upvalue information to code generator
@@ -484,8 +464,8 @@ int runFile(const std::string &filename) {
     // scope The builder is now outside any function
     fileCG.createGlobalFunctionObjects();
 
-    submitModuleWithOptimisation(*jit, std::move(fileMod),
-                                 std::move(fileCtx));
+    cantFail(jit->addModule(
+        makeThreadSafeModule(std::move(fileMod), std::move(fileCtx))));
 
     // First, run the global initialization function if it exists
     auto initSymOpt = jit->lookup("__global_init");
@@ -576,6 +556,8 @@ void runREPL() {
       // Create a new context and module for each line
       auto lineCtx = std::make_unique<LLVMContext>();
       auto lineMod = std::make_unique<Module>("repl_line", *lineCtx);
+      lineMod->setDataLayout(jit->getDataLayout());
+      lineMod->setTargetTriple(jit->getTargetTriple().str());
       eloxir::CodeGenVisitor lineCG(*lineMod);
 
       // Pass resolver upvalue information to code generator
@@ -600,8 +582,8 @@ void runREPL() {
         continue;
       }
 
-      submitModuleWithOptimisation(*jit, std::move(lineMod),
-                                   std::move(lineCtx));
+      cantFail(jit->addModule(
+          makeThreadSafeModule(std::move(lineMod), std::move(lineCtx))));
 
       auto sym = cantFail(jit->lookup(fnName));
       using FnTy = eloxir::Value (*)();

@@ -9,57 +9,55 @@
 #include <llvm/Analysis/LoopAnalysisManager.h>
 #include <llvm/ExecutionEngine/Orc/ThreadSafeModule.h>
 #include <llvm/IR/PassManager.h>
+#include <llvm/Passes/OptimizationLevel.h>
 #include <llvm/Passes/PassBuilder.h>
+#include <llvm/Target/TargetMachine.h>
+#include <llvm/Support/Error.h>
+#include <cstdlib>
+#include <string_view>
 
 namespace eloxir {
 
-inline bool optimisationsEnabled() {
-  static const bool enabled = [] {
-    const char *flag = std::getenv("ELOXIR_DISABLE_OPT");
-    if (!flag)
-      return true;
-
-    std::string value(flag);
-    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
-      return static_cast<char>(std::tolower(c));
-    });
-
-    if (value.empty())
-      return false;
-    if (value == "0" || value == "false" || value == "no" || value == "off")
-      return true;
-
-    return false;
-  }();
-  return enabled;
+inline bool optimisationEnabled() {
+  if (const char *disable = std::getenv("ELOXIR_DISABLE_OPT")) {
+    std::string_view flag(disable);
+    return !(flag == "1" || flag == "true" || flag == "ON" || flag == "on" ||
+             flag == "True");
+  }
+  return true;
 }
 
-inline void runOptimisationPipeline(llvm::Module &module) {
-  if (!optimisationsEnabled())
-    return;
-
-  llvm::PassBuilder pb;
+inline void runOptimisationPipeline(llvm::Module &module,
+                                    llvm::TargetMachine *targetMachine) {
+  llvm::PipelineTuningOptions tuningOptions;
+  llvm::PassBuilder passBuilder(targetMachine, tuningOptions);
   llvm::LoopAnalysisManager lam;
   llvm::FunctionAnalysisManager fam;
   llvm::CGSCCAnalysisManager cgam;
   llvm::ModuleAnalysisManager mam;
 
-  pb.registerModuleAnalyses(mam);
-  pb.registerCGSCCAnalyses(cgam);
-  pb.registerFunctionAnalyses(fam);
-  pb.registerLoopAnalyses(lam);
-  pb.crossRegisterProxies(lam, fam, cgam, mam);
+  passBuilder.registerModuleAnalyses(mam);
+  passBuilder.registerCGSCCAnalyses(cgam);
+  passBuilder.registerFunctionAnalyses(fam);
+  passBuilder.registerLoopAnalyses(lam);
+  passBuilder.crossRegisterProxies(lam, fam, cgam, mam);
 
   llvm::ModulePassManager mpm =
-      pb.buildPerModuleDefaultPipeline(llvm::OptimizationLevel::O2);
+      passBuilder.buildPerModuleDefaultPipeline(llvm::OptimizationLevel::O3);
   mpm.run(module, mam);
+
+  (void)targetMachine;
 }
 
-inline void optimise(llvm::orc::ThreadSafeModule &tsm) {
-  if (!tsm)
+inline void optimise(llvm::orc::ThreadSafeModule &tsm,
+                     llvm::TargetMachine *targetMachine) {
+  if (!optimisationEnabled())
     return;
 
-  tsm.withModuleDo([](llvm::Module &module) { runOptimisationPipeline(module); });
+  llvm::cantFail(tsm.withModuleDo([&](llvm::Module &module) {
+    runOptimisationPipeline(module, targetMachine);
+    return llvm::Error::success();
+  }));
 }
 
 } // namespace eloxir

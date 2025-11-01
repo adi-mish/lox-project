@@ -140,6 +140,13 @@ CodeGenVisitor::CodeGenVisitor(llvm::Module &m)
                               false);
   mod.getOrInsertFunction("elx_get_instance_field", getInstanceFieldTy);
 
+  llvm::FunctionType *tryGetInstanceFieldTy = llvm::FunctionType::get(
+      llvm::Type::getInt32Ty(ctx),
+      {llvmValueTy(), llvmValueTy(),
+       llvm::PointerType::get(llvmValueTy(), 0)},
+      false);
+  mod.getOrInsertFunction("elx_try_get_instance_field", tryGetInstanceFieldTy);
+
   llvm::FunctionType *setInstanceFieldTy = llvm::FunctionType::get(
       llvmValueTy(), {llvmValueTy(), llvmValueTy(), llvmValueTy()}, false);
   mod.getOrInsertFunction("elx_set_instance_field", setInstanceFieldTy);
@@ -1411,6 +1418,9 @@ void CodeGenVisitor::visitBlockStmt(Block *s) {
       // Pass the block execution count to variable declaration
       // This will be used to create unique storage for loop body variables
       visitVarStmtWithExecution(varStmt, currentBlockExecution);
+    } else if (auto funcStmt = dynamic_cast<Function *>(stmt.get())) {
+      blockVariables.push_back(funcStmt->name.getLexeme());
+      stmt->accept(this);
     } else {
       stmt->accept(this);
     }
@@ -1577,7 +1587,7 @@ void CodeGenVisitor::declareFunctionSignature(Function *s) {
   functions[mapKey] = llvmFunc;
 
   // Track function for later object creation (methods are handled immediately)
-  if (!isMethod && function_map_key_override.empty()) {
+  if (!isMethod && function_map_key_override.empty() && blockDepth == 0) {
     pendingFunctions.push_back({baseFuncName, arity});
   }
 }
@@ -1708,6 +1718,12 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
 
   ensureParameterLimit(totalParamCount);
 
+  bool nestedFunctionDeclaration =
+      !isMethod && (currentFunction != nullptr || blockDepth > 0);
+  llvm::Value *nestedFunctionSlot = nullptr;
+  bool nestedSlotTrackedInOuterCtx = false;
+  bool nestedSlotTrackedGlobally = false;
+
   // Get upvalues for this function from resolver
   std::vector<std::string> upvalues;
   if (resolver_upvalues &&
@@ -1715,8 +1731,7 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
     upvalues = resolver_upvalues->at(s);
   }
 
-  // Filter out function parameters and the function's own name from upvalues
-  // (resolver bug workaround)
+  // Filter out function parameters from upvalues (resolver bug workaround)
   std::vector<std::string> filtered_upvalues;
   for (const auto &upvalue_name : upvalues) {
     bool is_parameter = false;
@@ -1726,11 +1741,7 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
         break;
       }
     }
-    // Also filter out the function's own name - it should be local, not an
-    // upvalue
-    bool is_self_reference = (upvalue_name == baseFuncName);
-
-    if (!is_parameter && !is_self_reference) {
+    if (!is_parameter) {
       filtered_upvalues.push_back(upvalue_name);
     }
   }
@@ -1809,6 +1820,43 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
   auto prevDirectValues = directValues;
   auto prevVariableStacks = variableStacks; // Save variable stacks too
   llvm::BasicBlock *prevBB = builder.GetInsertBlock();
+
+  if (nestedFunctionDeclaration) {
+    llvm::Function *enclosingFn = prevFunction;
+    if (!enclosingFn) {
+      if (prevBB) {
+        enclosingFn = prevBB->getParent();
+      } else if (auto *insertBlock = builder.GetInsertBlock()) {
+        enclosingFn = insertBlock->getParent();
+      }
+    }
+
+    if (enclosingFn) {
+      std::string slotName = baseFuncName + "_func_slot_" +
+                             std::to_string(variableCounter++);
+      nestedFunctionSlot =
+          createStackAlloca(enclosingFn, llvmValueTy(), slotName);
+      builder.CreateStore(nilConst(), nestedFunctionSlot);
+
+      locals[baseFuncName] = nestedFunctionSlot;
+      locals[baseFuncName + "_current"] = nestedFunctionSlot;
+      variableStacks[baseFuncName].push_back(nestedFunctionSlot);
+
+      if (!function_stack.empty()) {
+        FunctionContext &outerCtx = function_stack.top();
+        if (outerCtx.local_slots.size() >=
+            static_cast<size_t>(MAX_USER_LOCAL_SLOTS)) {
+          throw CompileError("Too many local variables in function.");
+        }
+        outerCtx.local_slots.push_back(nestedFunctionSlot);
+        outerCtx.localCount = static_cast<int>(outerCtx.local_slots.size());
+        nestedSlotTrackedInOuterCtx = true;
+      } else {
+        global_local_slots.push_back(nestedFunctionSlot);
+        nestedSlotTrackedGlobally = true;
+      }
+    }
+  }
 
   // Create new function context for closure support but DON'T switch yet
   FunctionContext funcCtx;
@@ -1971,7 +2019,26 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
     if (prevBB) {
       builder.SetInsertPoint(prevBB);
     }
-    loopInstructionReset.resume();
+    if (nestedFunctionSlot) {
+      if (nestedSlotTrackedInOuterCtx && !function_stack.empty()) {
+        FunctionContext &outerCtx = function_stack.top();
+        auto &slots = outerCtx.local_slots;
+        auto it = std::find(slots.begin(), slots.end(), nestedFunctionSlot);
+        if (it != slots.end()) {
+          slots.erase(it);
+          outerCtx.localCount = static_cast<int>(slots.size());
+        }
+        outerCtx.captured_slots.erase(nestedFunctionSlot);
+      }
+      if (nestedSlotTrackedGlobally) {
+        auto it = std::find(global_local_slots.begin(),
+                            global_local_slots.end(), nestedFunctionSlot);
+        if (it != global_local_slots.end()) {
+          global_local_slots.erase(it);
+        }
+        global_captured_slots.erase(nestedFunctionSlot);
+      }
+    }
     value = nilConst();
     throw;
   }
@@ -1992,6 +2059,26 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
     if (prevBB) {
       builder.SetInsertPoint(prevBB);
     }
+    if (nestedFunctionSlot) {
+      if (nestedSlotTrackedInOuterCtx && !function_stack.empty()) {
+        FunctionContext &outerCtx = function_stack.top();
+        auto &slots = outerCtx.local_slots;
+        auto it = std::find(slots.begin(), slots.end(), nestedFunctionSlot);
+        if (it != slots.end()) {
+          slots.erase(it);
+          outerCtx.localCount = static_cast<int>(slots.size());
+        }
+        outerCtx.captured_slots.erase(nestedFunctionSlot);
+      }
+      if (nestedSlotTrackedGlobally) {
+        auto it = std::find(global_local_slots.begin(),
+                            global_local_slots.end(), nestedFunctionSlot);
+        if (it != global_local_slots.end()) {
+          global_local_slots.erase(it);
+        }
+        global_captured_slots.erase(nestedFunctionSlot);
+      }
+    }
     value = nilConst();
     return;
   }
@@ -2009,7 +2096,11 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
     builder.SetInsertPoint(prevBB);
   }
 
-  loopInstructionReset.resume();
+  if (nestedFunctionSlot) {
+    locals[baseFuncName] = nestedFunctionSlot;
+    locals[baseFuncName + "_current"] = nestedFunctionSlot;
+    variableStacks[baseFuncName].push_back(nestedFunctionSlot);
+  }
 
   if (methodContext != MethodContext::NONE) {
     int methodArity = static_cast<int>(totalParamCount);
@@ -2021,9 +2112,11 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
 
   // Create closure object or function object
   if (upvalues.empty()) {
-    // If we're in a nested context (currentFunction != nullptr after restore),
-    // create function object immediately. Otherwise defer to global creation.
-    if (prevFunction != nullptr) {
+    // Treat declarations inside blocks as local even at top level so they don't
+    // populate the global function table until hoisted explicitly.
+    bool inNestedContext = prevFunction != nullptr || blockDepth > 0;
+
+    if (inNestedContext) {
       // We're in a nested function context - create function object immediately
       auto nameStr = builder.CreateGlobalStringPtr(baseFuncName, "fname");
       auto arityConst = llvm::ConstantInt::get(
@@ -2053,11 +2146,26 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
   // Store the function/closure in locals (function declarations should behave
   // like variable declarations)
   if (value != nilConst()) {
-    // Create an alloca for the function variable
-    auto fn = builder.GetInsertBlock()->getParent();
-    auto funcAlloca = createStackAlloca(fn, llvmValueTy(), baseFuncName);
-    builder.CreateStore(value, funcAlloca);
-    locals[baseFuncName] = funcAlloca;
+    llvm::Value *targetSlot = nestedFunctionSlot;
+    if (!targetSlot) {
+      auto fn = builder.GetInsertBlock()->getParent();
+      targetSlot = createStackAlloca(fn, llvmValueTy(), baseFuncName);
+      locals[baseFuncName] = targetSlot;
+      locals[baseFuncName + "_current"] = targetSlot;
+      variableStacks[baseFuncName].push_back(targetSlot);
+      if (!function_stack.empty()) {
+        FunctionContext &outerCtx = function_stack.top();
+        if (outerCtx.local_slots.size() >=
+            static_cast<size_t>(MAX_USER_LOCAL_SLOTS)) {
+          throw CompileError("Too many local variables in function.");
+        }
+        outerCtx.local_slots.push_back(targetSlot);
+        outerCtx.localCount = static_cast<int>(outerCtx.local_slots.size());
+      } else {
+        global_local_slots.push_back(targetSlot);
+      }
+    }
+    builder.CreateStore(value, targetSlot);
   }
 }
 void CodeGenVisitor::visitReturnStmt(Return *s) {
@@ -2094,31 +2202,48 @@ void CodeGenVisitor::visitGetExpr(Get *e) {
   e->object->accept(this);
   llvm::Value *objectValue = value;
 
-  auto getFieldFn = mod.getFunction("elx_get_instance_field");
-  auto hasErrorFn = mod.getFunction("elx_has_runtime_error");
-  if (!getFieldFn || !hasErrorFn) {
+  auto tryGetFn = mod.getFunction("elx_try_get_instance_field");
+  if (!tryGetFn) {
     value = nilConst();
     return;
   }
 
   auto nameValue = stringConst(e->name.getLexeme(), true);
-  llvm::Value *fieldValue =
-      builder.CreateCall(getFieldFn, {objectValue, nameValue}, "get_field");
-
-  auto errorFlag =
-      builder.CreateCall(hasErrorFn, {}, "get_field_error");
-  auto errorCond = builder.CreateICmpNE(
-      errorFlag, llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0),
-      "has_field_error");
-
   llvm::Function *fn = builder.GetInsertBlock()->getParent();
-  auto fallbackBB = llvm::BasicBlock::Create(ctx, "get.fallback", fn);
+  auto outPtr = createStackAlloca(fn, llvmValueTy(), "get_field_out");
+  builder.CreateStore(nilConst(), outPtr);
+
+  auto status = builder.CreateCall(tryGetFn,
+                                   {objectValue, nameValue, outPtr},
+                                   "get_field_status");
+
+  auto errorBB = llvm::BasicBlock::Create(ctx, "get.error", fn);
+  auto dispatchBB = llvm::BasicBlock::Create(ctx, "get.dispatch", fn);
   auto successBB = llvm::BasicBlock::Create(ctx, "get.success", fn);
+  auto fallbackBB = llvm::BasicBlock::Create(ctx, "get.fallback", fn);
   auto contBB = llvm::BasicBlock::Create(ctx, "get.cont", fn);
 
-  builder.CreateCondBr(errorCond, fallbackBB, successBB);
+  auto errorCond = builder.CreateICmpEQ(
+      status, llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), -1),
+      "get_field_failed");
+  builder.CreateCondBr(errorCond, errorBB, dispatchBB);
+
+  builder.SetInsertPoint(errorBB);
+  auto emitErrorFn = mod.getFunction("elx_emit_runtime_error");
+  if (emitErrorFn) {
+    builder.CreateCall(emitErrorFn, {});
+  }
+  builder.CreateBr(contBB);
+  llvm::BasicBlock *errorEndBB = builder.GetInsertBlock();
+
+  builder.SetInsertPoint(dispatchBB);
+  auto successCond = builder.CreateICmpEQ(
+      status, llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 1),
+      "get_field_found");
+  builder.CreateCondBr(successCond, successBB, fallbackBB);
 
   builder.SetInsertPoint(successBB);
+  auto fieldValue = builder.CreateLoad(llvmValueTy(), outPtr, "get_field");
   builder.CreateBr(contBB);
   llvm::BasicBlock *successEndBB = builder.GetInsertBlock();
 
@@ -2126,8 +2251,8 @@ void CodeGenVisitor::visitGetExpr(Get *e) {
   auto getClassFn = mod.getFunction("elx_get_instance_class");
   auto findMethodFn = mod.getFunction("elx_class_find_method");
   auto bindMethodFn = mod.getFunction("elx_bind_method");
-  auto clearErrorFn = mod.getFunction("elx_clear_runtime_error");
-  auto emitErrorFn = mod.getFunction("elx_emit_runtime_error");
+  auto runtimeErrorSilentFn = mod.getFunction("elx_runtime_error_silent");
+  emitErrorFn = mod.getFunction("elx_emit_runtime_error");
 
   llvm::BasicBlock *methodFoundBB = nullptr;
   llvm::Value *methodResult = nullptr;
@@ -2157,26 +2282,36 @@ void CodeGenVisitor::visitGetExpr(Get *e) {
     builder.CreateCondBr(methodIsNil, methodMissingBB, methodFoundBB);
 
     builder.SetInsertPoint(methodFoundBB);
-    if (clearErrorFn) {
-      builder.CreateCall(clearErrorFn, {});
-    }
     methodResult = builder.CreateCall(bindMethodFn,
                                       {objectValue, methodValue}, "bound_method");
     builder.CreateBr(contBB);
     methodFoundBB = builder.GetInsertBlock();
 
     builder.SetInsertPoint(methodMissingBB);
+    std::string message =
+        "Undefined property '" + e->name.getLexeme() + "'.";
+    if (runtimeErrorSilentFn) {
+      auto msgPtr =
+          builder.CreateGlobalStringPtr(message, "missing_property_msg");
+      builder.CreateCall(runtimeErrorSilentFn, {msgPtr});
+    } else {
+      emitRuntimeError(message);
+    }
+    if (emitErrorFn) {
+      builder.CreateCall(emitErrorFn, {});
+    }
     builder.CreateBr(contBB);
     methodMissingBB = builder.GetInsertBlock();
   }
 
   builder.SetInsertPoint(contBB);
-  auto phi = builder.CreatePHI(llvmValueTy(), 3, "get.result");
+  auto phi = builder.CreatePHI(llvmValueTy(), 4, "get.result");
   phi->addIncoming(fieldValue, successEndBB); // ensure success path uses field
   if (methodFoundBB && methodResult) {
     phi->addIncoming(methodResult, methodFoundBB);
   }
   phi->addIncoming(nilConst(), methodMissingBB);
+  phi->addIncoming(nilConst(), errorEndBB);
 
   value = phi;
   checkRuntimeError(value);
