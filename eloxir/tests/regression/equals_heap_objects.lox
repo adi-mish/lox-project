@@ -1,0 +1,39 @@
+class Foo {}
+class Bar {}
+
+print Foo == Foo;
+// expect: true
+print Foo == Bar;
+// expect: false
+var aliasFoo = Foo;
+print Foo == aliasFoo;
+// expect: true
+
+fun makeClosure(value) {
+  fun inner() { return value; }
+  return inner;
+}
+
+var closure = makeClosure("first");
+var sameClosure = closure;
+var differentClosure = makeClosure("second");
+
+print closure == sameClosure;
+// expect: true
+print closure == differentClosure;
+// expect: false
+
+class WithMethod {
+  fun method() {}
+}
+
+var instance = WithMethod();
+var bound = instance.method;
+var sameBound = bound;
+var otherInstance = WithMethod();
+var otherBound = otherInstance.method;
+
+print bound == sameBound;
+// expect: true
+print bound == otherBound;
+// expect: false
