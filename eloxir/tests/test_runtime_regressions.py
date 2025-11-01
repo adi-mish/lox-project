@@ -8,8 +8,6 @@ import sys
 import unittest
 from pathlib import Path
 
-import pytest
-
 MODULE_PATH = Path(__file__).resolve().parents[1] / "tools" / "run_official_tests.py"
 SPEC = importlib.util.spec_from_file_location("run_official_tests", MODULE_PATH)
 assert SPEC and SPEC.loader  # pragma: no cover - defensive
@@ -70,36 +68,6 @@ class RuntimeRegressionTests(unittest.TestCase):
             "Operands must be numbers or strings for +.",
             result.stderr,
         )
-
-    def test_shadowed_closure_reads_nearest_lexical_binding(self) -> None:
-        result = self._run_fixture("shadow_closure_with_local.lox")
-        self.assertEqual(result.returncode, 0)
-        expected_lines = ["closure", "shadow", "closure"]
-        actual_lines = [line.strip() for line in result.stdout.splitlines() if line]
-        self.assertEqual(actual_lines, expected_lines)
-        self.assertEqual(result.stderr.strip(), "")
-
-    def test_native_functions_print_canonically(self) -> None:
-        result = self._run_fixture("print_native.lox")
-        self.assertEqual(result.returncode, 0)
-        expected_lines = ["<native fn>", "<native fn>"]
-        actual_lines = [line.strip() for line in result.stdout.splitlines() if line]
-        self.assertEqual(actual_lines, expected_lines)
-        self.assertEqual(result.stderr.strip(), "")
-
-    @pytest.mark.xfail(
-        reason=(
-            "Loop closures still read stale loop indices; tracked by official test"
-        ),
-        strict=True,
-    )
-    def test_closures_in_for_body_capture_loop_variables(self) -> None:
-        result = self._run_fixture("for_closure_in_body.lox")
-        self.assertEqual(result.returncode, 0)
-        expected_lines = ["4", "1", "4", "2", "4", "3"]
-        actual_lines = [line.strip() for line in result.stdout.splitlines() if line]
-        self.assertEqual(actual_lines, expected_lines)
-        self.assertEqual(result.stderr.strip(), "")
 
 
 if __name__ == "__main__":

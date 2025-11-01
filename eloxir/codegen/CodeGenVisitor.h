@@ -53,7 +53,10 @@ class CodeGenVisitor : public ExprVisitor, public StmtVisitor {
   std::unordered_map<std::string, std::vector<llvm::Value *>> variableStacks;
   std::vector<llvm::Value *> global_local_slots;
   std::unordered_set<llvm::Value *> global_captured_slots;
-  std::vector<uint32_t> loopInstructionCounts;
+  // Track the last allocated stack slot per function so new allocas preserve
+  // lexical order. This keeps pointer ordering consistent with Crafting
+  // Interpreters' stack model for upvalue closing semantics.
+  std::unordered_map<llvm::Function *, llvm::Instruction *> lastAllocaForFunction;
 
   enum class MethodContext { NONE, METHOD, INITIALIZER };
 
@@ -194,6 +197,8 @@ private:
                            bool countAsConstant = false);
   llvm::Value *isFalsy(llvm::Value *v);  // returns i1
   llvm::Value *isTruthy(llvm::Value *v); // returns i1 (= !isFalsy)
+  llvm::AllocaInst *createStackAlloca(llvm::Function *fn, llvm::Type *type,
+                                      const std::string &name);
 
   // New helper methods for proper comparisons
   llvm::Value *valuesEqual(llvm::Value *L, llvm::Value *R); // returns i1
