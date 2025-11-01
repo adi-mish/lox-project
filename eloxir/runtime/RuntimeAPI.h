@@ -41,7 +41,7 @@ using NativeFn = uint64_t (*)(int arg_count, const uint64_t *args);
 struct ObjNative {
   Obj obj;
   NativeFn function;
-  const char *name;
+  const char *name; // Optional; may be null or empty.
 };
 
 struct ObjUpvalue {
