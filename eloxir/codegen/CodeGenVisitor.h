@@ -6,6 +6,7 @@
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/Module.h>
+#include <cstddef>
 #include <cstdint>
 #include <stack>
 #include <string>
@@ -34,7 +35,7 @@ class CodeGenVisitor : public ExprVisitor, public StmtVisitor {
   static constexpr int MAX_LOCAL_SLOTS = 256;
   static constexpr int MAX_USER_LOCAL_SLOTS = MAX_LOCAL_SLOTS - 1;
   static constexpr int MAX_UPVALUES = 256;
-  static constexpr uint32_t MAX_LOOP_INSTRUCTIONS = 65535;
+  static constexpr std::size_t MAX_LOOP_BODY_INSTRUCTIONS = 65535;
 
   // Track block nesting depth to distinguish true globals from block-scoped
   // variables
@@ -185,26 +186,8 @@ public:
   void visitClassStmt(Class *s) override;
 
 private:
-  class LoopInstructionScopeReset {
-  public:
-    explicit LoopInstructionScopeReset(CodeGenVisitor &visitor)
-        : visitor(visitor), savedCounts(visitor.loopInstructionCounts) {
-      visitor.loopInstructionCounts.clear();
-    }
-
-    ~LoopInstructionScopeReset() {
-      visitor.loopInstructionCounts = std::move(savedCounts);
-    }
-
-  private:
-    CodeGenVisitor &visitor;
-    std::vector<uint32_t> savedCounts;
-  };
-
-  void enterLoop();
-  void exitLoop();
-  void addLoopInstructions(uint32_t amount);
-
+  std::size_t estimateLoopBodyInstructions(Stmt *stmt) const;
+  std::size_t saturatingLoopAdd(std::size_t current, std::size_t increment) const;
   llvm::Value *tagOf(llvm::Value *v);
   llvm::Value *isNumber(llvm::Value *v);
   llvm::Value *isString(llvm::Value *v);

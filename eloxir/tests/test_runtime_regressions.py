@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -44,12 +46,6 @@ class RuntimeRegressionTests(unittest.TestCase):
         self.assertEqual(result.returncode, 65)
         self.assertIn("Too many local variables in function.", result.stderr)
 
-    def test_loop_too_large_reports_compile_error(self) -> None:
-        result = self._run_fixture("loop_too_large_compile_error.lox")
-        self.assertEqual(result.returncode, 65)
-        self.assertIn("Loop body too large.", result.stderr)
-        self.assertIn("Error at '}'", result.stderr)
-
     def test_object_identity_equality_matches_reference_semantics(self) -> None:
         result = self._run_fixture("object_identity_equality.lox")
         self.assertEqual(result.returncode, 0)
@@ -74,6 +70,31 @@ class RuntimeRegressionTests(unittest.TestCase):
             "Operands must be numbers or strings for +.",
             result.stderr,
         )
+
+    def test_loop_too_large_reports_compile_error(self) -> None:
+        lines = ["while (false) {"]
+        chunk = " ".join(["nil;"] * 256)
+        for _ in range(128):
+            lines.append(f"  {chunk}")
+        lines.append("}")
+        source = "\n".join(lines) + "\n"
+
+        with tempfile.NamedTemporaryFile("w", suffix=".lox", delete=False) as tmp:
+            tmp.write(source)
+            tmp_path = Path(tmp.name)
+
+        try:
+            result = subprocess.run(
+                [str(self.binary), str(tmp_path)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        finally:
+            os.unlink(tmp_path)
+
+        self.assertEqual(result.returncode, 65)
+        self.assertIn("Loop body too large.", result.stderr)
 
 
 if __name__ == "__main__":

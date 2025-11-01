@@ -198,24 +198,80 @@ CodeGenVisitor::CodeGenVisitor(llvm::Module &m)
   // Built-ins will be initialized when first generating code
 }
 
-void CodeGenVisitor::enterLoop() { loopInstructionCounts.emplace_back(0); }
-
-void CodeGenVisitor::exitLoop() {
-  if (!loopInstructionCounts.empty()) {
-    loopInstructionCounts.pop_back();
+std::size_t CodeGenVisitor::saturatingLoopAdd(std::size_t current,
+                                              std::size_t increment) const {
+  constexpr std::size_t sentinel = MAX_LOOP_BODY_INSTRUCTIONS + 1;
+  if (current >= sentinel) {
+    return sentinel;
   }
+  if (increment >= sentinel) {
+    return sentinel;
+  }
+  if (increment > sentinel - current) {
+    return sentinel;
+  }
+  std::size_t total = current + increment;
+  if (total >= sentinel) {
+    return sentinel;
+  }
+  return total;
 }
 
-void CodeGenVisitor::addLoopInstructions(uint32_t amount) {
-  if (amount == 0 || loopInstructionCounts.empty()) {
-    return;
+std::size_t CodeGenVisitor::estimateLoopBodyInstructions(Stmt *stmt) const {
+  if (!stmt) {
+    return 0;
   }
 
-  auto &currentCount = loopInstructionCounts.back();
-  if (currentCount > MAX_LOOP_INSTRUCTIONS - amount) {
-    throw CompileError("Loop body too large.");
+  if (auto *block = dynamic_cast<Block *>(stmt)) {
+    std::size_t total = 0;
+    for (const auto &inner : block->statements) {
+      total = saturatingLoopAdd(total,
+                                estimateLoopBodyInstructions(inner.get()));
+      if (total > MAX_LOOP_BODY_INSTRUCTIONS) {
+        return total;
+      }
+    }
+    return total;
   }
-  currentCount += amount;
+
+  if (auto *whileStmt = dynamic_cast<While *>(stmt)) {
+    // Roughly approximate the extra jump instructions emitted for a loop by
+    // counting the body plus a small constant for the condition/back-edge.
+    std::size_t body = estimateLoopBodyInstructions(whileStmt->body.get());
+    return saturatingLoopAdd(4, body);
+  }
+
+  if (auto *ifStmt = dynamic_cast<If *>(stmt)) {
+    std::size_t thenCount = estimateLoopBodyInstructions(ifStmt->thenBranch.get());
+    std::size_t elseCount = estimateLoopBodyInstructions(ifStmt->elseBranch.get());
+    return saturatingLoopAdd(1, std::max(thenCount, elseCount));
+  }
+
+  if (dynamic_cast<Expression *>(stmt) != nullptr) {
+    return 2;
+  }
+
+  if (dynamic_cast<Print *>(stmt) != nullptr) {
+    return 2;
+  }
+
+  if (dynamic_cast<Var *>(stmt) != nullptr) {
+    return 2;
+  }
+
+  if (dynamic_cast<Return *>(stmt) != nullptr) {
+    return 2;
+  }
+
+  if (dynamic_cast<Class *>(stmt) != nullptr) {
+    return 4;
+  }
+
+  if (dynamic_cast<Function *>(stmt) != nullptr) {
+    return 4;
+  }
+
+  return 1;
 }
 
 llvm::Type *CodeGenVisitor::llvmValueTy() const {
@@ -1434,6 +1490,11 @@ void CodeGenVisitor::visitIfStmt(If *s) {
 }
 
 void CodeGenVisitor::visitWhileStmt(While *s) {
+  auto estimated = estimateLoopBodyInstructions(s->body.get());
+  if (estimated > MAX_LOOP_BODY_INSTRUCTIONS) {
+    throw CompileError("Loop body too large.");
+  }
+
   auto fn = builder.GetInsertBlock()->getParent();
   auto condBB = llvm::BasicBlock::Create(ctx, "while.cond", fn);
   auto bodyBB = llvm::BasicBlock::Create(ctx, "while.body", fn);
