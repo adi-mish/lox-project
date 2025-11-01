@@ -1847,6 +1847,8 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
 
   function_stack.push(funcCtx);
 
+  LoopInstructionScopeReset loopInstructionReset(*this);
+
   // Generate function body
   try {
     s->body->accept(this);
@@ -1888,6 +1890,7 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
     if (prevBB) {
       builder.SetInsertPoint(prevBB);
     }
+    loopInstructionReset.resume();
     value = nilConst();
     throw;
   }
@@ -1924,6 +1927,8 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
   if (prevBB) {
     builder.SetInsertPoint(prevBB);
   }
+
+  loopInstructionReset.resume();
 
   if (methodContext != MethodContext::NONE) {
     int methodArity = static_cast<int>(totalParamCount);

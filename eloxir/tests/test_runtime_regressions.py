@@ -87,6 +87,14 @@ class RuntimeRegressionTests(unittest.TestCase):
         self.assertEqual(actual_lines, expected_lines)
         self.assertEqual(result.stderr.strip(), "")
 
+    def test_loop_body_too_large_reports_compile_error(self) -> None:
+        result = self._run_fixture("loop_too_large_compile_error.lox")
+        self.assertEqual(result.returncode, 65)
+        diagnostics = "\n".join(
+            part for part in (result.stdout.strip(), result.stderr.strip()) if part
+        )
+        self.assertIn("Loop body too large.", diagnostics)
+
     @pytest.mark.xfail(
         reason=(
             "Loop closures still read stale loop indices; tracked by official test"
