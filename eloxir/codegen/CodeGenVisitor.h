@@ -11,6 +11,7 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace eloxir {
@@ -54,6 +55,31 @@ class CodeGenVisitor : public ExprVisitor, public StmtVisitor {
   std::vector<llvm::Value *> global_local_slots;
   std::unordered_set<llvm::Value *> global_captured_slots;
   std::vector<uint32_t> loopInstructionCounts;
+
+  struct LoopInstructionScopeReset {
+    CodeGenVisitor &visitor;
+    std::vector<uint32_t> savedCounts;
+    bool active;
+
+    explicit LoopInstructionScopeReset(CodeGenVisitor &v)
+        : visitor(v), savedCounts(std::move(v.loopInstructionCounts)),
+          active(true) {
+      visitor.loopInstructionCounts.clear();
+    }
+
+    ~LoopInstructionScopeReset() {
+      if (active) {
+        visitor.loopInstructionCounts = std::move(savedCounts);
+      }
+    }
+
+    void resume() {
+      if (active) {
+        visitor.loopInstructionCounts = std::move(savedCounts);
+        active = false;
+      }
+    }
+  };
 
   enum class MethodContext { NONE, METHOD, INITIALIZER };
 
