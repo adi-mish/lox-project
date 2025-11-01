@@ -4,6 +4,7 @@
 #include "../frontend/CompileError.h"
 #include "../frontend/Scanner.h"
 #include "../jit/EloxirJIT.h"
+#include "../jit/OptimisationPipeline.h"
 #include "../runtime/RuntimeAPI.h"
 #include <fstream>
 #include <iostream>
@@ -19,6 +20,12 @@
 using namespace llvm;
 
 namespace {
+
+orc::ThreadSafeModule
+makeThreadSafeModule(std::unique_ptr<Module> module,
+                     std::unique_ptr<LLVMContext> context) {
+  return orc::ThreadSafeModule(std::move(module), std::move(context));
+}
 
 enum class ExitCode : int {
   kOk = 0,
@@ -398,8 +405,10 @@ int runFile(const std::string &filename) {
     auto jit = cantFail(eloxir::EloxirJIT::Create());
 
     // Create context and module for the entire file
-    LLVMContext fileCtx;
-    auto fileMod = std::make_unique<Module>("file_module", fileCtx);
+    auto fileCtx = std::make_unique<LLVMContext>();
+    auto fileMod = std::make_unique<Module>("file_module", *fileCtx);
+    fileMod->setDataLayout(jit->getDataLayout());
+    fileMod->setTargetTriple(jit->getTargetTriple().str());
     eloxir::CodeGenVisitor fileCG(*fileMod);
 
     // Pass resolver upvalue information to code generator
@@ -411,7 +420,7 @@ int runFile(const std::string &filename) {
     auto fn =
         Function::Create(fnTy, Function::ExternalLinkage, "main", *fileMod);
     fileCG.getBuilder().SetInsertPoint(
-        BasicBlock::Create(fileCtx, "entry", fn));
+        BasicBlock::Create(*fileCtx, "entry", fn));
 
     // Generate code for all statements with two-pass approach for functions
     llvm::Value *lastValue = nullptr;
@@ -449,8 +458,8 @@ int runFile(const std::string &filename) {
     // scope The builder is now outside any function
     fileCG.createGlobalFunctionObjects();
 
-    cantFail(jit->addModule(orc::ThreadSafeModule(
-        std::move(fileMod), std::make_unique<LLVMContext>())));
+    cantFail(jit->addModule(
+        makeThreadSafeModule(std::move(fileMod), std::move(fileCtx))));
 
     // First, run the global initialization function if it exists
     auto initSymOpt = jit->lookup("__global_init");
@@ -539,8 +548,10 @@ void runREPL() {
 
     try {
       // Create a new context and module for each line
-      LLVMContext lineCtx;
-      auto lineMod = std::make_unique<Module>("repl_line", lineCtx);
+      auto lineCtx = std::make_unique<LLVMContext>();
+      auto lineMod = std::make_unique<Module>("repl_line", *lineCtx);
+      lineMod->setDataLayout(jit->getDataLayout());
+      lineMod->setTargetTriple(jit->getTargetTriple().str());
       eloxir::CodeGenVisitor lineCG(*lineMod);
 
       // Pass resolver upvalue information to code generator
@@ -553,7 +564,7 @@ void runREPL() {
       auto fn =
           Function::Create(fnTy, Function::ExternalLinkage, fnName, *lineMod);
       lineCG.getBuilder().SetInsertPoint(
-          BasicBlock::Create(lineCtx, "entry", fn));
+          BasicBlock::Create(*lineCtx, "entry", fn));
 
       // Generate code for the statement/expression
       exprAST->codegen(lineCG);
@@ -565,8 +576,8 @@ void runREPL() {
         continue;
       }
 
-      cantFail(jit->addModule(orc::ThreadSafeModule(
-          std::move(lineMod), std::make_unique<LLVMContext>())));
+      cantFail(jit->addModule(
+          makeThreadSafeModule(std::move(lineMod), std::move(lineCtx))));
 
       auto sym = cantFail(jit->lookup(fnName));
       using FnTy = eloxir::Value (*)();

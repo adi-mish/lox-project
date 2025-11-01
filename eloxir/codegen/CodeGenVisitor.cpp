@@ -48,6 +48,10 @@ CodeGenVisitor::CodeGenVisitor(llvm::Module &m)
       llvm::Type::getInt32Ty(ctx), {llvmValueTy(), llvmValueTy()}, false);
   mod.getOrInsertFunction("elx_strings_equal", strEqualTy);
 
+  llvm::FunctionType *isStringFnTy = llvm::FunctionType::get(
+      llvm::Type::getInt32Ty(ctx), {llvmValueTy()}, false);
+  mod.getOrInsertFunction("elx_value_is_string", isStringFnTy);
+
   // Function functions
   llvm::FunctionType *allocFuncTy = llvm::FunctionType::get(
       llvmValueTy(),
@@ -135,6 +139,13 @@ CodeGenVisitor::CodeGenVisitor(llvm::Module &m)
                               false);
   mod.getOrInsertFunction("elx_get_instance_field", getInstanceFieldTy);
 
+  llvm::FunctionType *tryGetInstanceFieldTy = llvm::FunctionType::get(
+      llvm::Type::getInt32Ty(ctx),
+      {llvmValueTy(), llvmValueTy(),
+       llvm::PointerType::get(llvmValueTy(), 0)},
+      false);
+  mod.getOrInsertFunction("elx_try_get_instance_field", tryGetInstanceFieldTy);
+
   llvm::FunctionType *setInstanceFieldTy = llvm::FunctionType::get(
       llvmValueTy(), {llvmValueTy(), llvmValueTy(), llvmValueTy()}, false);
   mod.getOrInsertFunction("elx_set_instance_field", setInstanceFieldTy);
@@ -191,6 +202,82 @@ CodeGenVisitor::CodeGenVisitor(llvm::Module &m)
   mod.getOrInsertFunction("elx_safe_divide", safeDivideTy);
 
   // Built-ins will be initialized when first generating code
+}
+
+std::size_t CodeGenVisitor::saturatingLoopAdd(std::size_t current,
+                                              std::size_t increment) const {
+  constexpr std::size_t sentinel = MAX_LOOP_BODY_INSTRUCTIONS + 1;
+  if (current >= sentinel) {
+    return sentinel;
+  }
+  if (increment >= sentinel) {
+    return sentinel;
+  }
+  if (increment > sentinel - current) {
+    return sentinel;
+  }
+  std::size_t total = current + increment;
+  if (total >= sentinel) {
+    return sentinel;
+  }
+  return total;
+}
+
+std::size_t CodeGenVisitor::estimateLoopBodyInstructions(Stmt *stmt) const {
+  if (!stmt) {
+    return 0;
+  }
+
+  if (auto *block = dynamic_cast<Block *>(stmt)) {
+    std::size_t total = 0;
+    for (const auto &inner : block->statements) {
+      total = saturatingLoopAdd(total,
+                                estimateLoopBodyInstructions(inner.get()));
+      if (total > MAX_LOOP_BODY_INSTRUCTIONS) {
+        return total;
+      }
+    }
+    return total;
+  }
+
+  if (auto *whileStmt = dynamic_cast<While *>(stmt)) {
+    // Roughly approximate the extra jump instructions emitted for a loop by
+    // counting the body plus a small constant for the condition/back-edge.
+    std::size_t body = estimateLoopBodyInstructions(whileStmt->body.get());
+    return saturatingLoopAdd(4, body);
+  }
+
+  if (auto *ifStmt = dynamic_cast<If *>(stmt)) {
+    std::size_t thenCount = estimateLoopBodyInstructions(ifStmt->thenBranch.get());
+    std::size_t elseCount = estimateLoopBodyInstructions(ifStmt->elseBranch.get());
+    return saturatingLoopAdd(1, std::max(thenCount, elseCount));
+  }
+
+  if (dynamic_cast<Expression *>(stmt) != nullptr) {
+    return 2;
+  }
+
+  if (dynamic_cast<Print *>(stmt) != nullptr) {
+    return 2;
+  }
+
+  if (dynamic_cast<Var *>(stmt) != nullptr) {
+    return 2;
+  }
+
+  if (dynamic_cast<Return *>(stmt) != nullptr) {
+    return 2;
+  }
+
+  if (dynamic_cast<Class *>(stmt) != nullptr) {
+    return 4;
+  }
+
+  if (dynamic_cast<Function *>(stmt) != nullptr) {
+    return 4;
+  }
+
+  return 1;
 }
 
 llvm::Type *CodeGenVisitor::llvmValueTy() const {
@@ -287,11 +374,52 @@ llvm::Value *CodeGenVisitor::makeBool(llvm::Value *i1) {
   return builder.CreateOr(withTag, extended, "bool");
 }
 
+llvm::AllocaInst *CodeGenVisitor::createStackAlloca(llvm::Function *fn,
+                                                    llvm::Type *type,
+                                                    const std::string &name) {
+  auto &entry = fn->getEntryBlock();
+  llvm::IRBuilder<> allocaBuilder(ctx);
+
+  auto lastAllocaIt = lastAllocaForFunction.find(fn);
+  if (lastAllocaIt != lastAllocaForFunction.end() &&
+      lastAllocaIt->second != nullptr) {
+    llvm::Instruction *lastAlloca = lastAllocaIt->second;
+    if (auto *next = lastAlloca->getNextNode()) {
+      allocaBuilder.SetInsertPoint(next);
+    } else {
+      allocaBuilder.SetInsertPoint(&entry, entry.end());
+    }
+  } else {
+    auto firstInsertionPt = entry.getFirstInsertionPt();
+    if (firstInsertionPt == entry.end()) {
+      allocaBuilder.SetInsertPoint(&entry, entry.end());
+    } else {
+      allocaBuilder.SetInsertPoint(&entry, firstInsertionPt);
+    }
+  }
+
+  auto *slot = allocaBuilder.CreateAlloca(type, nullptr, name.c_str());
+  lastAllocaForFunction[fn] = slot;
+  return slot;
+}
+
 llvm::Value *CodeGenVisitor::isString(llvm::Value *v) {
   auto objTag = llvm::ConstantInt::get(llvmValueTy(),
                                        (static_cast<uint64_t>(Tag::OBJ) << 48));
   auto tag = tagOf(v);
-  return builder.CreateICmpEQ(tag, objTag, "isstr");
+  auto isObj = builder.CreateICmpEQ(tag, objTag, "isobj.str");
+
+  auto isStringFn = mod.getFunction("elx_value_is_string");
+  if (!isStringFn) {
+    return builder.getFalse();
+  }
+
+  auto call = builder.CreateCall(isStringFn, {v}, "isstring.call");
+  auto asBool = builder.CreateICmpNE(
+      call, llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0),
+      "isstring.bool");
+
+  return builder.CreateAnd(isObj, asBool, "isstr");
 }
 
 llvm::Value *CodeGenVisitor::stringConst(const std::string &str,
@@ -366,14 +494,28 @@ llvm::Value *CodeGenVisitor::valuesEqual(llvm::Value *L, llvm::Value *R) {
   auto numEqual = builder.CreateFCmpOEQ(Ld, Rd, "numeq");
   builder.CreateBr(contBB);
 
-  // Objects: call string comparison function
+  // Objects: compare strings structurally and other objects by identity
   builder.SetInsertPoint(isObjBB);
-  auto strEqualFn = mod.getFunction("elx_strings_equal");
-  auto objEqual = builder.CreateCall(strEqualFn, {L, R}, "streq");
-  auto objEqualBool = builder.CreateICmpNE(
-      objEqual, llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0),
-      "streqbool");
+  auto stringsBB = llvm::BasicBlock::Create(ctx, "eq.str", fn);
+  auto objPtrBB = llvm::BasicBlock::Create(ctx, "eq.objptr", fn);
+  auto bothStrings = builder.CreateAnd(isString(L), isString(R), "eq.bothstr");
+  builder.CreateCondBr(bothStrings, stringsBB, objPtrBB);
+
+  builder.SetInsertPoint(stringsBB);
+  llvm::Value *stringEqualBool = builder.getFalse();
+  if (auto strEqualFn = mod.getFunction("elx_strings_equal")) {
+    auto strEqual = builder.CreateCall(strEqualFn, {L, R}, "streq");
+    stringEqualBool = builder.CreateICmpNE(
+        strEqual, llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0),
+        "streqbool");
+  }
   builder.CreateBr(contBB);
+  auto stringsResBB = builder.GetInsertBlock();
+
+  builder.SetInsertPoint(objPtrBB);
+  auto objEqualBool = builder.CreateICmpEQ(L, R, "objeq");
+  builder.CreateBr(contBB);
+  auto objPtrResBB = builder.GetInsertBlock();
 
   // For bool/nil, do bitwise comparison
   builder.SetInsertPoint(isBoolOrNilBB);
@@ -382,10 +524,11 @@ llvm::Value *CodeGenVisitor::valuesEqual(llvm::Value *L, llvm::Value *R) {
 
   // Merge results
   builder.SetInsertPoint(contBB);
-  auto phi = builder.CreatePHI(builder.getInt1Ty(), 4, "eq.res");
+  auto phi = builder.CreatePHI(builder.getInt1Ty(), 5, "eq.res");
   phi->addIncoming(builder.getFalse(), diffTypeBB);
   phi->addIncoming(numEqual, isNumBB);
-  phi->addIncoming(objEqualBool, isObjBB);
+  phi->addIncoming(stringEqualBool, stringsResBB);
+  phi->addIncoming(objEqualBool, objPtrResBB);
   phi->addIncoming(bitsEqual, isBoolOrNilBB);
 
   return phi;
@@ -407,7 +550,7 @@ llvm::Value *CodeGenVisitor::checkBothNumbers(llvm::Value *L, llvm::Value *R,
 
   // Error case - generate runtime error instead of trap
   builder.SetInsertPoint(errorBB);
-  emitRuntimeError("Runtime error: Operands must be numbers.");
+  emitRuntimeError("Operands must be numbers.");
   // Don't return here - let the caller handle control flow
 
   return both;
@@ -494,8 +637,7 @@ void CodeGenVisitor::visitBinaryExpr(Binary *e) {
 
     // Type error
     builder.SetInsertPoint(errorBB);
-    emitRuntimeError(
-        "Runtime error: Operands must be numbers or strings for +.");
+    emitRuntimeError("Operands must be numbers or strings for +.");
     auto errorResult = nilConst();
     builder.CreateBr(contBB);
 
@@ -630,8 +772,7 @@ void CodeGenVisitor::visitUnaryExpr(Unary *e) {
     builder.CreateBr(contBB);
 
     builder.SetInsertPoint(slowBB);
-    emitRuntimeError(
-        "Runtime error: Operand must be a number for negation.");
+    emitRuntimeError("Operand must be a number for negation.");
     auto errorResult = nilConst();
     builder.CreateBr(contBB);
 
@@ -656,37 +797,20 @@ void CodeGenVisitor::visitUnaryExpr(Unary *e) {
 void CodeGenVisitor::visitVariableExpr(Variable *e) {
   const std::string &varName = e->name.getLexeme();
 
-  // CRITICAL FIX: Check upvalues FIRST when inside any function
-  // This ensures closures ALWAYS access captured values, not current lexical
-  // bindings
-  if (!function_stack.empty()) {
-    const FunctionContext &current_ctx = function_stack.top();
-    auto upvalue_it = current_ctx.upvalue_indices.find(varName);
-    if (upvalue_it != current_ctx.upvalue_indices.end()) {
-      int upvalue_index = upvalue_it->second;
-      value = accessUpvalue(varName, upvalue_index);
-      return;
-    }
-  }
-
-  // Use variable stacks for lexical scope correctness (for non-upvalue access)
-  // Skip this check if inside a function and the variable is an upvalue
+  // Favour lexical bindings that are currently in scope before consulting any
+  // captured upvalues so that shadowing behaves like the reference
   auto stackIt = variableStacks.find(varName);
   if (stackIt != variableStacks.end() && !stackIt->second.empty()) {
-    // Skip variable stack lookup if we're in a function and this is an upvalue
-    bool skipForUpvalue = !function_stack.empty() && isUpvalue(varName);
-    if (!skipForUpvalue) {
-      // Get the storage that is current in this lexical scope (top of stack)
-      llvm::Value *current_storage = stackIt->second.back();
+    // Get the storage that is current in this lexical scope (top of stack)
+    llvm::Value *current_storage = stackIt->second.back();
 
-      if (directValues.count(varName)) {
-        value = current_storage; // Direct value, no load needed
-      } else {
-        value =
-            builder.CreateLoad(llvmValueTy(), current_storage, varName.c_str());
-      }
-      return;
+    if (directValues.count(varName)) {
+      value = current_storage; // Direct value, no load needed
+    } else {
+      value =
+          builder.CreateLoad(llvmValueTy(), current_storage, varName.c_str());
     }
+    return;
   }
 
   // For global variables, check the persistent global system AFTER local stacks
@@ -710,6 +834,19 @@ void CodeGenVisitor::visitVariableExpr(Variable *e) {
           builder.CreateLoad(llvmValueTy(), currentIt->second, varName.c_str());
     }
     return;
+  }
+
+  // Finally resolve captured variables (upvalues) once no lexical binding is
+  // active. This allows locals declared inside loops to shadow closed-over
+  // variables, matching Crafting Interpreters semantics.
+  if (!function_stack.empty()) {
+    const FunctionContext &current_ctx = function_stack.top();
+    auto upvalue_it = current_ctx.upvalue_indices.find(varName);
+    if (upvalue_it != current_ctx.upvalue_indices.end()) {
+      int upvalue_index = upvalue_it->second;
+      value = accessUpvalue(varName, upvalue_index);
+      return;
+    }
   }
 
   // Fallback to original lookup for variables declared before this system
@@ -763,7 +900,7 @@ void CodeGenVisitor::visitVariableExpr(Variable *e) {
 
       // Function not found - runtime error
       builder.SetInsertPoint(notFoundBB);
-      emitRuntimeError("Runtime error: Undefined function '" + varName + "'.");
+      emitRuntimeError("Undefined function '" + varName + "'.");
       auto notFoundValue = nilConst();
       builder.CreateBr(contBB);
 
@@ -847,8 +984,7 @@ void CodeGenVisitor::visitVariableExpr(Variable *e) {
 
         // Variable not found - runtime error
         builder.SetInsertPoint(notFoundBB);
-        emitRuntimeError("Runtime error: Undefined variable '" + varName +
-                         "'.");
+        emitRuntimeError("Undefined variable '" + varName + "'.");
         auto notFoundValue = nilConst();
         builder.CreateBr(contBB);
 
@@ -866,7 +1002,7 @@ void CodeGenVisitor::visitVariableExpr(Variable *e) {
   }
 
   // Fallback - return nil and print error
-  emitRuntimeError("Runtime error: Undefined variable '" + varName + "'.");
+  emitRuntimeError("Undefined variable '" + varName + "'.");
   value = nilConst();
 }
 
@@ -876,9 +1012,59 @@ void CodeGenVisitor::visitAssignExpr(Assign *e) {
 
   const std::string &varName = e->name.getLexeme();
 
-  // CRITICAL FIX: Check upvalues FIRST when inside a function for assignments
-  // This ensures assignments to captured variables update the captured value
-  if (!function_stack.empty() && isUpvalue(varName)) {
+  // Use variable stacks for lexical scope correctness in assignments first so
+  // locals shadow captured values.
+  auto stackIt = variableStacks.find(varName);
+  if (stackIt != variableStacks.end() && !stackIt->second.empty()) {
+    // Get the storage that is current in this lexical scope (top of stack)
+    llvm::Value *current_storage = stackIt->second.back();
+
+    if (directValues.count(varName)) {
+      // This shouldn't happen for variable stack entries, but handle it by
+      // materialising storage.
+      auto fn = builder.GetInsertBlock()->getParent();
+      auto slot = createStackAlloca(fn, llvmValueTy(), varName);
+      builder.CreateStore(current_storage, slot);
+      stackIt->second.back() = slot; // Update the stack entry
+      directValues.erase(varName);
+      current_storage = slot;
+    }
+
+    builder.CreateStore(assignValue, current_storage);
+    value = assignValue; // Assignment returns the assigned value
+    return;
+  }
+
+  // For global variables AFTER checking local stacks
+  if (globalVariables.count(varName)) {
+    // Update local storage if it exists
+    auto localIt = locals.find(varName);
+    if (localIt != locals.end()) {
+      if (directValues.count(varName)) {
+        // This is a parameter or direct value - we need to create storage for
+        // it
+        auto fn = builder.GetInsertBlock()->getParent();
+        auto slot = createStackAlloca(fn, llvmValueTy(), varName);
+        locals[varName] = slot;
+        directValues.erase(varName);
+      }
+      builder.CreateStore(assignValue, localIt->second);
+    }
+
+    // Always update the persistent global system for global variables
+    auto setGlobalVarFn = mod.getFunction("elx_set_global_variable");
+    if (setGlobalVarFn) {
+      auto nameStr = builder.CreateGlobalStringPtr(varName, "var_name");
+      builder.CreateCall(setGlobalVarFn, {nameStr, assignValue});
+    }
+
+    value = assignValue; // Assignment returns the assigned value
+    return;
+  }
+
+  // Update captured variables only when no lexical binding handled the
+  // assignment.
+  if (!function_stack.empty()) {
     const FunctionContext &current_ctx = function_stack.top();
     auto upvalue_it = current_ctx.upvalue_indices.find(varName);
     if (upvalue_it != current_ctx.upvalue_indices.end()) {
@@ -898,74 +1084,13 @@ void CodeGenVisitor::visitAssignExpr(Assign *e) {
     }
   }
 
-  // CRITICAL FIX: Use variable stacks for lexical scope correctness in
-  // assignments This ensures assignments respect the same scoping as variable
-  // access
-  auto stackIt = variableStacks.find(varName);
-  if (stackIt != variableStacks.end() && !stackIt->second.empty()) {
-    // Skip variable stack lookup if we're in a function and this is an upvalue
-    bool skipForUpvalue = !function_stack.empty() && isUpvalue(varName);
-    if (!skipForUpvalue) {
-      // Get the storage that is current in this lexical scope (top of stack)
-      llvm::Value *current_storage = stackIt->second.back();
-
-      if (directValues.count(varName)) {
-        // This shouldn't happen for variable stack entries, but handle it
-        // Convert to storage-based
-        auto fn = builder.GetInsertBlock()->getParent();
-        auto &entry = fn->getEntryBlock();
-        llvm::IRBuilder<> save(entry.getFirstNonPHI());
-        auto slot = save.CreateAlloca(llvmValueTy(), nullptr, varName.c_str());
-        builder.CreateStore(current_storage, slot);
-        stackIt->second.back() = slot; // Update the stack entry
-        directValues.erase(varName);
-        current_storage = slot;
-      }
-
-      builder.CreateStore(assignValue, current_storage);
-      value = assignValue; // Assignment returns the assigned value
-      return;
-    }
-  }
-
-  // For global variables AFTER checking local stacks
-  if (globalVariables.count(varName)) {
-    // Update local storage if it exists
-    auto localIt = locals.find(varName);
-    if (localIt != locals.end()) {
-      if (directValues.count(varName)) {
-        // This is a parameter or direct value - we need to create storage for
-        // it
-        auto fn = builder.GetInsertBlock()->getParent();
-        auto &entry = fn->getEntryBlock();
-        llvm::IRBuilder<> save(entry.getFirstNonPHI());
-        auto slot = save.CreateAlloca(llvmValueTy(), nullptr, varName.c_str());
-        locals[varName] = slot;
-        directValues.erase(varName);
-      }
-      builder.CreateStore(assignValue, localIt->second);
-    }
-
-    // Always update the persistent global system for global variables
-    auto setGlobalVarFn = mod.getFunction("elx_set_global_variable");
-    if (setGlobalVarFn) {
-      auto nameStr = builder.CreateGlobalStringPtr(varName, "var_name");
-      builder.CreateCall(setGlobalVarFn, {nameStr, assignValue});
-    }
-
-    value = assignValue; // Assignment returns the assigned value
-    return;
-  }
-
   // Check locals for truly local variables - use "_current" binding
   auto currentIt = locals.find(varName + "_current");
   if (currentIt != locals.end()) {
     if (directValues.count(varName)) {
       // This is a parameter or direct value - we need to create storage for it
       auto fn = builder.GetInsertBlock()->getParent();
-      auto &entry = fn->getEntryBlock();
-      llvm::IRBuilder<> save(entry.getFirstNonPHI());
-      auto slot = save.CreateAlloca(llvmValueTy(), nullptr, varName.c_str());
+      auto slot = createStackAlloca(fn, llvmValueTy(), varName);
       locals[varName + "_current"] = slot;
       directValues.erase(varName);
     }
@@ -980,9 +1105,7 @@ void CodeGenVisitor::visitAssignExpr(Assign *e) {
     if (directValues.count(varName)) {
       // This is a parameter or direct value - we need to create storage for it
       auto fn = builder.GetInsertBlock()->getParent();
-      auto &entry = fn->getEntryBlock();
-      llvm::IRBuilder<> save(entry.getFirstNonPHI());
-      auto slot = save.CreateAlloca(llvmValueTy(), nullptr, varName.c_str());
+      auto slot = createStackAlloca(fn, llvmValueTy(), varName);
       locals[varName] = slot;
       directValues.erase(varName);
     }
@@ -1024,7 +1147,7 @@ void CodeGenVisitor::visitAssignExpr(Assign *e) {
 
     // Variable not found - error
     builder.SetInsertPoint(errorBB);
-    emitRuntimeError("Runtime error: Undefined variable '" + varName + "'.");
+    emitRuntimeError("Undefined variable '" + varName + "'.");
     builder.CreateBr(contBB);
 
     // Continuation
@@ -1037,7 +1160,7 @@ void CodeGenVisitor::visitAssignExpr(Assign *e) {
   }
 
   // Variable not found - this is an error in Lox
-  emitRuntimeError("Runtime error: Undefined variable '" + varName + "'.");
+  emitRuntimeError("Undefined variable '" + varName + "'.");
   value = nilConst();
 }
 
@@ -1163,11 +1286,7 @@ void CodeGenVisitor::visitVarStmtWithExecution(Var *s, int blockExecution) {
   if (isGlobal) {
     // For global variables, create an alloca so they can be modified
     auto fn = builder.GetInsertBlock()->getParent();
-    auto &entry = fn->getEntryBlock();
-    auto insertPoint = entry.getFirstNonPHI();
-    llvm::IRBuilder<> save(&entry, insertPoint ? insertPoint->getIterator()
-                                               : entry.begin());
-    auto slot = save.CreateAlloca(llvmValueTy(), nullptr, varName.c_str());
+    auto slot = createStackAlloca(fn, llvmValueTy(), varName);
     builder.CreateStore(initValue, slot);
     locals[varName] = slot;
     // Don't add to directValues since this needs to be loaded
@@ -1183,14 +1302,11 @@ void CodeGenVisitor::visitVarStmtWithExecution(Var *s, int blockExecution) {
     }
   } else {
     // Local variable - create alloca in function entry block
-    auto &entry = fn->getEntryBlock();
-    auto insertPoint = entry.getFirstNonPHI();
-    llvm::IRBuilder<> allocaBuilder(
-        &entry, insertPoint ? insertPoint->getIterator() : entry.begin());
 
     if (!function_stack.empty()) {
       FunctionContext &ctx = function_stack.top();
-      if (ctx.local_slots.size() >= static_cast<size_t>(MAX_LOCAL_SLOTS)) {
+      if (ctx.local_slots.size() >=
+          static_cast<size_t>(MAX_USER_LOCAL_SLOTS)) {
         throw CompileError("Too many local variables in function.");
       }
     }
@@ -1206,7 +1322,7 @@ void CodeGenVisitor::visitVarStmtWithExecution(Var *s, int blockExecution) {
     variableCounter++;
 
     auto slot =
-        allocaBuilder.CreateAlloca(llvmValueTy(), nullptr, allocaName.c_str());
+        createStackAlloca(fn, llvmValueTy(), allocaName);
     builder.CreateStore(initValue, slot);
 
     // Store with the unique key for internal tracking
@@ -1277,6 +1393,9 @@ void CodeGenVisitor::visitBlockStmt(Block *s) {
       // Pass the block execution count to variable declaration
       // This will be used to create unique storage for loop body variables
       visitVarStmtWithExecution(varStmt, currentBlockExecution);
+    } else if (auto funcStmt = dynamic_cast<Function *>(stmt.get())) {
+      blockVariables.push_back(funcStmt->name.getLexeme());
+      stmt->accept(this);
     } else {
       stmt->accept(this);
     }
@@ -1352,6 +1471,11 @@ void CodeGenVisitor::visitIfStmt(If *s) {
 }
 
 void CodeGenVisitor::visitWhileStmt(While *s) {
+  auto estimated = estimateLoopBodyInstructions(s->body.get());
+  if (estimated > MAX_LOOP_BODY_INSTRUCTIONS) {
+    throw CompileError("Loop body too large.");
+  }
+
   auto fn = builder.GetInsertBlock()->getParent();
   auto condBB = llvm::BasicBlock::Create(ctx, "while.cond", fn);
   auto bodyBB = llvm::BasicBlock::Create(ctx, "while.body", fn);
@@ -1425,7 +1549,7 @@ void CodeGenVisitor::declareFunctionSignature(Function *s) {
   functions[mapKey] = llvmFunc;
 
   // Track function for later object creation (methods are handled immediately)
-  if (!isMethod && function_map_key_override.empty()) {
+  if (!isMethod && function_map_key_override.empty() && blockDepth == 0) {
     pendingFunctions.push_back({baseFuncName, arity});
   }
 }
@@ -1555,6 +1679,12 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
 
   ensureParameterLimit(totalParamCount);
 
+  bool nestedFunctionDeclaration =
+      !isMethod && (currentFunction != nullptr || blockDepth > 0);
+  llvm::Value *nestedFunctionSlot = nullptr;
+  bool nestedSlotTrackedInOuterCtx = false;
+  bool nestedSlotTrackedGlobally = false;
+
   // Get upvalues for this function from resolver
   std::vector<std::string> upvalues;
   if (resolver_upvalues &&
@@ -1562,8 +1692,7 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
     upvalues = resolver_upvalues->at(s);
   }
 
-  // Filter out function parameters and the function's own name from upvalues
-  // (resolver bug workaround)
+  // Filter out function parameters from upvalues (resolver bug workaround)
   std::vector<std::string> filtered_upvalues;
   for (const auto &upvalue_name : upvalues) {
     bool is_parameter = false;
@@ -1573,11 +1702,7 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
         break;
       }
     }
-    // Also filter out the function's own name - it should be local, not an
-    // upvalue
-    bool is_self_reference = (upvalue_name == baseFuncName);
-
-    if (!is_parameter && !is_self_reference) {
+    if (!is_parameter) {
       filtered_upvalues.push_back(upvalue_name);
     }
   }
@@ -1657,6 +1782,43 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
   auto prevVariableStacks = variableStacks; // Save variable stacks too
   llvm::BasicBlock *prevBB = builder.GetInsertBlock();
 
+  if (nestedFunctionDeclaration) {
+    llvm::Function *enclosingFn = prevFunction;
+    if (!enclosingFn) {
+      if (prevBB) {
+        enclosingFn = prevBB->getParent();
+      } else if (auto *insertBlock = builder.GetInsertBlock()) {
+        enclosingFn = insertBlock->getParent();
+      }
+    }
+
+    if (enclosingFn) {
+      std::string slotName = baseFuncName + "_func_slot_" +
+                             std::to_string(variableCounter++);
+      nestedFunctionSlot =
+          createStackAlloca(enclosingFn, llvmValueTy(), slotName);
+      builder.CreateStore(nilConst(), nestedFunctionSlot);
+
+      locals[baseFuncName] = nestedFunctionSlot;
+      locals[baseFuncName + "_current"] = nestedFunctionSlot;
+      variableStacks[baseFuncName].push_back(nestedFunctionSlot);
+
+      if (!function_stack.empty()) {
+        FunctionContext &outerCtx = function_stack.top();
+        if (outerCtx.local_slots.size() >=
+            static_cast<size_t>(MAX_USER_LOCAL_SLOTS)) {
+          throw CompileError("Too many local variables in function.");
+        }
+        outerCtx.local_slots.push_back(nestedFunctionSlot);
+        outerCtx.localCount = static_cast<int>(outerCtx.local_slots.size());
+        nestedSlotTrackedInOuterCtx = true;
+      } else {
+        global_local_slots.push_back(nestedFunctionSlot);
+        nestedSlotTrackedGlobally = true;
+      }
+    }
+  }
+
   // Create new function context for closure support but DON'T switch yet
   FunctionContext funcCtx;
   funcCtx.llvm_function = llvmFunc;
@@ -1734,15 +1896,13 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
   // capture locals.
   variableStacks.clear();
 
-  llvm::IRBuilder<> entryAllocaBuilder(entryBB, entryBB->begin());
   std::vector<llvm::Value *> paramSlots;
 
   // Re-add parameters to local scope using stack slots so they can be captured
   argIt = llvmFunc->arg_begin();
   if (isMethod && argIt != llvmFunc->arg_end()) {
     argIt->setName("this");
-    auto thisSlot = entryAllocaBuilder.CreateAlloca(llvmValueTy(), nullptr,
-                                                    "this_param");
+    auto thisSlot = createStackAlloca(llvmFunc, llvmValueTy(), "this_param");
     builder.CreateStore(&*argIt, thisSlot);
     locals["this"] = thisSlot;
     locals["this_current"] = thisSlot;
@@ -1754,8 +1914,7 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
     const std::string &paramName = s->params[i].getLexeme();
     argIt->setName(paramName);
     auto slotName = paramName + "_param";
-    auto slot =
-        entryAllocaBuilder.CreateAlloca(llvmValueTy(), nullptr, slotName.c_str());
+    auto slot = createStackAlloca(llvmFunc, llvmValueTy(), slotName);
     builder.CreateStore(&*argIt, slot);
     locals[paramName] = slot;
     locals[paramName + "_current"] = slot;
@@ -1771,7 +1930,7 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
 
   funcCtx.local_slots = paramSlots;
   funcCtx.localCount = static_cast<int>(paramSlots.size());
-  if (funcCtx.localCount > MAX_LOCAL_SLOTS) {
+  if (funcCtx.localCount > MAX_USER_LOCAL_SLOTS) {
     throw CompileError("Too many local variables in function.");
   }
   funcCtx.method_context = methodContext;
@@ -1819,6 +1978,26 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
     if (prevBB) {
       builder.SetInsertPoint(prevBB);
     }
+    if (nestedFunctionSlot) {
+      if (nestedSlotTrackedInOuterCtx && !function_stack.empty()) {
+        FunctionContext &outerCtx = function_stack.top();
+        auto &slots = outerCtx.local_slots;
+        auto it = std::find(slots.begin(), slots.end(), nestedFunctionSlot);
+        if (it != slots.end()) {
+          slots.erase(it);
+          outerCtx.localCount = static_cast<int>(slots.size());
+        }
+        outerCtx.captured_slots.erase(nestedFunctionSlot);
+      }
+      if (nestedSlotTrackedGlobally) {
+        auto it = std::find(global_local_slots.begin(),
+                            global_local_slots.end(), nestedFunctionSlot);
+        if (it != global_local_slots.end()) {
+          global_local_slots.erase(it);
+        }
+        global_captured_slots.erase(nestedFunctionSlot);
+      }
+    }
     value = nilConst();
     throw;
   }
@@ -1839,6 +2018,26 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
     if (prevBB) {
       builder.SetInsertPoint(prevBB);
     }
+    if (nestedFunctionSlot) {
+      if (nestedSlotTrackedInOuterCtx && !function_stack.empty()) {
+        FunctionContext &outerCtx = function_stack.top();
+        auto &slots = outerCtx.local_slots;
+        auto it = std::find(slots.begin(), slots.end(), nestedFunctionSlot);
+        if (it != slots.end()) {
+          slots.erase(it);
+          outerCtx.localCount = static_cast<int>(slots.size());
+        }
+        outerCtx.captured_slots.erase(nestedFunctionSlot);
+      }
+      if (nestedSlotTrackedGlobally) {
+        auto it = std::find(global_local_slots.begin(),
+                            global_local_slots.end(), nestedFunctionSlot);
+        if (it != global_local_slots.end()) {
+          global_local_slots.erase(it);
+        }
+        global_captured_slots.erase(nestedFunctionSlot);
+      }
+    }
     value = nilConst();
     return;
   }
@@ -1856,6 +2055,12 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
     builder.SetInsertPoint(prevBB);
   }
 
+  if (nestedFunctionSlot) {
+    locals[baseFuncName] = nestedFunctionSlot;
+    locals[baseFuncName + "_current"] = nestedFunctionSlot;
+    variableStacks[baseFuncName].push_back(nestedFunctionSlot);
+  }
+
   if (methodContext != MethodContext::NONE) {
     int methodArity = static_cast<int>(totalParamCount);
     llvm::Value *callable =
@@ -1866,9 +2071,11 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
 
   // Create closure object or function object
   if (upvalues.empty()) {
-    // If we're in a nested context (currentFunction != nullptr after restore),
-    // create function object immediately. Otherwise defer to global creation.
-    if (prevFunction != nullptr) {
+    // Treat declarations inside blocks as local even at top level so they don't
+    // populate the global function table until hoisted explicitly.
+    bool inNestedContext = prevFunction != nullptr || blockDepth > 0;
+
+    if (inNestedContext) {
       // We're in a nested function context - create function object immediately
       auto nameStr = builder.CreateGlobalStringPtr(baseFuncName, "fname");
       auto arityConst = llvm::ConstantInt::get(
@@ -1898,11 +2105,26 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
   // Store the function/closure in locals (function declarations should behave
   // like variable declarations)
   if (value != nilConst()) {
-    // Create an alloca for the function variable
-    auto funcAlloca =
-        builder.CreateAlloca(llvmValueTy(), nullptr, baseFuncName);
-    builder.CreateStore(value, funcAlloca);
-    locals[baseFuncName] = funcAlloca;
+    llvm::Value *targetSlot = nestedFunctionSlot;
+    if (!targetSlot) {
+      auto fn = builder.GetInsertBlock()->getParent();
+      targetSlot = createStackAlloca(fn, llvmValueTy(), baseFuncName);
+      locals[baseFuncName] = targetSlot;
+      locals[baseFuncName + "_current"] = targetSlot;
+      variableStacks[baseFuncName].push_back(targetSlot);
+      if (!function_stack.empty()) {
+        FunctionContext &outerCtx = function_stack.top();
+        if (outerCtx.local_slots.size() >=
+            static_cast<size_t>(MAX_USER_LOCAL_SLOTS)) {
+          throw CompileError("Too many local variables in function.");
+        }
+        outerCtx.local_slots.push_back(targetSlot);
+        outerCtx.localCount = static_cast<int>(outerCtx.local_slots.size());
+      } else {
+        global_local_slots.push_back(targetSlot);
+      }
+    }
+    builder.CreateStore(value, targetSlot);
   }
 }
 void CodeGenVisitor::visitReturnStmt(Return *s) {
@@ -1938,31 +2160,48 @@ void CodeGenVisitor::visitGetExpr(Get *e) {
   e->object->accept(this);
   llvm::Value *objectValue = value;
 
-  auto getFieldFn = mod.getFunction("elx_get_instance_field");
-  auto hasErrorFn = mod.getFunction("elx_has_runtime_error");
-  if (!getFieldFn || !hasErrorFn) {
+  auto tryGetFn = mod.getFunction("elx_try_get_instance_field");
+  if (!tryGetFn) {
     value = nilConst();
     return;
   }
 
   auto nameValue = stringConst(e->name.getLexeme(), true);
-  llvm::Value *fieldValue =
-      builder.CreateCall(getFieldFn, {objectValue, nameValue}, "get_field");
-
-  auto errorFlag =
-      builder.CreateCall(hasErrorFn, {}, "get_field_error");
-  auto errorCond = builder.CreateICmpNE(
-      errorFlag, llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0),
-      "has_field_error");
-
   llvm::Function *fn = builder.GetInsertBlock()->getParent();
-  auto fallbackBB = llvm::BasicBlock::Create(ctx, "get.fallback", fn);
+  auto outPtr = createStackAlloca(fn, llvmValueTy(), "get_field_out");
+  builder.CreateStore(nilConst(), outPtr);
+
+  auto status = builder.CreateCall(tryGetFn,
+                                   {objectValue, nameValue, outPtr},
+                                   "get_field_status");
+
+  auto errorBB = llvm::BasicBlock::Create(ctx, "get.error", fn);
+  auto dispatchBB = llvm::BasicBlock::Create(ctx, "get.dispatch", fn);
   auto successBB = llvm::BasicBlock::Create(ctx, "get.success", fn);
+  auto fallbackBB = llvm::BasicBlock::Create(ctx, "get.fallback", fn);
   auto contBB = llvm::BasicBlock::Create(ctx, "get.cont", fn);
 
-  builder.CreateCondBr(errorCond, fallbackBB, successBB);
+  auto errorCond = builder.CreateICmpEQ(
+      status, llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), -1),
+      "get_field_failed");
+  builder.CreateCondBr(errorCond, errorBB, dispatchBB);
+
+  builder.SetInsertPoint(errorBB);
+  auto emitErrorFn = mod.getFunction("elx_emit_runtime_error");
+  if (emitErrorFn) {
+    builder.CreateCall(emitErrorFn, {});
+  }
+  builder.CreateBr(contBB);
+  llvm::BasicBlock *errorEndBB = builder.GetInsertBlock();
+
+  builder.SetInsertPoint(dispatchBB);
+  auto successCond = builder.CreateICmpEQ(
+      status, llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 1),
+      "get_field_found");
+  builder.CreateCondBr(successCond, successBB, fallbackBB);
 
   builder.SetInsertPoint(successBB);
+  auto fieldValue = builder.CreateLoad(llvmValueTy(), outPtr, "get_field");
   builder.CreateBr(contBB);
   llvm::BasicBlock *successEndBB = builder.GetInsertBlock();
 
@@ -1970,8 +2209,8 @@ void CodeGenVisitor::visitGetExpr(Get *e) {
   auto getClassFn = mod.getFunction("elx_get_instance_class");
   auto findMethodFn = mod.getFunction("elx_class_find_method");
   auto bindMethodFn = mod.getFunction("elx_bind_method");
-  auto clearErrorFn = mod.getFunction("elx_clear_runtime_error");
-  auto emitErrorFn = mod.getFunction("elx_emit_runtime_error");
+  auto runtimeErrorSilentFn = mod.getFunction("elx_runtime_error_silent");
+  emitErrorFn = mod.getFunction("elx_emit_runtime_error");
 
   llvm::BasicBlock *methodFoundBB = nullptr;
   llvm::Value *methodResult = nullptr;
@@ -1982,7 +2221,7 @@ void CodeGenVisitor::visitGetExpr(Get *e) {
       builder.CreateCall(emitErrorFn, {});
     } else {
       std::string message =
-          "Runtime error: Undefined property '" + e->name.getLexeme() + "'.";
+          "Undefined property '" + e->name.getLexeme() + "'.";
       emitRuntimeError(message);
     }
     builder.CreateBr(contBB);
@@ -2001,26 +2240,36 @@ void CodeGenVisitor::visitGetExpr(Get *e) {
     builder.CreateCondBr(methodIsNil, methodMissingBB, methodFoundBB);
 
     builder.SetInsertPoint(methodFoundBB);
-    if (clearErrorFn) {
-      builder.CreateCall(clearErrorFn, {});
-    }
     methodResult = builder.CreateCall(bindMethodFn,
                                       {objectValue, methodValue}, "bound_method");
     builder.CreateBr(contBB);
     methodFoundBB = builder.GetInsertBlock();
 
     builder.SetInsertPoint(methodMissingBB);
+    std::string message =
+        "Undefined property '" + e->name.getLexeme() + "'.";
+    if (runtimeErrorSilentFn) {
+      auto msgPtr =
+          builder.CreateGlobalStringPtr(message, "missing_property_msg");
+      builder.CreateCall(runtimeErrorSilentFn, {msgPtr});
+    } else {
+      emitRuntimeError(message);
+    }
+    if (emitErrorFn) {
+      builder.CreateCall(emitErrorFn, {});
+    }
     builder.CreateBr(contBB);
     methodMissingBB = builder.GetInsertBlock();
   }
 
   builder.SetInsertPoint(contBB);
-  auto phi = builder.CreatePHI(llvmValueTy(), 3, "get.result");
+  auto phi = builder.CreatePHI(llvmValueTy(), 4, "get.result");
   phi->addIncoming(fieldValue, successEndBB); // ensure success path uses field
   if (methodFoundBB && methodResult) {
     phi->addIncoming(methodResult, methodFoundBB);
   }
   phi->addIncoming(nilConst(), methodMissingBB);
+  phi->addIncoming(nilConst(), errorEndBB);
 
   value = phi;
   checkRuntimeError(value);
@@ -2156,14 +2405,16 @@ void CodeGenVisitor::visitClassStmt(Class *s) {
   }
 
   auto makeAllocaInEntry = [&](const std::string &slotName) -> llvm::Value * {
-    if (!enclosingFunction) {
+    llvm::Function *targetFn = enclosingFunction;
+    if (!targetFn) {
+      if (auto *block = builder.GetInsertBlock()) {
+        targetFn = block->getParent();
+      }
+    }
+    if (!targetFn) {
       return builder.CreateAlloca(llvmValueTy(), nullptr, slotName.c_str());
     }
-    auto &entry = enclosingFunction->getEntryBlock();
-    auto insertPoint = entry.getFirstNonPHI();
-    llvm::IRBuilder<> slotBuilder(
-        &entry, insertPoint ? insertPoint->getIterator() : entry.begin());
-    return slotBuilder.CreateAlloca(llvmValueTy(), nullptr, slotName.c_str());
+    return createStackAlloca(targetFn, llvmValueTy(), slotName);
   };
 
   int slotId = variableCounter++;
@@ -2599,13 +2850,8 @@ llvm::Value *CodeGenVisitor::captureUpvalue(const std::string &name) {
     // captured
     auto directValue = slot;
     auto fn = builder.GetInsertBlock()->getParent();
-    auto &entry = fn->getEntryBlock();
-    auto insertPoint = entry.getFirstNonPHI();
-    llvm::IRBuilder<> allocaBuilder(
-        &entry, insertPoint ? insertPoint->getIterator() : entry.begin());
     std::string slotName = name + "_captured" + std::to_string(variableCounter++);
-    auto storage =
-        allocaBuilder.CreateAlloca(llvmValueTy(), nullptr, slotName.c_str());
+    auto storage = createStackAlloca(fn, llvmValueTy(), slotName);
     builder.CreateStore(directValue, storage);
     slot = storage;
 
@@ -2625,7 +2871,8 @@ llvm::Value *CodeGenVisitor::captureUpvalue(const std::string &name) {
       if (it != ctx.local_slots.end()) {
         *it = slot;
       } else {
-        if (ctx.local_slots.size() >= static_cast<size_t>(MAX_LOCAL_SLOTS)) {
+        if (ctx.local_slots.size() >=
+            static_cast<size_t>(MAX_USER_LOCAL_SLOTS)) {
           throw CompileError("Too many local variables in function.");
         }
         ctx.local_slots.push_back(slot);
@@ -2643,7 +2890,8 @@ llvm::Value *CodeGenVisitor::captureUpvalue(const std::string &name) {
         ctx.captured_slots.insert(slot);
         if (std::find(ctx.local_slots.begin(), ctx.local_slots.end(), slot) ==
             ctx.local_slots.end()) {
-          if (ctx.local_slots.size() >= static_cast<size_t>(MAX_LOCAL_SLOTS)) {
+          if (ctx.local_slots.size() >=
+              static_cast<size_t>(MAX_USER_LOCAL_SLOTS)) {
             throw CompileError("Too many local variables in function.");
           }
           ctx.local_slots.push_back(slot);
