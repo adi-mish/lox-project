@@ -44,6 +44,12 @@ class RuntimeRegressionTests(unittest.TestCase):
         self.assertEqual(result.returncode, 65)
         self.assertIn("Too many local variables in function.", result.stderr)
 
+    def test_loop_too_large_reports_compile_error(self) -> None:
+        result = self._run_fixture("loop_too_large_compile_error.lox")
+        self.assertEqual(result.returncode, 65)
+        self.assertIn("Loop body too large.", result.stderr)
+        self.assertIn("Error at '}'", result.stderr)
+
     def test_object_identity_equality_matches_reference_semantics(self) -> None:
         result = self._run_fixture("object_identity_equality.lox")
         self.assertEqual(result.returncode, 0)

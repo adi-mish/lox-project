@@ -40,6 +40,9 @@ class CodeGenVisitor : public ExprVisitor, public StmtVisitor {
   // variables
   int blockDepth = 0;
 
+  // Per-loop instruction accounting to mirror Crafting Interpreters limits.
+  std::vector<uint32_t> loopInstructionCounts;
+
   // Counter for creating unique variable names in loop contexts
   int variableCounter = 0;
 
@@ -182,6 +185,22 @@ public:
   void visitClassStmt(Class *s) override;
 
 private:
+  class LoopInstructionScopeReset {
+  public:
+    explicit LoopInstructionScopeReset(CodeGenVisitor &visitor)
+        : visitor(visitor), savedCounts(visitor.loopInstructionCounts) {
+      visitor.loopInstructionCounts.clear();
+    }
+
+    ~LoopInstructionScopeReset() {
+      visitor.loopInstructionCounts = std::move(savedCounts);
+    }
+
+  private:
+    CodeGenVisitor &visitor;
+    std::vector<uint32_t> savedCounts;
+  };
+
   void enterLoop();
   void exitLoop();
   void addLoopInstructions(uint32_t amount);
