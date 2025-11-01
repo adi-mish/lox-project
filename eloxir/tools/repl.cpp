@@ -4,13 +4,18 @@
 #include "../frontend/CompileError.h"
 #include "../frontend/Scanner.h"
 #include "../jit/EloxirJIT.h"
-#include "../jit/OptimisationPipeline.h"
 #include "../runtime/RuntimeAPI.h"
 #include <fstream>
 #include <iostream>
 #include <llvm/IR/Verifier.h>
+#include <llvm/Analysis/CGSCCPassManager.h>
+#include <llvm/Analysis/FunctionAnalysisManager.h>
+#include <llvm/Analysis/LoopAnalysisManager.h>
+#include <llvm/IR/PassManager.h>
+#include <llvm/Passes/PassBuilder.h>
 #include <llvm/Support/TargetSelect.h>
 #include <llvm/Transforms/Utils/Cloning.h>
+#include "../jit/OptimisationPipeline.h"
 #include <initializer_list>
 #include <memory>
 #include <sstream>
@@ -27,7 +32,24 @@ void submitModuleWithOptimisation(eloxir::EloxirJIT &jit,
   module->setDataLayout(jit.getDataLayout());
   module->setTargetTriple(jit.getTargetTriple().getTriple());
 
-  eloxir::runOptimisationPipeline(*module);
+  if (eloxir::optimisationsEnabled()) {
+    PassBuilder passBuilder;
+    LoopAnalysisManager loopAnalysisManager;
+    FunctionAnalysisManager functionAnalysisManager;
+    CGSCCAnalysisManager cgsccAnalysisManager;
+    ModuleAnalysisManager moduleAnalysisManager;
+
+    passBuilder.registerModuleAnalyses(moduleAnalysisManager);
+    passBuilder.registerCGSCCAnalyses(cgsccAnalysisManager);
+    passBuilder.registerFunctionAnalyses(functionAnalysisManager);
+    passBuilder.registerLoopAnalyses(loopAnalysisManager);
+    passBuilder.crossRegisterProxies(loopAnalysisManager, functionAnalysisManager,
+                                     cgsccAnalysisManager, moduleAnalysisManager);
+
+    ModulePassManager modulePassManager =
+        passBuilder.buildPerModuleDefaultPipeline(OptimizationLevel::O2);
+    modulePassManager.run(*module, moduleAnalysisManager);
+  }
 
   cantFail(jit.addModule(
       orc::ThreadSafeModule(std::move(module), std::move(context))));
