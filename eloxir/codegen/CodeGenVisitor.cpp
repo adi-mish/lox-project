@@ -198,7 +198,7 @@ CodeGenVisitor::CodeGenVisitor(llvm::Module &m)
   // Built-ins will be initialized when first generating code
 }
 
-void CodeGenVisitor::enterLoop() { loopInstructionCounts.push_back(0); }
+void CodeGenVisitor::enterLoop() { loopInstructionCounts.emplace_back(0); }
 
 void CodeGenVisitor::exitLoop() {
   if (!loopInstructionCounts.empty()) {
@@ -211,12 +211,11 @@ void CodeGenVisitor::addLoopInstructions(uint32_t amount) {
     return;
   }
 
-  for (auto &count : loopInstructionCounts) {
-    if (count > MAX_LOOP_INSTRUCTIONS - amount) {
-      throw CompileError("Loop body too large.");
-    }
-    count += amount;
+  auto &currentCount = loopInstructionCounts.back();
+  if (currentCount > MAX_LOOP_INSTRUCTIONS - amount) {
+    throw CompileError("Loop body too large.");
   }
+  currentCount += amount;
 }
 
 llvm::Type *CodeGenVisitor::llvmValueTy() const {
