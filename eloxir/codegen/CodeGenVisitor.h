@@ -6,6 +6,7 @@
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/Module.h>
+#include <cstddef>
 #include <cstdint>
 #include <stack>
 #include <string>
@@ -31,7 +32,9 @@ class CodeGenVisitor : public ExprVisitor, public StmtVisitor {
   static constexpr int MAX_PARAMETERS = 255;
   static constexpr int MAX_CONSTANTS = 256;
   static constexpr int MAX_LOCAL_SLOTS = 256;
+  static constexpr int MAX_USER_LOCAL_SLOTS = MAX_LOCAL_SLOTS - 1;
   static constexpr int MAX_UPVALUES = 256;
+  static constexpr std::size_t MAX_LOOP_BODY_INSTRUCTIONS = 65535;
 
   // Track block nesting depth to distinguish true globals from block-scoped
   // variables
@@ -51,6 +54,10 @@ class CodeGenVisitor : public ExprVisitor, public StmtVisitor {
   std::unordered_map<std::string, std::vector<llvm::Value *>> variableStacks;
   std::vector<llvm::Value *> global_local_slots;
   std::unordered_set<llvm::Value *> global_captured_slots;
+  // Track the last allocated stack slot per function so new allocas preserve
+  // lexical order. This keeps pointer ordering consistent with Crafting
+  // Interpreters' stack model for upvalue closing semantics.
+  std::unordered_map<llvm::Function *, llvm::Instruction *> lastAllocaForFunction;
 
   enum class MethodContext { NONE, METHOD, INITIALIZER };
 
@@ -175,6 +182,8 @@ public:
   void visitClassStmt(Class *s) override;
 
 private:
+  std::size_t estimateLoopBodyInstructions(Stmt *stmt) const;
+  std::size_t saturatingLoopAdd(std::size_t current, std::size_t increment) const;
   llvm::Value *tagOf(llvm::Value *v);
   llvm::Value *isNumber(llvm::Value *v);
   llvm::Value *isString(llvm::Value *v);
@@ -187,6 +196,8 @@ private:
                            bool countAsConstant = false);
   llvm::Value *isFalsy(llvm::Value *v);  // returns i1
   llvm::Value *isTruthy(llvm::Value *v); // returns i1 (= !isFalsy)
+  llvm::AllocaInst *createStackAlloca(llvm::Function *fn, llvm::Type *type,
+                                      const std::string &name);
 
   // New helper methods for proper comparisons
   llvm::Value *valuesEqual(llvm::Value *L, llvm::Value *R); // returns i1

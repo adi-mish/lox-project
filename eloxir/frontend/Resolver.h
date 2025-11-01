@@ -48,6 +48,7 @@ private:
   enum class ClassType { NONE, CLASS, SUBCLASS };
 
   static constexpr int MAX_LOCAL_SLOTS = 256;
+  static constexpr int MAX_USER_LOCAL_SLOTS = MAX_LOCAL_SLOTS - 1;
   static constexpr int MAX_UPVALUES = 256;
 
   struct FunctionInfo {

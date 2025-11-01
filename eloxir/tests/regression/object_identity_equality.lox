@@ -1,0 +1,23 @@
+class Foo {
+  method() {}
+}
+class Bar {}
+
+print Foo == Foo; // expect: true
+print Foo == Bar; // expect: false
+print Bar == Foo; // expect: false
+print Foo == nil; // expect: false
+
+var foo = Foo();
+var fooMethod = foo.method;
+print fooMethod == fooMethod; // expect: true
+print foo.method == foo.method; // expect: false
+
+fun makeClosure() {
+  fun inner() {}
+  return inner;
+}
+
+var closure = makeClosure();
+print closure == closure; // expect: true
+print closure == makeClosure(); // expect: false

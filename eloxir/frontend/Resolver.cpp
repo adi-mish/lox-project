@@ -30,7 +30,7 @@ void Resolver::declare(const Token &name) {
 
   if (!function_stack.empty()) {
     FunctionInfo &info = function_stack.top();
-    if (info.localCount >= MAX_LOCAL_SLOTS) {
+    if (info.localCount >= MAX_USER_LOCAL_SLOTS) {
       throw CompileError("Too many local variables in function.");
     }
     info.localCount++;
