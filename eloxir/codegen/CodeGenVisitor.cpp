@@ -1,5 +1,6 @@
 #include "CodeGenVisitor.h"
 #include "../frontend/CompileError.h"
+#include "../runtime/RuntimeAPI.h"
 #include "../runtime/Value.h"
 #include <algorithm>
 #include <cstdint>
@@ -584,8 +585,6 @@ void CodeGenVisitor::visitBinaryExpr(Binary *e) {
   if (e->op.getType() == TokenType::PLUS) {
     auto bothAreNumbers =
         builder.CreateAnd(isNumber(L), isNumber(R), "bothnum");
-    auto bothAreObjects =
-        builder.CreateAnd(isString(L), isString(R), "bothstr");
 
     auto isNumAddBB = llvm::BasicBlock::Create(ctx, "plus.numadd", fn);
     auto isStrConcatBB = llvm::BasicBlock::Create(ctx, "plus.strconcat", fn);
@@ -593,12 +592,21 @@ void CodeGenVisitor::visitBinaryExpr(Binary *e) {
     auto contBB = llvm::BasicBlock::Create(ctx, "plus.cont", fn);
 
     // Check if both are numbers first
-    auto checkStrBB = llvm::BasicBlock::Create(ctx, "plus.checkstr", fn);
-    builder.CreateCondBr(bothAreNumbers, isNumAddBB, checkStrBB);
+    auto checkStrLeftBB =
+        llvm::BasicBlock::Create(ctx, "plus.checkstr.left", fn);
+    auto checkStrRightBB =
+        llvm::BasicBlock::Create(ctx, "plus.checkstr.right", fn);
+    builder.CreateCondBr(bothAreNumbers, isNumAddBB, checkStrLeftBB);
 
-    // Check if both are strings
-    builder.SetInsertPoint(checkStrBB);
-    builder.CreateCondBr(bothAreObjects, isStrConcatBB, errorBB);
+    // Validate left operand is a string object
+    builder.SetInsertPoint(checkStrLeftBB);
+    auto leftIsString = isString(L);
+    builder.CreateCondBr(leftIsString, checkStrRightBB, errorBB);
+
+    // Validate right operand is a string object
+    builder.SetInsertPoint(checkStrRightBB);
+    auto rightIsString = isString(R);
+    builder.CreateCondBr(rightIsString, isStrConcatBB, errorBB);
 
     // Number addition
     builder.SetInsertPoint(isNumAddBB);
@@ -814,11 +822,12 @@ void CodeGenVisitor::visitVariableExpr(Variable *e) {
       value = builder.CreateCall(getGlobalVarFn, {nameStr}, "global_var");
       return;
     }
+    return;
   }
 
   // Fall back to "_current" binding for variables not using the stack system
   auto currentIt = locals.find(varName + "_current");
-  if (currentIt != locals.end()) {
+  if (!captured && currentIt != locals.end()) {
     // Check if this is a direct value (like a parameter) or needs to be loaded
     if (directValues.count(varName)) {
       value = currentIt->second; // Direct value, no load needed
@@ -844,7 +853,7 @@ void CodeGenVisitor::visitVariableExpr(Variable *e) {
 
   // Fallback to original lookup for variables declared before this system
   auto it = locals.find(varName);
-  if (it != locals.end()) {
+  if (!captured && it != locals.end()) {
     // Check if this is a direct value (like a parameter) or needs to be loaded
     if (directValues.count(varName)) {
       value = it->second; // Direct value, no load needed
@@ -852,6 +861,27 @@ void CodeGenVisitor::visitVariableExpr(Variable *e) {
       value = builder.CreateLoad(llvmValueTy(), it->second, varName.c_str());
     }
     return;
+  }
+
+  // If no lexical binding exists, captured upvalues are the next choice.
+  if (!function_stack.empty()) {
+    const FunctionContext &current_ctx = function_stack.top();
+    auto upvalue_it = current_ctx.upvalue_indices.find(varName);
+    if (upvalue_it != current_ctx.upvalue_indices.end()) {
+      int upvalue_index = upvalue_it->second;
+      value = accessUpvalue(varName, upvalue_index);
+      return;
+    }
+  }
+
+  // For global variables, check the persistent global system after locals.
+  if (globalVariables.count(varName)) {
+    auto getGlobalVarFn = mod.getFunction("elx_get_global_variable");
+    if (getGlobalVarFn) {
+      auto nameStr = builder.CreateGlobalStringPtr(varName, "var_name");
+      value = builder.CreateCall(getGlobalVarFn, {nameStr}, "global_var");
+      return;
+    }
   }
 
   // Check globals (current module scope)
@@ -1030,21 +1060,18 @@ void CodeGenVisitor::visitAssignExpr(Assign *e) {
 
   // For global variables AFTER checking local stacks
   if (globalVariables.count(varName)) {
-    // Update local storage if it exists
     auto localIt = locals.find(varName);
     if (localIt != locals.end()) {
       if (directValues.count(varName)) {
-        // This is a parameter or direct value - we need to create storage for
-        // it
         auto fn = builder.GetInsertBlock()->getParent();
         auto slot = createStackAlloca(fn, llvmValueTy(), varName);
         locals[varName] = slot;
         directValues.erase(varName);
+        localIt->second = slot;
       }
       builder.CreateStore(assignValue, localIt->second);
     }
 
-    // Always update the persistent global system for global variables
     auto setGlobalVarFn = mod.getFunction("elx_set_global_variable");
     if (setGlobalVarFn) {
       auto nameStr = builder.CreateGlobalStringPtr(varName, "var_name");
@@ -1107,16 +1134,13 @@ void CodeGenVisitor::visitAssignExpr(Assign *e) {
     return;
   }
 
-  // Check if it's a global variable (current module)
   auto globalIt = globals.find(varName);
   if (globalIt != globals.end()) {
-    // For globals, we update the globals map
     globals[varName] = assignValue;
     value = assignValue;
     return;
   }
 
-  // Check if it's a global variable (persistent across REPL lines)
   auto hasGlobalVarFn = mod.getFunction("elx_has_global_variable");
   auto setGlobalVarFn = mod.getFunction("elx_set_global_variable");
   if (hasGlobalVarFn && setGlobalVarFn) {
@@ -1133,17 +1157,14 @@ void CodeGenVisitor::visitAssignExpr(Assign *e) {
 
     builder.CreateCondBr(hasVarBool, assignGlobalBB, errorBB);
 
-    // Assign to global variable
     builder.SetInsertPoint(assignGlobalBB);
     builder.CreateCall(setGlobalVarFn, {nameStr, assignValue});
     builder.CreateBr(contBB);
 
-    // Variable not found - error
     builder.SetInsertPoint(errorBB);
     emitRuntimeError("Undefined variable '" + varName + "'.");
     builder.CreateBr(contBB);
 
-    // Continuation
     builder.SetInsertPoint(contBB);
     auto phi = builder.CreatePHI(llvmValueTy(), 2, "assign_result");
     phi->addIncoming(assignValue, assignGlobalBB);
@@ -1246,12 +1267,14 @@ void CodeGenVisitor::visitCallExpr(Call *e) {
 // --------- Stmt visitors -------------------------------------------------
 void CodeGenVisitor::visitExpressionStmt(Expression *s) {
   s->expression->accept(this);
+  addLoopInstructions(2);
 }
 
 void CodeGenVisitor::visitPrintStmt(Print *s) {
   s->expression->accept(this);
   llvm::Function *printFn = mod.getFunction("elx_print");
   builder.CreateCall(printFn, {value});
+  addLoopInstructions(2);
 }
 
 void CodeGenVisitor::visitVarStmt(Var *s) {
@@ -1342,6 +1365,8 @@ void CodeGenVisitor::visitVarStmtWithExecution(Var *s, int blockExecution) {
 
     // Don't add to directValues since this needs to be loaded
   }
+
+  addLoopInstructions(2);
 }
 
 void CodeGenVisitor::visitBlockStmt(Block *s) {
@@ -1426,6 +1451,7 @@ void CodeGenVisitor::visitBlockStmt(Block *s) {
 void CodeGenVisitor::visitIfStmt(If *s) {
   s->condition->accept(this);
   llvm::Value *cond = value;
+  addLoopInstructions(1);
 
   auto fn = builder.GetInsertBlock()->getParent();
   auto thenBB = llvm::BasicBlock::Create(ctx, "if.then", fn);
@@ -1437,6 +1463,7 @@ void CodeGenVisitor::visitIfStmt(If *s) {
   // Convert condition to boolean
   auto condI1 = isTruthy(cond);
   builder.CreateCondBr(condI1, thenBB, elseBB);
+  addLoopInstructions(1);
 
   // Generate then branch
   builder.SetInsertPoint(thenBB);
@@ -1444,6 +1471,7 @@ void CodeGenVisitor::visitIfStmt(If *s) {
   // Only create branch if block doesn't already have a terminator
   if (!builder.GetInsertBlock()->getTerminator()) {
     builder.CreateBr(mergeBB);
+    addLoopInstructions(1);
   }
 
   // Generate else branch
@@ -1454,6 +1482,7 @@ void CodeGenVisitor::visitIfStmt(If *s) {
   // Only create branch if block doesn't already have a terminator
   if (!builder.GetInsertBlock()->getTerminator()) {
     builder.CreateBr(mergeBB);
+    addLoopInstructions(1);
   }
 
   builder.SetInsertPoint(mergeBB);
@@ -1472,23 +1501,32 @@ void CodeGenVisitor::visitWhileStmt(While *s) {
   auto endBB = llvm::BasicBlock::Create(ctx, "while.end", fn);
 
   builder.CreateBr(condBB);
+  enterLoop();
+  try {
+    builder.SetInsertPoint(condBB);
+    s->condition->accept(this);
+    llvm::Value *cond = value;
+    addLoopInstructions(1);
 
-  builder.SetInsertPoint(condBB);
-  s->condition->accept(this);
-  llvm::Value *cond = value;
+    // Use the simplified truthiness check
+    auto condI1 = isTruthy(cond);
+    builder.CreateCondBr(condI1, bodyBB, endBB);
+    addLoopInstructions(1);
 
-  // Use the simplified truthiness check
-  auto condI1 = isTruthy(cond);
-  builder.CreateCondBr(condI1, bodyBB, endBB);
+    builder.SetInsertPoint(bodyBB);
+    s->body->accept(this);
+    // Only create branch if block doesn't already have a terminator
+    if (!builder.GetInsertBlock()->getTerminator()) {
+      builder.CreateBr(condBB);
+      addLoopInstructions(1);
+    }
 
-  builder.SetInsertPoint(bodyBB);
-  s->body->accept(this);
-  // Only create branch if block doesn't already have a terminator
-  if (!builder.GetInsertBlock()->getTerminator()) {
-    builder.CreateBr(condBB);
+    builder.SetInsertPoint(endBB);
+  } catch (...) {
+    exitLoop();
+    throw;
   }
-
-  builder.SetInsertPoint(endBB);
+  exitLoop();
   value = nilConst();
 }
 
@@ -1654,6 +1692,7 @@ void CodeGenVisitor::createGlobalFunctionObjects() {
 
 void CodeGenVisitor::visitFunctionStmt(Function *s) {
   const std::string &baseFuncName = s->name.getLexeme();
+  addLoopInstructions(1);
 
   MethodContext methodContext = method_context_override;
   method_context_override = MethodContext::NONE;
@@ -1889,6 +1928,8 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
 
   function_stack.push(funcCtx);
 
+  LoopInstructionScopeReset loopInstructionReset(*this);
+
   // Generate function body
   try {
     s->body->accept(this);
@@ -1930,6 +1971,7 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
     if (prevBB) {
       builder.SetInsertPoint(prevBB);
     }
+    loopInstructionReset.resume();
     value = nilConst();
     throw;
   }
@@ -1966,6 +2008,8 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
   if (prevBB) {
     builder.SetInsertPoint(prevBB);
   }
+
+  loopInstructionReset.resume();
 
   if (methodContext != MethodContext::NONE) {
     int methodArity = static_cast<int>(totalParamCount);
@@ -2043,6 +2087,7 @@ void CodeGenVisitor::visitReturnStmt(Return *s) {
   closeAllCapturedLocals();
   builder.CreateRet(returnValue);
   value = returnValue;
+  addLoopInstructions(1);
 }
 
 void CodeGenVisitor::visitGetExpr(Get *e) {
@@ -2241,6 +2286,7 @@ void CodeGenVisitor::visitSuperExpr(Super *e) {
 
 void CodeGenVisitor::visitClassStmt(Class *s) {
   const std::string className = s->name.getLexeme();
+  addLoopInstructions(1);
 
   auto currentBlock = builder.GetInsertBlock();
   llvm::Function *enclosingFunction =
