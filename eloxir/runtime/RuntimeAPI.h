@@ -16,7 +16,8 @@ enum class ObjType {
   UPVALUE,
   CLASS,
   INSTANCE,
-  BOUND_METHOD
+  BOUND_METHOD,
+  NATIVE
 };
 
 struct Obj {
@@ -77,6 +78,15 @@ struct ObjBoundMethod {
   uint64_t method;
 };
 
+using NativeFn = uint64_t (*)(uint64_t *args, int arg_count);
+
+struct ObjNative {
+  Obj obj;
+  NativeFn function;
+  const char *name;
+  int arity;
+};
+
 } // namespace eloxir
 
 extern "C" {
@@ -103,6 +113,9 @@ uint64_t elx_allocate_native(const char *name, eloxir::NativeFn function);
 uint64_t elx_call_function(uint64_t func_bits, uint64_t *args, int arg_count);
 uint64_t elx_call_value(uint64_t callee_bits, uint64_t *args, int arg_count);
 int elx_is_function(uint64_t value_bits);
+uint64_t elx_allocate_native(const char *name, int arity,
+                             eloxir::NativeFn function);
+uint64_t elx_call_native(uint64_t native_bits, uint64_t *args, int arg_count);
 
 // Closure and upvalue functions
 uint64_t elx_allocate_upvalue(uint64_t *slot);
