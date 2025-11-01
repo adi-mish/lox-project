@@ -129,16 +129,22 @@ def parse_expectations(path: Path) -> TestExpectations:
         if comment_start == -1:
             continue
         comment = raw_line[comment_start:].strip()
-        normalized_comment = re.sub(r"^(//)+", "//", comment)
 
-        if normalized_comment.startswith("// expect:"):
-            expected_output.append(
-                normalized_comment.split("// expect:", 1)[1].strip()
-            )
+        expect_match = re.match(
+            r"^//(?:\s*//)*\s*expect:\s*(.*)$", comment, re.IGNORECASE
+        )
+        if expect_match:
+            expected_output.append(expect_match.group(1).strip())
             saw_expect_line = True
-        elif normalized_comment.lower().startswith("// expect runtime error"):
+            continue
+
+        runtime_error_match = re.match(
+            r"^//(?:\s*//)*\s*expect runtime error", comment, re.IGNORECASE
+        )
+        if runtime_error_match:
             saw_runtime_error = True
-        elif comment.startswith("// [line") and "Error" in comment:
+            continue
+        if comment.startswith("// [line") and "Error" in comment:
             saw_parse_error = True
         elif comment.startswith("// Error"):
             saw_parse_error = True

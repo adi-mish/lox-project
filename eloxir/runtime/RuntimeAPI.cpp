@@ -212,6 +212,23 @@ static ObjBoundMethod *getBoundMethod(Value v) {
   return bound;
 }
 
+static ObjNative *getNative(Value v) {
+  if (!v.isObj())
+    return nullptr;
+
+  void *obj_ptr = v.asObj();
+  if (obj_ptr == nullptr)
+    return nullptr;
+
+  if (allocated_objects.find(obj_ptr) == allocated_objects.end())
+    return nullptr;
+
+  ObjNative *native = static_cast<ObjNative *>(obj_ptr);
+  if (native->obj.type != ObjType::NATIVE)
+    return nullptr;
+  return native;
+}
+
 static uint64_t findMethodOnClass(ObjClass *klass, const std::string &name);
 
 static bool extractStringKey(uint64_t string_bits, std::string &out) {
@@ -234,6 +251,9 @@ static void destroyObject(Obj *obj) {
     break;
   case ObjType::BOUND_METHOD:
     delete reinterpret_cast<ObjBoundMethod *>(obj);
+    break;
+  case ObjType::NATIVE:
+    delete reinterpret_cast<ObjNative *>(obj);
     break;
   default:
     free(obj);
@@ -328,6 +348,10 @@ uint64_t elx_print(uint64_t bits) {
         }
       }
       std::cout << "<bound method>";
+      break;
+    }
+    case ObjType::NATIVE: {
+      std::cout << "<native fn>";
       break;
     }
     default:
@@ -476,6 +500,12 @@ int elx_strings_equal(uint64_t a_bits, uint64_t b_bits) {
     return 0;
 
   return std::memcmp(str_a->chars, str_b->chars, str_a->length) == 0 ? 1 : 0;
+}
+
+int elx_value_is_string(uint64_t value_bits) {
+  Value value = Value::fromBits(value_bits);
+  ObjString *string_obj = getStringObject(value);
+  return string_obj != nullptr ? 1 : 0;
 }
 
 uint64_t elx_allocate_function(const char *name, int arity,
@@ -694,6 +724,57 @@ uint64_t elx_call_function(uint64_t func_bits, uint64_t *args, int arg_count) {
   }
 }
 
+uint64_t elx_allocate_native(const char *name, int arity, NativeFn function) {
+  if (!function) {
+    return Value::nil().getBits();
+  }
+
+  ObjNative *native = new ObjNative();
+  native->obj.type = ObjType::NATIVE;
+  native->function = function;
+  native->name = name;
+  native->arity = arity;
+
+  allocated_objects.insert(native);
+  return Value::object(native).getBits();
+}
+
+uint64_t elx_call_native(uint64_t native_bits, uint64_t *args, int arg_count) {
+  elx_clear_runtime_error();
+
+  Value native_val = Value::fromBits(native_bits);
+  ObjNative *native = getNative(native_val);
+  if (!native || !native->function) {
+    elx_runtime_error("Can only call functions and classes.");
+    return Value::nil().getBits();
+  }
+
+  if (native->arity >= 0 && arg_count != native->arity) {
+    const char *name = native->name ? native->name : "<native fn>";
+    std::string error_msg = formatArityError(name, native->arity, arg_count);
+    elx_runtime_error(error_msg.c_str());
+    return Value::nil().getBits();
+  }
+
+  CallDepthGuard depth_guard;
+  if (!depth_guard.entered()) {
+    elx_runtime_error("Stack overflow.");
+    return Value::nil().getBits();
+  }
+
+  try {
+    return native->function(args, arg_count);
+  } catch (const std::exception &e) {
+    std::string error_msg =
+        "Exception during native call: " + std::string(e.what());
+    elx_runtime_error(error_msg.c_str());
+    return Value::nil().getBits();
+  } catch (...) {
+    elx_runtime_error("Unknown exception during native call.");
+    return Value::nil().getBits();
+  }
+}
+
 uint64_t elx_call_value(uint64_t callee_bits, uint64_t *args, int arg_count) {
   // Start each call without a pending runtime error.
   elx_clear_runtime_error();
@@ -717,6 +798,8 @@ uint64_t elx_call_value(uint64_t callee_bits, uint64_t *args, int arg_count) {
     return elx_call_function(callee_bits, args, arg_count);
   case ObjType::CLOSURE:
     return elx_call_closure(callee_bits, args, arg_count);
+  case ObjType::NATIVE:
+    return elx_call_native(callee_bits, args, arg_count);
   case ObjType::CLASS: {
     ObjClass *klass = static_cast<ObjClass *>(obj_ptr);
 
@@ -1243,7 +1326,11 @@ uint64_t elx_call_closure(uint64_t closure_bits, uint64_t *args,
 int elx_is_function(uint64_t value_bits) {
   Value v = Value::fromBits(value_bits);
   ObjFunction *func = getFunction(v);
-  bool result = func != nullptr;
+  if (func)
+    return 1;
+
+  ObjNative *native = getNative(v);
+  bool result = native != nullptr;
   return result ? 1 : 0;
 }
 
@@ -1267,9 +1354,14 @@ static uint64_t findMethodOnClass(ObjClass *klass, const std::string &name) {
 }
 
 uint64_t elx_validate_superclass(uint64_t superclass_bits) {
+  if (elx_has_runtime_error()) {
+    return Value::nil().getBits();
+  }
+
   Value superclass_val = Value::fromBits(superclass_bits);
   if (superclass_val.isNil()) {
-    return superclass_bits;
+    elx_runtime_error("Superclass must be a class.");
+    return Value::nil().getBits();
   }
 
   ObjClass *superclass = getClass(superclass_val);
@@ -1282,6 +1374,10 @@ uint64_t elx_validate_superclass(uint64_t superclass_bits) {
 }
 
 uint64_t elx_allocate_class(uint64_t name_bits, uint64_t superclass_bits) {
+  if (elx_has_runtime_error()) {
+    return Value::nil().getBits();
+  }
+
   Value name_val = Value::fromBits(name_bits);
   ObjString *name_str = getStringObject(name_val);
   if (!name_str) {
@@ -1473,13 +1569,14 @@ void elx_initialize_global_builtins() {
   }
 
   // Initialize clock function - create the actual function object
-  auto clock_obj =
-      elx_allocate_function("clock", 0, reinterpret_cast<void *>(&elx_clock));
+  auto clock_obj = elx_allocate_native(
+      "clock", 0,
+      [](uint64_t *, int) -> uint64_t { return elx_clock(); });
   global_builtins["clock"] = clock_obj;
 
-  // Initialize readLine function - create the actual function object
-  auto readLine_obj = elx_allocate_function(
-      "readLine", 0, reinterpret_cast<void *>(&elx_readLine));
+  auto readLine_obj = elx_allocate_native(
+      "readLine", 0,
+      [](uint64_t *, int) -> uint64_t { return elx_readLine(); });
   global_builtins["readLine"] = readLine_obj;
 
   global_builtins_initialized = true;
