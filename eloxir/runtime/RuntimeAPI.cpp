@@ -306,8 +306,11 @@ uint64_t elx_print(uint64_t bits) {
     }
     case ObjType::NATIVE: {
       ObjNative *native = static_cast<ObjNative *>(obj_ptr);
-      (void)native; // Name retained for future introspection.
-      std::cout << "<native fn>";
+      if (native && native->name && native->name[0] != '\0') {
+        std::cout << "<native fn " << native->name << ">";
+      } else {
+        std::cout << "<native fn>";
+      }
       break;
     }
     case ObjType::CLOSURE: {
@@ -570,14 +573,33 @@ uint64_t elx_allocate_function(const char *name, int arity,
 }
 
 uint64_t elx_allocate_native(const char *name, NativeFn function) {
-  ObjNative *native = static_cast<ObjNative *>(malloc(sizeof(ObjNative)));
+  size_t name_len = 0;
+  if (name) {
+    const char *p = name;
+    while (*p) {
+      ++name_len;
+      ++p;
+    }
+  }
+
+  size_t size = sizeof(ObjNative) + name_len + 1;
+  ObjNative *native = static_cast<ObjNative *>(malloc(size));
   if (!native) {
     return Value::nil().getBits();
   }
 
   native->obj.type = ObjType::NATIVE;
   native->function = function;
-  native->name = name;
+
+  char *name_storage = reinterpret_cast<char *>(native + 1);
+  if (name && name_len > 0) {
+    std::memcpy(name_storage, name, name_len);
+    name_storage[name_len] = '\0';
+    native->name = name_storage;
+  } else {
+    name_storage[0] = '\0';
+    native->name = nullptr;
+  }
 
   allocated_objects.insert(native);
 
