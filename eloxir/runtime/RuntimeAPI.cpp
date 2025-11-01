@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -31,6 +32,9 @@ static std::string runtime_error_message;
 namespace {
 constexpr int MAX_CALL_DEPTH = 256;
 thread_local int current_call_depth = 0;
+
+constexpr uint64_t SUPERCLASS_VALIDATION_FAILED =
+    std::numeric_limits<uint64_t>::max();
 
 struct CallDepthGuard {
   CallDepthGuard() {
@@ -1362,10 +1366,15 @@ uint64_t elx_validate_superclass(uint64_t superclass_bits) {
   elx_clear_runtime_error();
 
   Value superclass_val = Value::fromBits(superclass_bits);
+  if (superclass_val.isNil()) {
+    elx_runtime_error("Superclass must be a class.");
+    return SUPERCLASS_VALIDATION_FAILED;
+  }
+
   ObjClass *superclass = getClass(superclass_val);
   if (!superclass) {
     elx_runtime_error("Superclass must be a class.");
-    return Value::nil().getBits();
+    return SUPERCLASS_VALIDATION_FAILED;
   }
 
   return superclass_bits;
@@ -1381,16 +1390,16 @@ uint64_t elx_allocate_class(uint64_t name_bits, uint64_t superclass_bits) {
 
   ObjClass *superclass = nullptr;
   Value superclass_val = Value::fromBits(superclass_bits);
-  if (elx_has_runtime_error() && superclass_val.isNil()) {
-    return Value::nil().getBits();
-  }
-  if (!superclass_val.isNil()) {
+  bool should_validate_superclass =
+      !superclass_val.isNil() || elx_has_runtime_error();
+
+  if (should_validate_superclass) {
     uint64_t validated_super_bits = elx_validate_superclass(superclass_bits);
-    Value validated_super_val = Value::fromBits(validated_super_bits);
-    if (elx_has_runtime_error() && validated_super_val.isNil()) {
+    if (validated_super_bits == SUPERCLASS_VALIDATION_FAILED) {
       return Value::nil().getBits();
     }
 
+    Value validated_super_val = Value::fromBits(validated_super_bits);
     superclass = getClass(validated_super_val);
   }
 
