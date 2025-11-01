@@ -1,24 +1,24 @@
 # Eloxir Status Report
 
 ## Build
-- Configured with `cmake .. -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=RelWithDebInfo` under `eloxir/build`, then compiled with `cmake --build .` (current build artifact: `eloxir/build/eloxir`).
+- Configure succeeds with `cmake -S eloxir -B eloxir/build -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=RelWithDebInfo`, but the subsequent `cmake --build eloxir/build` step fails in `RuntimeAPI.cpp` before any executable is produced. The compiler reports hundreds of template and overload errors (e.g. duplicate `ObjType::NATIVE` switch labels, `ObjNative` lacking an `arity` field, and mismatched `NativeFn` signatures) so the build never reaches the link step.【55fb28†L1-L200】
 
 ## Test Matrix
-- `pytest eloxir/tests -q` — **pass** (6 regression fixtures covering runtime and compiler edge cases).【63baea†L1-L3】
-- `python eloxir/tools/run_official_tests.py` — **fails** (258 passed / 7 failed / 265 total).【1e1840†L1-L8】 The failing fixtures are enumerated below with their reproduction commands.
+- `pytest eloxir/tests -q` — **fails** during fixture setup because `eloxir/build/eloxir` is missing after the build failure.【a5c431†L1-L63】
+- `python eloxir/tools/run_official_tests.py` — **fails** immediately with the same missing-binary error, so no language fixtures execute.【c486ab†L1-L2】
 
 ## Outstanding Issues
 
-### 1. Benchmark programs exceed the 10 s harness timeout
-- **Symptoms:** All long-running microbenchmarks (`benchmark/binary_trees.lox`, `instantiation.lox`, `invocation.lox`, `properties.lox`, `string_equality.lox`, `trees.lox`, `zoo_batch.lox`) exit via the harness timeout instead of producing output.【edf082†L1-L8】【274784†L1-L61】
-- **Cause:** The generated IR is submitted to ORC without any optimisation passes, so the JIT executes the interpreter-level control flow and allocation paths verbatim; the hot loops overwhelm the 10 s cap.【F:eloxir/tools/repl.cpp†L431-L465】
-- **Repro:** `python eloxir/tools/run_official_tests.py --filter benchmark/*`.
+### 1. Runtime API header regressions block compilation
+- **Symptoms:** `cmake --build eloxir/build` emits type errors for virtually every runtime helper: `allocated_objects.insert(...)` is rejected, native builtins cannot be registered, and switch statements on `ObjType` hit duplicate `case ObjType::NATIVE`.【55fb28†L1-L200】
+- **Root cause:** `RuntimeAPI.h` contains two contradictory declarations of `NativeFn` and `ObjNative`, along with a duplicated `ObjType::NATIVE` enumerator. The first definition exposes a `(int, const uint64_t*)` signature with no arity field, while the second expects `(uint64_t*, int)` plus an `int arity`. Translation units that include only the first definition see an `ObjNative` without `arity`, which causes the compile errors when `RuntimeAPI.cpp` references `native->arity` or passes lambdas with the newer calling convention.【F:eloxir/runtime/RuntimeAPI.h†L11-L88】
+- **Repro:** `cmake --build eloxir/build` from a clean tree.
 
-## Additional Notes
-- Native built-ins now print as `<native fn>` and reject non-zero arities: both `function/print.lox` and the updated runtime allocate `clock`/`readLine` as `ObjNative` values. 【e91df3†L1-L8】【F:eloxir/runtime/RuntimeAPI.cpp†L1572-L1580】【F:eloxir/runtime/RuntimeAPI.cpp†L727-L776】【F:eloxir/runtime/RuntimeAPI.cpp†L353-L355】
-- Class declarations that inherit from `nil` now raise “Superclass must be a class.” thanks to stricter validation and early bailout in `elx_validate_superclass` / `elx_allocate_class`.【80d133†L1-L8】【F:eloxir/runtime/RuntimeAPI.cpp†L1356-L1405】
-- Closure shadowing is now correct: both `closure/shadow_closure_with_local.lox` and `for/closure_in_body.lox` pass after the lexical lookup order fixes in `CodeGenVisitor`.【329ba3†L1-L9】【6b88b5†L1-L6】
-- `for/syntax.lox` also passes with the updated stack-slot handling, confirming that the loop increment executes in the proper order.【a625a1†L1-L9】
-- Loop bodies now enforce the Crafting Interpreters 65 535-instruction ceiling: `visitWhileStmt` estimates per-iteration work and throws `CompileError("Loop body too large.")` when the limit is exceeded, matching both the official fixture and the new regression test.【F:eloxir/codegen/CodeGenVisitor.h†L32-L37】【F:eloxir/codegen/CodeGenVisitor.cpp†L200-L274】【F:eloxir/codegen/CodeGenVisitor.cpp†L1463-L1492】【83b9ea†L1-L8】【def571†L1-L8】
-- Regression coverage for the fixed issues lives in `eloxir/tests/regression/` and is exercised by `pytest` as part of the smoke test suite.【63baea†L1-L3】
+### 2. NaN-boxed pointer handling can abort on valid addresses
+- **Symptoms:** Any heap address whose canonical value exceeds 48 bits triggers `std::abort()` when converted to a `Value`, which would crash the runtime even before hitting the garbage collector. Modern Linux allocators can legitimately hand out such pointers under ASLR.
+- **Root cause:** `Value::object` promises to “use a global pointer table” for wide addresses but never implements it; it simply aborts once the pointer exceeds `0xFFFFFFFFFFFFULL`.【F:eloxir/runtime/Value.h†L31-L53】
+- **Repro:** Build a simple native test harness that allocates an object above the 48-bit threshold (e.g. via ASLR tweaking) and call `Value::object(ptr)`.
+
+### 3. Official benchmark timeout diagnosis blocked pending a successful build
+- **Status:** The historical benchmark timeout issue (lack of ORC optimisation passes) is still suspected, but the current build failure prevents re-running `python eloxir/tools/run_official_tests.py --filter benchmark/*` to confirm or collect fresh logs.【F:eloxir/tools/repl.cpp†L431-L465】 Until the runtime headers compile, the harness cannot execute any benchmarks.
 
