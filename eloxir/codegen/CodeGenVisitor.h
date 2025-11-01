@@ -12,6 +12,7 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace eloxir {
@@ -39,6 +40,9 @@ class CodeGenVisitor : public ExprVisitor, public StmtVisitor {
   // Track block nesting depth to distinguish true globals from block-scoped
   // variables
   int blockDepth = 0;
+
+  // Per-loop instruction accounting to mirror Crafting Interpreters limits.
+  std::vector<uint32_t> loopInstructionCounts;
 
   // Counter for creating unique variable names in loop contexts
   int variableCounter = 0;
