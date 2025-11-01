@@ -1,4 +1,5 @@
 #pragma once
+#include <llvm/TargetParser/Triple.h>
 #include <llvm/ExecutionEngine/Orc/LLJIT.h>
 #include <llvm/ExecutionEngine/Orc/ThreadSafeModule.h>
 #include <llvm/IR/DataLayout.h>

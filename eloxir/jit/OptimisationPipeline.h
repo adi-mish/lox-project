@@ -1,4 +1,10 @@
 #pragma once
+
+#include <algorithm>
+#include <cctype>
+#include <cstdlib>
+#include <string>
+
 #include <llvm/Analysis/CGSCCPassManager.h>
 #include <llvm/Analysis/LoopAnalysisManager.h>
 #include <llvm/ExecutionEngine/Orc/ThreadSafeModule.h>
