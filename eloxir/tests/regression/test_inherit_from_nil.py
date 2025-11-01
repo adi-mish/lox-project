@@ -14,6 +14,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[3]
 ELOXIR_BIN = REPO_ROOT / "eloxir" / "build" / "eloxir"
 OFFICIAL_FIXTURE = REPO_ROOT / "test" / "inheritance" / "inherit_from_nil.lox"
+LOCAL_FIXTURE = Path(__file__).with_name("inherit_from_nil.lox")
 
 
 class InheritFromNilRegressionTests(unittest.TestCase):
@@ -38,6 +39,27 @@ class InheritFromNilRegressionTests(unittest.TestCase):
             msg=(
                 "inheritance/inherit_from_nil.lox should raise a runtime error"
                 " with exit code 70, but the interpreter exited differently."
+            ),
+        )
+
+        diagnostics = "\n".join(part for part in (result.stdout, result.stderr) if part)
+        self.assertIn("Superclass must be a class.", diagnostics)
+
+    def test_regression_fixture_reports_runtime_error(self) -> None:
+        result = subprocess.run(
+            [str(ELOXIR_BIN), str(LOCAL_FIXTURE)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        self.assertEqual(
+            70,
+            result.returncode,
+            msg=(
+                "inherit_from_nil regression fixture should raise a runtime"
+                " error with exit code 70, but the interpreter exited"
+                " differently."
             ),
         )
 
