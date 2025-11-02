@@ -98,6 +98,8 @@ class CodeGenVisitor : public ExprVisitor, public StmtVisitor {
       eloxir::PROPERTY_CACHE_MAX_SIZE;
   llvm::StructType *propertyCacheTy = nullptr;
   std::unordered_map<const Expr *, llvm::GlobalVariable *> propertyCacheGlobals;
+  llvm::StructType *callCacheTy = nullptr;
+  std::unordered_map<const Expr *, llvm::GlobalVariable *> callCacheGlobals;
 
 public:
   CodeGenVisitor(llvm::Module &m);
@@ -195,6 +197,9 @@ private:
   llvm::StructType *getPropertyCacheType();
   llvm::GlobalVariable *getPropertyCacheGlobal(const std::string &prefix,
                                                const Expr *expr);
+  llvm::StructType *getCallCacheType();
+  llvm::GlobalVariable *getCallCacheGlobal(const std::string &prefix,
+                                           const Expr *expr);
   void emitLegacyGetExpr(Get *e, llvm::Value *objectValue,
                          llvm::Value *nameValue);
   void emitLegacySetExpr(Set *e, llvm::Value *objectValue);

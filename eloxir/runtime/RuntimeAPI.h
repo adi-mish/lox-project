@@ -105,6 +105,33 @@ struct PropertyCache {
   uint32_t size;
 };
 
+enum class CallInlineCacheKind : int32_t {
+  EMPTY = 0,
+  FUNCTION = 1,
+  CLOSURE = 2,
+  NATIVE = 3,
+  CLASS = 4,
+  BOUND_METHOD = 5
+};
+
+enum CallInlineCacheFlags : int32_t {
+  CALL_CACHE_FLAG_METHOD_IS_CLOSURE = 1 << 0,
+  CALL_CACHE_FLAG_METHOD_IS_FUNCTION = 1 << 1,
+  CALL_CACHE_FLAG_METHOD_IS_NATIVE = 1 << 2,
+  CALL_CACHE_FLAG_CLASS_HAS_INITIALIZER = 1 << 3
+};
+
+struct CallInlineCache {
+  uint64_t callee_bits;
+  uint64_t method_bits;
+  uint64_t aux_bits;
+  void *target_ptr;
+  int32_t expected_arity;
+  int32_t kind;
+  int32_t flags;
+  int32_t padding;
+};
+
 } // namespace eloxir
 
 extern "C" {
@@ -130,9 +157,35 @@ uint64_t elx_allocate_function(const char *name, int arity,
 uint64_t elx_call_function(uint64_t func_bits, uint64_t *args, int arg_count);
 uint64_t elx_call_value(uint64_t callee_bits, uint64_t *args, int arg_count);
 int elx_is_function(uint64_t value_bits);
+int elx_is_native(uint64_t value_bits);
+int elx_is_class(uint64_t value_bits);
 uint64_t elx_allocate_native(const char *name, int arity,
                              eloxir::NativeFn function);
 uint64_t elx_call_native(uint64_t native_bits, uint64_t *args, int arg_count);
+uint64_t elx_call_function_fast(uint64_t func_bits, uint64_t *args,
+                                int arg_count, void *function_ptr,
+                                int expected_arity);
+uint64_t elx_call_closure_fast(uint64_t closure_bits, uint64_t *args,
+                               int arg_count, void *function_ptr,
+                               int expected_arity);
+uint64_t elx_call_native_fast(uint64_t native_bits, uint64_t *args,
+                              int arg_count, void *function_ptr,
+                              int expected_arity);
+uint64_t elx_call_bound_method_fast(uint64_t bound_bits, uint64_t *args,
+                                    int arg_count, uint64_t method_bits,
+                                    void *function_ptr, int expected_arity,
+                                    uint64_t expected_class_ptr,
+                                    int flags);
+uint64_t elx_call_class_fast(uint64_t class_bits, uint64_t *args,
+                             int arg_count, uint64_t initializer_bits,
+                             void *function_ptr, int expected_arity,
+                             int flags);
+int elx_is_bound_method(uint64_t value_bits);
+int elx_bound_method_matches(uint64_t callee_bits, uint64_t method_bits,
+                             uint64_t expected_class_ptr);
+void elx_call_cache_invalidate(eloxir::CallInlineCache *cache);
+void elx_call_cache_update(eloxir::CallInlineCache *cache,
+                           uint64_t callee_bits);
 
 // Closure and upvalue functions
 uint64_t elx_allocate_upvalue(uint64_t *slot);
