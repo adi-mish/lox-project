@@ -172,6 +172,24 @@ CodeGenVisitor::CodeGenVisitor(llvm::Module &m)
       voidTy, {callCachePtrTy, llvmValueTy()}, false);
   mod.getOrInsertFunction("elx_call_cache_update", callCacheUpdateTy);
 
+#ifdef ELOXIR_ENABLE_CACHE_STATS
+  llvm::FunctionType *propertyHitTy =
+      llvm::FunctionType::get(voidTy, {i32Ty}, false);
+  mod.getOrInsertFunction("elx_cache_stats_record_property_hit", propertyHitTy);
+
+  llvm::FunctionType *propertyMissTy =
+      llvm::FunctionType::get(voidTy, {i32Ty}, false);
+  mod.getOrInsertFunction("elx_cache_stats_record_property_miss", propertyMissTy);
+
+  llvm::FunctionType *callHitTy =
+      llvm::FunctionType::get(voidTy, {i32Ty}, false);
+  mod.getOrInsertFunction("elx_cache_stats_record_call_hit", callHitTy);
+
+  llvm::FunctionType *callMissTy =
+      llvm::FunctionType::get(voidTy, {}, false);
+  mod.getOrInsertFunction("elx_cache_stats_record_call_miss", callMissTy);
+#endif
+
   llvm::FunctionType *isNativeTy =
       llvm::FunctionType::get(i32Ty, {llvmValueTy()}, false);
   mod.getOrInsertFunction("elx_is_function", isNativeTy);
@@ -1511,6 +1529,11 @@ void CodeGenVisitor::visitCallExpr(Call *e) {
       callFunctionFastFn,
       {callee, argArray, argCount, functionTarget, functionExpected},
       "call_function_fast");
+#ifdef ELOXIR_ENABLE_CACHE_STATS
+  if (auto *callHitFn = mod.getFunction("elx_cache_stats_record_call_hit")) {
+    builder.CreateCall(callHitFn, {functionKindConst});
+  }
+#endif
   builder.CreateBr(exitBB);
   results.emplace_back(builder.GetInsertBlock(), functionResult);
 
@@ -1557,6 +1580,11 @@ void CodeGenVisitor::visitCallExpr(Call *e) {
       callClosureFastFn,
       {callee, argArray, argCount, closureTarget, closureExpected},
       "call_closure_fast");
+#ifdef ELOXIR_ENABLE_CACHE_STATS
+  if (auto *callHitFn = mod.getFunction("elx_cache_stats_record_call_hit")) {
+    builder.CreateCall(callHitFn, {closureKindConst});
+  }
+#endif
   builder.CreateBr(exitBB);
   results.emplace_back(builder.GetInsertBlock(), closureResult);
 
@@ -1603,6 +1631,11 @@ void CodeGenVisitor::visitCallExpr(Call *e) {
       callNativeFastFn,
       {callee, argArray, argCount, nativeTarget, nativeExpected},
       "call_native_fast");
+#ifdef ELOXIR_ENABLE_CACHE_STATS
+  if (auto *callHitFn = mod.getFunction("elx_cache_stats_record_call_hit")) {
+    builder.CreateCall(callHitFn, {nativeKindConst});
+  }
+#endif
   builder.CreateBr(exitBB);
   results.emplace_back(builder.GetInsertBlock(), nativeResult);
 
@@ -1666,6 +1699,11 @@ void CodeGenVisitor::visitCallExpr(Call *e) {
       {callee, argArray, argCount, cachedMethod, boundTarget, boundExpected,
        cachedClass, boundFlags},
       "call_bound_fast");
+#ifdef ELOXIR_ENABLE_CACHE_STATS
+  if (auto *callHitFn = mod.getFunction("elx_cache_stats_record_call_hit")) {
+    builder.CreateCall(callHitFn, {boundKindConst});
+  }
+#endif
   builder.CreateBr(exitBB);
   results.emplace_back(builder.GetInsertBlock(), boundResult);
 
@@ -1734,10 +1772,20 @@ void CodeGenVisitor::visitCallExpr(Call *e) {
       {callee, argArray, argCount, classMethodBits, classTarget, classExpected,
        classFlags},
       "call_class_fast");
+#ifdef ELOXIR_ENABLE_CACHE_STATS
+  if (auto *callHitFn = mod.getFunction("elx_cache_stats_record_call_hit")) {
+    builder.CreateCall(callHitFn, {classKindConst});
+  }
+#endif
   builder.CreateBr(exitBB);
   results.emplace_back(builder.GetInsertBlock(), classResult);
 
   builder.SetInsertPoint(slowBB);
+#ifdef ELOXIR_ENABLE_CACHE_STATS
+  if (auto *callMissFn = mod.getFunction("elx_cache_stats_record_call_miss")) {
+    builder.CreateCall(callMissFn, {});
+  }
+#endif
   auto slowResult =
       builder.CreateCall(callValueFn, {callee, argArray, argCount},
                          "call_slow");
@@ -2964,6 +3012,11 @@ void CodeGenVisitor::visitGetExpr(Get *e) {
     builder.SetInsertPoint(hitBB);
     auto cachedValue =
         builder.CreateLoad(llvmValueTy(), fieldPtr, "cached_value");
+#ifdef ELOXIR_ENABLE_CACHE_STATS
+    if (auto *hitFn = mod.getFunction("elx_cache_stats_record_property_hit")) {
+      builder.CreateCall(hitFn, {builder.getInt32(0)});
+    }
+#endif
     builder.CreateBr(contBB);
     phiIncoming.emplace_back(builder.GetInsertBlock(), cachedValue);
 
@@ -3101,6 +3154,11 @@ void CodeGenVisitor::visitSetExpr(Set *e) {
         "presence_elem_ptr");
     builder.CreateStore(assignedValue, fieldPtr);
     builder.CreateStore(builder.getInt8(1), presenceElemPtr);
+#ifdef ELOXIR_ENABLE_CACHE_STATS
+    if (auto *hitFn = mod.getFunction("elx_cache_stats_record_property_hit")) {
+      builder.CreateCall(hitFn, {builder.getInt32(1)});
+    }
+#endif
     builder.CreateBr(valueContBB);
     valuePhi.emplace_back(builder.GetInsertBlock(), assignedValue);
 

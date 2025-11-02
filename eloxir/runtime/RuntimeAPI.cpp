@@ -1,5 +1,6 @@
 #include "RuntimeAPI.h"
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -31,6 +32,55 @@ static bool runtime_error_flag = false;
 static std::string runtime_error_message;
 
 namespace {
+#if defined(ELOXIR_ENABLE_CACHE_STATS)
+struct CacheStatsState {
+  std::atomic<uint64_t> property_get_hits{0};
+  std::atomic<uint64_t> property_get_misses{0};
+  std::atomic<uint64_t> property_get_shape_transitions{0};
+  std::atomic<uint64_t> property_set_hits{0};
+  std::atomic<uint64_t> property_set_misses{0};
+  std::atomic<uint64_t> property_set_shape_transitions{0};
+  std::atomic<uint64_t> call_hits{0};
+  std::atomic<uint64_t> call_misses{0};
+  std::atomic<uint64_t> call_shape_transitions{0};
+
+  void reset() {
+    property_get_hits.store(0, std::memory_order_relaxed);
+    property_get_misses.store(0, std::memory_order_relaxed);
+    property_get_shape_transitions.store(0, std::memory_order_relaxed);
+    property_set_hits.store(0, std::memory_order_relaxed);
+    property_set_misses.store(0, std::memory_order_relaxed);
+    property_set_shape_transitions.store(0, std::memory_order_relaxed);
+    call_hits.store(0, std::memory_order_relaxed);
+    call_misses.store(0, std::memory_order_relaxed);
+    call_shape_transitions.store(0, std::memory_order_relaxed);
+  }
+
+  eloxir::CacheStats snapshot() const {
+    eloxir::CacheStats stats{};
+    stats.property_get_hits = property_get_hits.load(std::memory_order_relaxed);
+    stats.property_get_misses =
+        property_get_misses.load(std::memory_order_relaxed);
+    stats.property_get_shape_transitions =
+        property_get_shape_transitions.load(std::memory_order_relaxed);
+    stats.property_set_hits = property_set_hits.load(std::memory_order_relaxed);
+    stats.property_set_misses =
+        property_set_misses.load(std::memory_order_relaxed);
+    stats.property_set_shape_transitions =
+        property_set_shape_transitions.load(std::memory_order_relaxed);
+    stats.call_hits = call_hits.load(std::memory_order_relaxed);
+    stats.call_misses = call_misses.load(std::memory_order_relaxed);
+    stats.call_shape_transitions =
+        call_shape_transitions.load(std::memory_order_relaxed);
+    return stats;
+  }
+};
+
+static CacheStatsState g_cache_stats;
+#else
+static constexpr eloxir::CacheStats kEmptyCacheStats{};
+#endif
+
 constexpr int MAX_CALL_DEPTH = 256;
 thread_local int current_call_depth = 0;
 
@@ -72,6 +122,90 @@ static std::string formatArityError(const ObjFunction *func, int got) {
   return formatArityError(name, func->arity, got);
 }
 } // namespace
+
+int elx_cache_stats_enabled() {
+#if defined(ELOXIR_ENABLE_CACHE_STATS)
+  return 1;
+#else
+  return 0;
+#endif
+}
+
+void elx_cache_stats_reset() {
+#if defined(ELOXIR_ENABLE_CACHE_STATS)
+  g_cache_stats.reset();
+#endif
+}
+
+CacheStats elx_cache_stats_snapshot() {
+#if defined(ELOXIR_ENABLE_CACHE_STATS)
+  return g_cache_stats.snapshot();
+#else
+  return kEmptyCacheStats;
+#endif
+}
+
+void elx_cache_stats_dump() {
+#if defined(ELOXIR_ENABLE_CACHE_STATS)
+  CacheStats stats = elx_cache_stats_snapshot();
+  std::cout << "CACHE_STATS {\"enabled\": true";
+  std::cout << ", \"property_get_hits\": " << stats.property_get_hits;
+  std::cout << ", \"property_get_misses\": " << stats.property_get_misses;
+  std::cout << ", \"property_get_shape_transitions\": "
+            << stats.property_get_shape_transitions;
+  std::cout << ", \"property_set_hits\": " << stats.property_set_hits;
+  std::cout << ", \"property_set_misses\": " << stats.property_set_misses;
+  std::cout << ", \"property_set_shape_transitions\": "
+            << stats.property_set_shape_transitions;
+  std::cout << ", \"call_hits\": " << stats.call_hits;
+  std::cout << ", \"call_misses\": " << stats.call_misses;
+  std::cout << ", \"call_shape_transitions\": "
+            << stats.call_shape_transitions;
+  std::cout << "}" << std::endl;
+#else
+  std::cout << "CACHE_STATS {\"enabled\": false}" << std::endl;
+#endif
+}
+
+#if defined(ELOXIR_ENABLE_CACHE_STATS)
+void elx_cache_stats_record_property_hit(int is_set) {
+  if (is_set) {
+    g_cache_stats.property_set_hits.fetch_add(1, std::memory_order_relaxed);
+  } else {
+    g_cache_stats.property_get_hits.fetch_add(1, std::memory_order_relaxed);
+  }
+}
+
+void elx_cache_stats_record_property_miss(int is_set) {
+  if (is_set) {
+    g_cache_stats.property_set_misses.fetch_add(1, std::memory_order_relaxed);
+  } else {
+    g_cache_stats.property_get_misses.fetch_add(1, std::memory_order_relaxed);
+  }
+}
+
+void elx_cache_stats_record_property_shape_transition(int is_set) {
+  if (is_set) {
+    g_cache_stats.property_set_shape_transitions.fetch_add(
+        1, std::memory_order_relaxed);
+  } else {
+    g_cache_stats.property_get_shape_transitions.fetch_add(
+        1, std::memory_order_relaxed);
+  }
+}
+
+void elx_cache_stats_record_call_hit(int /*kind*/) {
+  g_cache_stats.call_hits.fetch_add(1, std::memory_order_relaxed);
+}
+
+void elx_cache_stats_record_call_miss() {
+  g_cache_stats.call_misses.fetch_add(1, std::memory_order_relaxed);
+}
+
+void elx_cache_stats_record_call_transition(int /*previous_kind*/, int /*new_kind*/) {
+  g_cache_stats.call_shape_transitions.fetch_add(1, std::memory_order_relaxed);
+}
+#endif
 
 static const char *getString(Value v) {
   if (!v.isObj())
@@ -268,7 +402,8 @@ static void ensureInstanceShape(ObjInstance *instance, ObjShape *target) {
 }
 
 static void propertyCacheUpdate(PropertyCache *cache, ObjShape *shape,
-                                size_t slot, uint32_t capacity) {
+                                size_t slot, uint32_t capacity,
+                                bool is_set_operation) {
   if (!cache || !shape)
     return;
 
@@ -282,8 +417,11 @@ static void propertyCacheUpdate(PropertyCache *cache, ObjShape *shape,
 
   cache->size = std::min<uint32_t>(cache->size, PROPERTY_CACHE_MAX_SIZE);
 
+  bool saw_existing_shape = false;
+
   for (uint32_t i = 0; i < cache->size; ++i) {
     if (cache->entries[i].shape == shape) {
+      saw_existing_shape = true;
       cache->entries[i].slot = slotIndex;
       if (i != 0) {
         PropertyCacheEntry entry = cache->entries[i];
@@ -294,6 +432,12 @@ static void propertyCacheUpdate(PropertyCache *cache, ObjShape *shape,
       }
       return;
     }
+  }
+
+  if (!saw_existing_shape) {
+#if defined(ELOXIR_ENABLE_CACHE_STATS)
+    elx_cache_stats_record_property_shape_transition(is_set_operation ? 1 : 0);
+#endif
   }
 
   if (cache->size < limit) {
@@ -1569,6 +1713,10 @@ void elx_call_cache_update(CallInlineCache *cache, uint64_t callee_bits) {
   if (!cache)
     return;
 
+#if defined(ELOXIR_ENABLE_CACHE_STATS)
+  CallInlineCache previous = *cache;
+#endif
+
   elx_call_cache_invalidate(cache);
 
   Value callee_val = Value::fromBits(callee_bits);
@@ -1580,6 +1728,8 @@ void elx_call_cache_update(CallInlineCache *cache, uint64_t callee_bits) {
     return;
 
   Obj *obj = static_cast<Obj *>(obj_ptr);
+  bool updated = false;
+
   switch (obj->type) {
   case ObjType::FUNCTION: {
     ObjFunction *func = static_cast<ObjFunction *>(obj_ptr);
@@ -1590,6 +1740,7 @@ void elx_call_cache_update(CallInlineCache *cache, uint64_t callee_bits) {
     cache->kind = static_cast<int32_t>(CallInlineCacheKind::FUNCTION);
     cache->target_ptr = func->llvm_function;
     cache->expected_arity = func->arity;
+    updated = true;
     break;
   }
   case ObjType::CLOSURE: {
@@ -1601,6 +1752,7 @@ void elx_call_cache_update(CallInlineCache *cache, uint64_t callee_bits) {
     cache->kind = static_cast<int32_t>(CallInlineCacheKind::CLOSURE);
     cache->target_ptr = closure->function->llvm_function;
     cache->expected_arity = closure->function->arity;
+    updated = true;
     break;
   }
   case ObjType::NATIVE: {
@@ -1612,6 +1764,7 @@ void elx_call_cache_update(CallInlineCache *cache, uint64_t callee_bits) {
     cache->kind = static_cast<int32_t>(CallInlineCacheKind::NATIVE);
     cache->target_ptr = reinterpret_cast<void *>(native->function);
     cache->expected_arity = native->arity;
+    updated = true;
     break;
   }
   case ObjType::BOUND_METHOD: {
@@ -1655,6 +1808,7 @@ void elx_call_cache_update(CallInlineCache *cache, uint64_t callee_bits) {
     cache->expected_arity = (expected_total >= 0)
                                 ? (expected_total > 0 ? expected_total - 1 : 0)
                                 : expected_total;
+    updated = true;
     break;
   }
   case ObjType::CLASS: {
@@ -1704,11 +1858,46 @@ void elx_call_cache_update(CallInlineCache *cache, uint64_t callee_bits) {
     cache->expected_arity = (expected_total >= 0)
                                 ? (expected_total > 0 ? expected_total - 1 : 0)
                                 : expected_total;
+    updated = true;
     break;
   }
   default:
     break;
   }
+
+#if defined(ELOXIR_ENABLE_CACHE_STATS)
+  if (updated) {
+    auto previous_kind = static_cast<CallInlineCacheKind>(previous.kind);
+    auto new_kind = static_cast<CallInlineCacheKind>(cache->kind);
+    bool changed = previous_kind != new_kind;
+
+    if (!changed) {
+      switch (new_kind) {
+      case CallInlineCacheKind::FUNCTION:
+      case CallInlineCacheKind::CLOSURE:
+      case CallInlineCacheKind::NATIVE:
+      case CallInlineCacheKind::CLASS:
+        changed = (previous.callee_bits != cache->callee_bits) ||
+                  (previous.method_bits != cache->method_bits) ||
+                  (previous.aux_bits != cache->aux_bits);
+        break;
+      case CallInlineCacheKind::BOUND_METHOD:
+        changed = (previous.callee_bits != cache->callee_bits) ||
+                  (previous.method_bits != cache->method_bits) ||
+                  (previous.aux_bits != cache->aux_bits);
+        break;
+      case CallInlineCacheKind::EMPTY:
+        changed = false;
+        break;
+      }
+    }
+
+    if (changed) {
+      elx_cache_stats_record_call_transition(static_cast<int>(previous.kind),
+                                             static_cast<int>(cache->kind));
+    }
+  }
+#endif
 }
 
 uint64_t elx_call_function_fast(uint64_t func_bits, uint64_t *args,
@@ -2275,6 +2464,9 @@ uint8_t *elx_instance_field_presence_ptr(uint64_t instance_bits) {
 
 uint64_t elx_get_property_slow(uint64_t instance_bits, uint64_t name_bits,
                                PropertyCache *cache, uint32_t capacity) {
+#if defined(ELOXIR_ENABLE_CACHE_STATS)
+  elx_cache_stats_record_property_miss(0);
+#endif
   Value instance_val = Value::fromBits(instance_bits);
   ObjInstance *instance = getInstance(instance_val);
   if (!instance) {
@@ -2295,7 +2487,7 @@ uint64_t elx_get_property_slow(uint64_t instance_bits, uint64_t name_bits,
       slot < instance->fieldPresence.size() &&
       instance->fieldPresence[slot]) {
     uint64_t result = instance->fieldValues[slot];
-    propertyCacheUpdate(cache, instance->shape, slot, capacity);
+    propertyCacheUpdate(cache, instance->shape, slot, capacity, false);
     return result;
   }
 
@@ -2316,6 +2508,9 @@ uint64_t elx_get_property_slow(uint64_t instance_bits, uint64_t name_bits,
 uint64_t elx_set_property_slow(uint64_t instance_bits, uint64_t name_bits,
                                uint64_t value_bits, PropertyCache *cache,
                                uint32_t capacity) {
+#if defined(ELOXIR_ENABLE_CACHE_STATS)
+  elx_cache_stats_record_property_miss(1);
+#endif
   uint64_t result =
       elx_set_instance_field(instance_bits, name_bits, value_bits);
   if (elx_has_runtime_error())
@@ -2332,7 +2527,7 @@ uint64_t elx_set_property_slow(uint64_t instance_bits, uint64_t name_bits,
 
   size_t slot = 0;
   if (shapeTryGetSlot(instance->shape, field_key, &slot)) {
-    propertyCacheUpdate(cache, instance->shape, slot, capacity);
+    propertyCacheUpdate(cache, instance->shape, slot, capacity, true);
   }
 
   return result;

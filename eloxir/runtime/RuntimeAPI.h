@@ -105,6 +105,18 @@ struct PropertyCache {
   uint32_t size;
 };
 
+struct CacheStats {
+  uint64_t property_get_hits;
+  uint64_t property_get_misses;
+  uint64_t property_get_shape_transitions;
+  uint64_t property_set_hits;
+  uint64_t property_set_misses;
+  uint64_t property_set_shape_transitions;
+  uint64_t call_hits;
+  uint64_t call_misses;
+  uint64_t call_shape_transitions;
+};
+
 enum class CallInlineCacheKind : int32_t {
   EMPTY = 0,
   FUNCTION = 1,
@@ -186,6 +198,20 @@ int elx_bound_method_matches(uint64_t callee_bits, uint64_t method_bits,
 void elx_call_cache_invalidate(eloxir::CallInlineCache *cache);
 void elx_call_cache_update(eloxir::CallInlineCache *cache,
                            uint64_t callee_bits);
+
+int elx_cache_stats_enabled();
+void elx_cache_stats_reset();
+eloxir::CacheStats elx_cache_stats_snapshot();
+void elx_cache_stats_dump();
+
+#if defined(ELOXIR_ENABLE_CACHE_STATS)
+void elx_cache_stats_record_property_hit(int is_set);
+void elx_cache_stats_record_property_miss(int is_set);
+void elx_cache_stats_record_property_shape_transition(int is_set);
+void elx_cache_stats_record_call_hit(int kind);
+void elx_cache_stats_record_call_miss();
+void elx_cache_stats_record_call_transition(int previous_kind, int new_kind);
+#endif
 
 // Closure and upvalue functions
 uint64_t elx_allocate_upvalue(uint64_t *slot);

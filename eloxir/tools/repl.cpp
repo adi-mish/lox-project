@@ -498,6 +498,19 @@ int runFile(const std::string &filename) {
   return static_cast<int>(ExitCode::kOk);
 }
 
+int runFileWithCacheStats(const std::string &filename) {
+  if (!elx_cache_stats_enabled()) {
+    int result = runFile(filename);
+    elx_cache_stats_dump();
+    return result;
+  }
+
+  elx_cache_stats_reset();
+  int result = runFile(filename);
+  elx_cache_stats_dump();
+  return result;
+}
+
 } // namespace
 
 void runREPL() {
@@ -633,15 +646,25 @@ int main(int argc, char *argv[]) {
     return printAstFile(argv[2]);
   }
 
+  if (option == "--cache-stats") {
+    if (argc != 3) {
+      std::cerr << "Usage: " << argv[0] << " --cache-stats <filename>\n";
+      return static_cast<int>(ExitCode::kRuntimeError);
+    }
+    return runFileWithCacheStats(argv[2]);
+  }
+
   if (argc == 2) {
     return runFile(argv[1]);
   }
 
   std::cerr << "Usage: " << argv[0]
-            << " [--scan <filename>] [--print-ast <filename>] [filename]\n";
+            << " [--scan <filename>] [--print-ast <filename>]"
+            << " [--cache-stats <filename>] [filename]\n";
   std::cerr << "  No arguments: Start REPL\n";
   std::cerr << "  --scan <file>: Print tokens produced by scanner\n";
   std::cerr << "  --print-ast <file>: Print canonical AST for expression\n";
+  std::cerr << "  --cache-stats <file>: Execute file and dump cache statistics\n";
   std::cerr << "  <file>: Execute file\n";
   return static_cast<int>(ExitCode::kRuntimeError);
 }
