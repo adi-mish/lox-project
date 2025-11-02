@@ -804,6 +804,7 @@ void CodeGenVisitor::visitUnaryExpr(Unary *e) {
 
 void CodeGenVisitor::visitVariableExpr(Variable *e) {
   const std::string &varName = e->name.getLexeme();
+  bool captured = false;
 
   // Favour lexical bindings that are currently in scope before consulting any
   // captured upvalues so that shadowing behaves like the reference
@@ -2674,6 +2675,37 @@ bool CodeGenVisitor::removeLocalSlot(llvm::Value *slot) {
   }
 
   return captured;
+}
+
+void CodeGenVisitor::enterLoop() { loopInstructionCounts.push_back(0); }
+
+void CodeGenVisitor::exitLoop() {
+  if (!loopInstructionCounts.empty()) {
+    loopInstructionCounts.pop_back();
+  }
+}
+
+void CodeGenVisitor::addLoopInstructions(std::size_t count) {
+  if (loopInstructionCounts.empty()) {
+    return;
+  }
+
+  std::size_t current = loopInstructionCounts.back();
+  std::size_t total = saturatingLoopAdd(current, count);
+  loopInstructionCounts.back() = total;
+  if (total > MAX_LOOP_BODY_INSTRUCTIONS) {
+    throw CompileError("Loop body too large.");
+  }
+}
+
+CodeGenVisitor::LoopInstructionScopeReset::LoopInstructionScopeReset(
+    CodeGenVisitor &visitor)
+    : visitor(visitor), depth(visitor.loopInstructionCounts.size()) {}
+
+CodeGenVisitor::LoopInstructionScopeReset::~LoopInstructionScopeReset() {
+  while (visitor.loopInstructionCounts.size() > depth) {
+    visitor.loopInstructionCounts.pop_back();
+  }
 }
 
 void CodeGenVisitor::checkRuntimeError(llvm::Value *returnValue) {

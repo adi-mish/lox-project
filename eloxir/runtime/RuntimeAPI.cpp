@@ -200,20 +200,6 @@ static ObjBoundMethod *getBoundMethod(Value v) {
   return bound;
 }
 
-static ObjNative *getNative(Value v) {
-  if (!v.isObj())
-    return nullptr;
-
-  void *obj_ptr = v.asObj();
-  if (obj_ptr == nullptr)
-    return nullptr;
-
-  ObjNative *native = static_cast<ObjNative *>(obj_ptr);
-  if (native->obj.type != ObjType::NATIVE)
-    return nullptr;
-  return native;
-}
-
 static uint64_t findMethodOnClass(ObjClass *klass, ObjString *name);
 
 static ObjString *extractStringKey(uint64_t string_bits, std::string *out) {
@@ -347,10 +333,6 @@ uint64_t elx_print(uint64_t bits) {
       std::cout << "<bound method>";
       break;
     }
-    case ObjType::NATIVE: {
-      std::cout << "<native fn>";
-      break;
-    }
     default:
       std::cout << "<obj>";
       break;
@@ -366,8 +348,10 @@ uint64_t elx_print(uint64_t bits) {
 }
 
 uint64_t elx_clock() {
-  using namespace std::chrono;
-  auto secs = duration<double>(system_clock::now().time_since_epoch()).count();
+  auto secs =
+      std::chrono::duration<double>(std::chrono::system_clock::now()
+                                        .time_since_epoch())
+          .count();
   return Value::number(secs).getBits();
 }
 
@@ -560,40 +544,6 @@ uint64_t elx_allocate_function(const char *name, int arity,
   return Value::object(func).getBits();
 }
 
-uint64_t elx_allocate_native(const char *name, NativeFn function) {
-  size_t name_len = 0;
-  if (name) {
-    const char *p = name;
-    while (*p) {
-      ++name_len;
-      ++p;
-    }
-  }
-
-  size_t size = sizeof(ObjNative) + name_len + 1;
-  ObjNative *native = static_cast<ObjNative *>(malloc(size));
-  if (!native) {
-    return Value::nil().getBits();
-  }
-
-  native->obj.type = ObjType::NATIVE;
-  native->function = function;
-
-  char *name_storage = reinterpret_cast<char *>(native + 1);
-  if (name && name_len > 0) {
-    std::memcpy(name_storage, name, name_len);
-    name_storage[name_len] = '\0';
-    native->name = name_storage;
-  } else {
-    name_storage[0] = '\0';
-    native->name = nullptr;
-  }
-
-  allocated_objects.insert(native);
-
-  return Value::object(native).getBits();
-}
-
 uint64_t elx_call_function(uint64_t func_bits, uint64_t *args, int arg_count) {
   // Clear any previous runtime errors
   elx_clear_runtime_error();
@@ -778,11 +728,34 @@ uint64_t elx_allocate_native(const char *name, int arity, NativeFn function) {
     return Value::nil().getBits();
   }
 
-  ObjNative *native = new ObjNative();
+  size_t name_len = 0;
+  if (name) {
+    const char *p = name;
+    while (*p) {
+      ++name_len;
+      ++p;
+    }
+  }
+
+  size_t size = sizeof(ObjNative) + name_len + 1;
+  ObjNative *native = static_cast<ObjNative *>(malloc(size));
+  if (!native) {
+    return Value::nil().getBits();
+  }
+
   native->obj.type = ObjType::NATIVE;
   native->function = function;
-  native->name = name;
   native->arity = arity;
+
+  char *name_storage = reinterpret_cast<char *>(native + 1);
+  if (name && name_len > 0) {
+    std::memcpy(name_storage, name, name_len);
+    name_storage[name_len] = '\0';
+    native->name = name_storage;
+  } else {
+    name_storage[0] = '\0';
+    native->name = nullptr;
+  }
 
   allocated_objects.insert(native);
   return Value::object(native).getBits();
@@ -845,35 +818,10 @@ uint64_t elx_call_value(uint64_t callee_bits, uint64_t *args, int arg_count) {
   switch (obj->type) {
   case ObjType::FUNCTION:
     return elx_call_function(callee_bits, args, arg_count);
-  case ObjType::NATIVE: {
-    ObjNative *native = getNative(callee_val);
-    if (!native || !native->function) {
-      elx_runtime_error("Can only call functions and classes.");
-      return Value::nil().getBits();
-    }
-
-    CallDepthGuard depth_guard;
-    if (!depth_guard.entered()) {
-      elx_runtime_error("Stack overflow.");
-      return Value::nil().getBits();
-    }
-
-    try {
-      return native->function(arg_count, args);
-    } catch (const std::exception &e) {
-      std::string error_msg =
-          "Exception during native call: " + std::string(e.what());
-      elx_runtime_error(error_msg.c_str());
-      return Value::nil().getBits();
-    } catch (...) {
-      elx_runtime_error("Unknown exception during native call.");
-      return Value::nil().getBits();
-    }
-  }
-  case ObjType::CLOSURE:
-    return elx_call_closure(callee_bits, args, arg_count);
   case ObjType::NATIVE:
     return elx_call_native(callee_bits, args, arg_count);
+  case ObjType::CLOSURE:
+    return elx_call_closure(callee_bits, args, arg_count);
   case ObjType::CLASS: {
     ObjClass *klass = static_cast<ObjClass *>(obj_ptr);
 

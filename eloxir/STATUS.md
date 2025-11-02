@@ -5,7 +5,7 @@
 - Latest compile succeeded via `cmake --build eloxir/build --target eloxir`.
 
 ## Test Matrix
-- `pytest eloxir/tests -q` — **pass** (6 regression cases for runtime and compiler edge conditions).
+- `pytest eloxir/tests -q` — **pass** (9 regression cases for runtime and compiler edge conditions).
 - `python eloxir/tools/run_official_tests.py` — **fails** (258 passed / 7 failed / 265 total). Only the long-running benchmark fixtures time out; see below.
 
 ## Outstanding Issues
