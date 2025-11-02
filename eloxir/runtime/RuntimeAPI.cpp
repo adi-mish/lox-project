@@ -200,6 +200,72 @@ static ObjBoundMethod *getBoundMethod(Value v) {
   return bound;
 }
 
+static ObjShape *createShape(ObjShape *parent, ObjString *newField) {
+  ObjShape *shape = new ObjShape();
+  shape->obj.type = ObjType::SHAPE;
+  shape->parent = parent;
+  if (parent) {
+    shape->fieldOrder = parent->fieldOrder;
+    shape->slotCache = parent->slotCache;
+  }
+  if (newField) {
+    size_t slot = shape->fieldOrder.size();
+    shape->fieldOrder.push_back(newField);
+    shape->slotCache[newField] = slot;
+  }
+
+  allocated_objects.insert(shape);
+  return shape;
+}
+
+static bool shapeTryGetSlot(const ObjShape *shape, ObjString *field,
+                            size_t *outSlot) {
+  if (!shape)
+    return false;
+
+  auto it = shape->slotCache.find(field);
+  if (it == shape->slotCache.end())
+    return false;
+
+  if (outSlot)
+    *outSlot = it->second;
+  return true;
+}
+
+static ObjShape *shapeEnsureField(ObjShape *shape, ObjString *field) {
+  if (!shape)
+    shape = createShape(nullptr, nullptr);
+
+  if (shape->slotCache.find(field) != shape->slotCache.end())
+    return shape;
+
+  auto transIt = shape->transitions.find(field);
+  if (transIt != shape->transitions.end())
+    return transIt->second;
+
+  ObjShape *next = createShape(shape, field);
+  shape->transitions[field] = next;
+  return next;
+}
+
+static void ensureInstanceShape(ObjInstance *instance, ObjShape *target) {
+  if (!instance)
+    return;
+
+  if (!target)
+    target = createShape(nullptr, nullptr);
+
+  if (instance->shape == target)
+    return;
+
+  size_t newCount = target->fieldCount();
+
+  instance->fieldValues.resize(newCount, Value::nil().getBits());
+  instance->fieldPresence.resize(newCount, 0);
+
+  instance->shape = target;
+}
+
 static uint64_t findMethodOnClass(ObjClass *klass, ObjString *name);
 
 static ObjString *extractStringKey(uint64_t string_bits, std::string *out) {
@@ -228,6 +294,9 @@ static void destroyObject(Obj *obj) {
     break;
   case ObjType::NATIVE:
     delete reinterpret_cast<ObjNative *>(obj);
+    break;
+  case ObjType::SHAPE:
+    delete reinterpret_cast<ObjShape *>(obj);
     break;
   default:
     free(obj);
@@ -331,6 +400,10 @@ uint64_t elx_print(uint64_t bits) {
         }
       }
       std::cout << "<bound method>";
+      break;
+    }
+    case ObjType::SHAPE: {
+      std::cout << "<shape>";
       break;
     }
     default:
@@ -1430,7 +1503,7 @@ uint64_t elx_allocate_class(uint64_t name_bits, uint64_t superclass_bits) {
   klass->name = name_str;
   klass->superclass = superclass;
   klass->methods.clear();
-  klass->fieldSlots.clear();
+  klass->shape = createShape(nullptr, nullptr);
 
   allocated_objects.insert(klass);
   return Value::object(klass).getBits();
@@ -1474,7 +1547,20 @@ uint64_t elx_instantiate_class(uint64_t class_bits) {
   ObjInstance *instance = new ObjInstance();
   instance->obj.type = ObjType::INSTANCE;
   instance->klass = klass;
-  size_t slotCount = klass ? klass->fieldSlots.size() : 0;
+  ObjShape *shape = nullptr;
+  if (klass) {
+    shape = klass->shape;
+    if (!shape) {
+      shape = createShape(nullptr, nullptr);
+      klass->shape = shape;
+    }
+  }
+  if (!shape) {
+    shape = createShape(nullptr, nullptr);
+  }
+
+  instance->shape = shape;
+  size_t slotCount = shape ? shape->fieldCount() : 0;
   instance->fieldValues.assign(slotCount, Value::nil().getBits());
   instance->fieldPresence.assign(slotCount, 0);
 
@@ -1514,15 +1600,17 @@ uint64_t elx_get_instance_field(uint64_t instance_bits, uint64_t name_bits) {
   }
 
   ObjClass *klass = instance->klass;
-  if (klass) {
-    auto slotIt = klass->fieldSlots.find(field_key);
-    if (slotIt != klass->fieldSlots.end()) {
-      size_t slot = slotIt->second;
-      if (slot < instance->fieldValues.size() &&
-          slot < instance->fieldPresence.size() &&
-          instance->fieldPresence[slot]) {
-        return instance->fieldValues[slot];
-      }
+  size_t slot = 0;
+  bool found = shapeTryGetSlot(instance->shape, field_key, &slot);
+  if (!found && klass) {
+    ObjShape *classShape = klass->shape;
+    found = shapeTryGetSlot(classShape, field_key, &slot);
+  }
+  if (found) {
+    if (slot < instance->fieldValues.size() &&
+        slot < instance->fieldPresence.size() &&
+        instance->fieldPresence[slot]) {
+      return instance->fieldValues[slot];
     }
   }
 
@@ -1548,20 +1636,30 @@ uint64_t elx_set_instance_field(uint64_t instance_bits, uint64_t name_bits,
 
   ObjClass *klass = instance->klass;
   size_t slot = 0;
-  if (klass) {
-    auto slotIt = klass->fieldSlots.find(field_key);
-    if (slotIt == klass->fieldSlots.end()) {
-      slot = klass->fieldSlots.size();
-      klass->fieldSlots[field_key] = slot;
+  ObjShape *shape = instance->shape;
+  if (!shapeTryGetSlot(shape, field_key, &slot)) {
+    ObjShape *classShape = klass ? klass->shape : nullptr;
+    if (classShape && shapeTryGetSlot(classShape, field_key, &slot)) {
+      ensureInstanceShape(instance, classShape);
     } else {
-      slot = slotIt->second;
+      ObjShape *baseShape = classShape ? classShape : shape;
+      ObjShape *nextShape = shapeEnsureField(baseShape, field_key);
+      if (klass)
+        klass->shape = nextShape;
+      ensureInstanceShape(instance, nextShape);
     }
   }
 
-  if (instance->fieldValues.size() <= slot) {
-    instance->fieldValues.resize(slot + 1, Value::nil().getBits());
-    instance->fieldPresence.resize(slot + 1, 0);
+  shape = instance->shape;
+  if (!shapeTryGetSlot(shape, field_key, &slot)) {
+    elx_runtime_error("Failed to assign property on instance shape.");
+    return Value::nil().getBits();
   }
+
+  if (instance->fieldValues.size() <= slot)
+    instance->fieldValues.resize(slot + 1, Value::nil().getBits());
+  if (instance->fieldPresence.size() <= slot)
+    instance->fieldPresence.resize(slot + 1, 0);
 
   instance->fieldValues[slot] = value_bits;
   instance->fieldPresence[slot] = 1;
@@ -1585,18 +1683,18 @@ int elx_try_get_instance_field(uint64_t instance_bits, uint64_t name_bits,
   }
 
   ObjClass *klass = instance->klass;
-  if (klass) {
-    auto slotIt = klass->fieldSlots.find(field_key);
-    if (slotIt != klass->fieldSlots.end()) {
-      size_t slot = slotIt->second;
-      if (slot < instance->fieldValues.size() &&
-          slot < instance->fieldPresence.size() &&
-          instance->fieldPresence[slot]) {
-        if (out_value)
-          *out_value = instance->fieldValues[slot];
-        return 1;
-      }
-    }
+  size_t slot = 0;
+  bool found = shapeTryGetSlot(instance->shape, field_key, &slot);
+  if (!found && klass) {
+    ObjShape *classShape = klass->shape;
+    found = shapeTryGetSlot(classShape, field_key, &slot);
+  }
+  if (found && slot < instance->fieldValues.size() &&
+      slot < instance->fieldPresence.size() &&
+      instance->fieldPresence[slot]) {
+    if (out_value)
+      *out_value = instance->fieldValues[slot];
+    return 1;
   }
 
   return 0;

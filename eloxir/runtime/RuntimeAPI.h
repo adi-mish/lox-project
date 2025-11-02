@@ -17,7 +17,8 @@ enum class ObjType {
   UPVALUE,
   CLASS,
   INSTANCE,
-  BOUND_METHOD
+  BOUND_METHOD,
+  SHAPE
 };
 
 struct Obj {
@@ -60,17 +61,28 @@ struct ObjClosure {
   int upvalue_count;
 };
 
+struct ObjShape {
+  Obj obj;
+  ObjShape *parent;
+  std::vector<ObjString *> fieldOrder;
+  llvm::DenseMap<ObjString *, size_t> slotCache;
+  llvm::DenseMap<ObjString *, ObjShape *> transitions;
+
+  size_t fieldCount() const { return fieldOrder.size(); }
+};
+
 struct ObjClass {
   Obj obj;
   ObjString *name;
   struct ObjClass *superclass;
   llvm::DenseMap<ObjString *, uint64_t> methods;
-  llvm::DenseMap<ObjString *, size_t> fieldSlots;
+  ObjShape *shape;
 };
 
 struct ObjInstance {
   Obj obj;
   ObjClass *klass;
+  ObjShape *shape;
   std::vector<uint64_t> fieldValues;
   std::vector<uint8_t> fieldPresence;
 };
