@@ -17,8 +17,7 @@ enum class ObjType {
   UPVALUE,
   CLASS,
   INSTANCE,
-  BOUND_METHOD,
-  NATIVE
+  BOUND_METHOD
 };
 
 struct Obj {
@@ -38,12 +37,13 @@ struct ObjFunction {
   void *llvm_function; // pointer to compiled LLVM function
 };
 
-using NativeFn = uint64_t (*)(int arg_count, const uint64_t *args);
+using NativeFn = uint64_t (*)(uint64_t *args, int arg_count);
 
 struct ObjNative {
   Obj obj;
   NativeFn function;
   const char *name; // Optional; may be null or empty.
+  int arity;
 };
 
 struct ObjUpvalue {
@@ -81,15 +81,6 @@ struct ObjBoundMethod {
   uint64_t method;
 };
 
-using NativeFn = uint64_t (*)(uint64_t *args, int arg_count);
-
-struct ObjNative {
-  Obj obj;
-  NativeFn function;
-  const char *name;
-  int arity;
-};
-
 } // namespace eloxir
 
 extern "C" {
@@ -112,7 +103,6 @@ int elx_value_is_string(uint64_t value_bits);
 // Function functions
 uint64_t elx_allocate_function(const char *name, int arity,
                                void *llvm_function);
-uint64_t elx_allocate_native(const char *name, eloxir::NativeFn function);
 uint64_t elx_call_function(uint64_t func_bits, uint64_t *args, int arg_count);
 uint64_t elx_call_value(uint64_t callee_bits, uint64_t *args, int arg_count);
 int elx_is_function(uint64_t value_bits);
