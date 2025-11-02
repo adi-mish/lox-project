@@ -264,6 +264,20 @@ llvm::Expected<std::unique_ptr<EloxirJIT>> EloxirJIT::Create() {
       llvm::orc::ExecutorSymbolDef(
           llvm::orc::ExecutorAddr::fromPtr(&elx_set_property_slow),
           llvm::JITSymbolFlags::Exported);
+#ifdef ELOXIR_ENABLE_CACHE_STATS
+  runtimeSymbols[mangle("elx_cache_stats_record_property_hit")] =
+      llvm::orc::ExecutorSymbolDef(
+          llvm::orc::ExecutorAddr::fromPtr(&elx_cache_stats_record_property_hit),
+          llvm::JITSymbolFlags::Exported);
+  runtimeSymbols[mangle("elx_cache_stats_record_call_hit")] =
+      llvm::orc::ExecutorSymbolDef(
+          llvm::orc::ExecutorAddr::fromPtr(&elx_cache_stats_record_call_hit),
+          llvm::JITSymbolFlags::Exported);
+  runtimeSymbols[mangle("elx_cache_stats_record_call_miss")] =
+      llvm::orc::ExecutorSymbolDef(
+          llvm::orc::ExecutorAddr::fromPtr(&elx_cache_stats_record_call_miss),
+          llvm::JITSymbolFlags::Exported);
+#endif
   runtimeSymbols[mangle("elx_instance_shape_ptr")] =
       llvm::orc::ExecutorSymbolDef(
           llvm::orc::ExecutorAddr::fromPtr(&elx_instance_shape_ptr),
