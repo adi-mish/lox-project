@@ -1,4 +1,5 @@
 #include "RuntimeAPI.h"
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -264,6 +265,50 @@ static void ensureInstanceShape(ObjInstance *instance, ObjShape *target) {
   instance->fieldPresence.resize(newCount, 0);
 
   instance->shape = target;
+}
+
+static void propertyCacheUpdate(PropertyCache *cache, ObjShape *shape,
+                                size_t slot, uint32_t capacity) {
+  if (!cache || !shape)
+    return;
+
+  if (slot > std::numeric_limits<uint32_t>::max())
+    return;
+
+  uint32_t slotIndex = static_cast<uint32_t>(slot);
+  uint32_t limit = std::min<uint32_t>(capacity, PROPERTY_CACHE_MAX_SIZE);
+  if (limit == 0)
+    return;
+
+  cache->size = std::min<uint32_t>(cache->size, PROPERTY_CACHE_MAX_SIZE);
+
+  for (uint32_t i = 0; i < cache->size; ++i) {
+    if (cache->entries[i].shape == shape) {
+      cache->entries[i].slot = slotIndex;
+      if (i != 0) {
+        PropertyCacheEntry entry = cache->entries[i];
+        for (uint32_t j = i; j > 0; --j) {
+          cache->entries[j] = cache->entries[j - 1];
+        }
+        cache->entries[0] = entry;
+      }
+      return;
+    }
+  }
+
+  if (cache->size < limit) {
+    for (uint32_t j = cache->size; j > 0; --j) {
+      cache->entries[j] = cache->entries[j - 1];
+    }
+    cache->entries[0] = {shape, slotIndex};
+    cache->size += 1;
+  } else {
+    for (uint32_t j = limit - 1; j > 0; --j) {
+      cache->entries[j] = cache->entries[j - 1];
+    }
+    cache->entries[0] = {shape, slotIndex};
+    cache->size = limit;
+  }
 }
 
 static uint64_t findMethodOnClass(ObjClass *klass, ObjString *name);
@@ -1698,6 +1743,95 @@ int elx_try_get_instance_field(uint64_t instance_bits, uint64_t name_bits,
   }
 
   return 0;
+}
+
+ObjShape *elx_instance_shape_ptr(uint64_t instance_bits) {
+  Value instance_val = Value::fromBits(instance_bits);
+  ObjInstance *instance = getInstance(instance_val);
+  if (!instance)
+    return nullptr;
+  return instance->shape;
+}
+
+uint64_t *elx_instance_field_values_ptr(uint64_t instance_bits) {
+  Value instance_val = Value::fromBits(instance_bits);
+  ObjInstance *instance = getInstance(instance_val);
+  if (!instance || instance->fieldValues.empty())
+    return nullptr;
+  return instance->fieldValues.data();
+}
+
+uint8_t *elx_instance_field_presence_ptr(uint64_t instance_bits) {
+  Value instance_val = Value::fromBits(instance_bits);
+  ObjInstance *instance = getInstance(instance_val);
+  if (!instance || instance->fieldPresence.empty())
+    return nullptr;
+  return instance->fieldPresence.data();
+}
+
+uint64_t elx_get_property_slow(uint64_t instance_bits, uint64_t name_bits,
+                               PropertyCache *cache, uint32_t capacity) {
+  Value instance_val = Value::fromBits(instance_bits);
+  ObjInstance *instance = getInstance(instance_val);
+  if (!instance) {
+    elx_runtime_error("Only instances have properties.");
+    return Value::nil().getBits();
+  }
+
+  std::string field_name;
+  ObjString *field_key = extractStringKey(name_bits, &field_name);
+  if (!field_key) {
+    elx_runtime_error("Property name must be a string.");
+    return Value::nil().getBits();
+  }
+
+  size_t slot = 0;
+  bool found = shapeTryGetSlot(instance->shape, field_key, &slot);
+  if (found && slot < instance->fieldValues.size() &&
+      slot < instance->fieldPresence.size() &&
+      instance->fieldPresence[slot]) {
+    uint64_t result = instance->fieldValues[slot];
+    propertyCacheUpdate(cache, instance->shape, slot, capacity);
+    return result;
+  }
+
+  ObjClass *klass = instance->klass;
+  if (klass) {
+    uint64_t method_bits = findMethodOnClass(klass, field_key);
+    if (method_bits != Value::nil().getBits()) {
+      return elx_bind_method(instance_bits, method_bits);
+    }
+  }
+
+  std::string message = "Undefined property '" + field_name + "'.";
+  elx_runtime_error_silent(message.c_str());
+  elx_emit_runtime_error();
+  return Value::nil().getBits();
+}
+
+uint64_t elx_set_property_slow(uint64_t instance_bits, uint64_t name_bits,
+                               uint64_t value_bits, PropertyCache *cache,
+                               uint32_t capacity) {
+  uint64_t result =
+      elx_set_instance_field(instance_bits, name_bits, value_bits);
+  if (elx_has_runtime_error())
+    return result;
+
+  Value instance_val = Value::fromBits(instance_bits);
+  ObjInstance *instance = getInstance(instance_val);
+  if (!instance)
+    return result;
+
+  ObjString *field_key = extractStringKey(name_bits, nullptr);
+  if (!field_key)
+    return result;
+
+  size_t slot = 0;
+  if (shapeTryGetSlot(instance->shape, field_key, &slot)) {
+    propertyCacheUpdate(cache, instance->shape, slot, capacity);
+  }
+
+  return result;
 }
 
 uint64_t elx_bind_method(uint64_t instance_bits, uint64_t method_bits) {
