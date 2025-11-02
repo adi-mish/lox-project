@@ -2,6 +2,7 @@
 #include "../frontend/Expr.h"
 #include "../frontend/Stmt.h"
 #include "../frontend/Visitor.h"
+#include "../runtime/RuntimeAPI.h"
 #include "../runtime/Value.h"
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/LLVMContext.h>
@@ -92,6 +93,11 @@ class CodeGenVisitor : public ExprVisitor, public StmtVisitor {
   MethodContext method_context_override = MethodContext::NONE;
   llvm::Value *current_class_value = nullptr;
   std::string function_map_key_override;
+
+  static constexpr unsigned PROPERTY_CACHE_MAX_SIZE =
+      eloxir::PROPERTY_CACHE_MAX_SIZE;
+  llvm::StructType *propertyCacheTy = nullptr;
+  std::unordered_map<const Expr *, llvm::GlobalVariable *> propertyCacheGlobals;
 
 public:
   CodeGenVisitor(llvm::Module &m);
@@ -186,6 +192,12 @@ public:
   void visitClassStmt(Class *s) override;
 
 private:
+  llvm::StructType *getPropertyCacheType();
+  llvm::GlobalVariable *getPropertyCacheGlobal(const std::string &prefix,
+                                               const Expr *expr);
+  void emitLegacyGetExpr(Get *e, llvm::Value *objectValue,
+                         llvm::Value *nameValue);
+  void emitLegacySetExpr(Set *e, llvm::Value *objectValue);
   std::size_t estimateLoopBodyInstructions(Stmt *stmt) const;
   std::size_t saturatingLoopAdd(std::size_t current, std::size_t increment) const;
   llvm::Value *tagOf(llvm::Value *v);

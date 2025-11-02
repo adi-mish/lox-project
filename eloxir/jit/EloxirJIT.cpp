@@ -214,6 +214,26 @@ llvm::Expected<std::unique_ptr<EloxirJIT>> EloxirJIT::Create() {
       llvm::orc::ExecutorSymbolDef(
           llvm::orc::ExecutorAddr::fromPtr(&elx_set_instance_field),
           llvm::JITSymbolFlags::Exported);
+  runtimeSymbols[mangle("elx_get_property_slow")] =
+      llvm::orc::ExecutorSymbolDef(
+          llvm::orc::ExecutorAddr::fromPtr(&elx_get_property_slow),
+          llvm::JITSymbolFlags::Exported);
+  runtimeSymbols[mangle("elx_set_property_slow")] =
+      llvm::orc::ExecutorSymbolDef(
+          llvm::orc::ExecutorAddr::fromPtr(&elx_set_property_slow),
+          llvm::JITSymbolFlags::Exported);
+  runtimeSymbols[mangle("elx_instance_shape_ptr")] =
+      llvm::orc::ExecutorSymbolDef(
+          llvm::orc::ExecutorAddr::fromPtr(&elx_instance_shape_ptr),
+          llvm::JITSymbolFlags::Exported);
+  runtimeSymbols[mangle("elx_instance_field_values_ptr")] =
+      llvm::orc::ExecutorSymbolDef(
+          llvm::orc::ExecutorAddr::fromPtr(&elx_instance_field_values_ptr),
+          llvm::JITSymbolFlags::Exported);
+  runtimeSymbols[mangle("elx_instance_field_presence_ptr")] =
+      llvm::orc::ExecutorSymbolDef(
+          llvm::orc::ExecutorAddr::fromPtr(&elx_instance_field_presence_ptr),
+          llvm::JITSymbolFlags::Exported);
   runtimeSymbols[mangle("elx_bind_method")] = llvm::orc::ExecutorSymbolDef(
       llvm::orc::ExecutorAddr::fromPtr(&elx_bind_method),
       llvm::JITSymbolFlags::Exported);

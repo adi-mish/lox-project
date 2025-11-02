@@ -93,6 +93,18 @@ struct ObjBoundMethod {
   uint64_t method;
 };
 
+constexpr uint32_t PROPERTY_CACHE_MAX_SIZE = 4;
+
+struct PropertyCacheEntry {
+  ObjShape *shape;
+  uint32_t slot;
+};
+
+struct PropertyCache {
+  PropertyCacheEntry entries[PROPERTY_CACHE_MAX_SIZE];
+  uint32_t size;
+};
+
 } // namespace eloxir
 
 extern "C" {
@@ -149,6 +161,16 @@ uint64_t elx_set_instance_field(uint64_t instance_bits, uint64_t name_bits,
 int elx_try_get_instance_field(uint64_t instance_bits, uint64_t name_bits,
                                uint64_t *out_value);
 uint64_t elx_bind_method(uint64_t instance_bits, uint64_t method_bits);
+uint64_t elx_get_property_slow(uint64_t instance_bits, uint64_t name_bits,
+                               eloxir::PropertyCache *cache,
+                               uint32_t capacity);
+uint64_t elx_set_property_slow(uint64_t instance_bits, uint64_t name_bits,
+                               uint64_t value_bits,
+                               eloxir::PropertyCache *cache,
+                               uint32_t capacity);
+eloxir::ObjShape *elx_instance_shape_ptr(uint64_t instance_bits);
+uint64_t *elx_instance_field_values_ptr(uint64_t instance_bits);
+uint8_t *elx_instance_field_presence_ptr(uint64_t instance_bits);
 
 // Memory management
 void elx_cleanup_all_objects(); // Clean up all tracked objects
