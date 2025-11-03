@@ -1,4 +1,5 @@
 #include "RuntimeAPI.h"
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -8,6 +9,7 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 using namespace eloxir;
 
@@ -30,6 +32,130 @@ static bool runtime_error_flag = false;
 static std::string runtime_error_message;
 
 namespace {
+struct FieldBuffer {
+  uint64_t *values;
+  uint8_t *presence;
+};
+
+static std::unordered_map<size_t, std::vector<FieldBuffer>> field_buffer_pool;
+static ObjInstance *instance_pool_head = nullptr;
+
+static FieldBuffer acquireFieldBuffer(size_t slotCount) {
+  if (slotCount == 0) {
+    return {nullptr, nullptr};
+  }
+
+  auto &bucket = field_buffer_pool[slotCount];
+  FieldBuffer buffer;
+  if (!bucket.empty()) {
+    buffer = bucket.back();
+    bucket.pop_back();
+  } else {
+    buffer.values = new uint64_t[slotCount];
+    buffer.presence = new uint8_t[slotCount];
+  }
+
+  std::fill_n(buffer.values, slotCount, Value::nil().getBits());
+  std::memset(buffer.presence, 0, slotCount * sizeof(uint8_t));
+  return buffer;
+}
+
+static void releaseFieldBuffer(size_t slotCount, FieldBuffer buffer) {
+  if (slotCount == 0 || !buffer.values || !buffer.presence) {
+    return;
+  }
+
+  field_buffer_pool[slotCount].push_back(buffer);
+}
+
+static void ensureInstanceCapacity(ObjInstance *instance, size_t required,
+                                   bool preserveExisting) {
+  if (!instance)
+    return;
+
+  if (required == 0) {
+    if (instance->fieldValues) {
+      releaseFieldBuffer(instance->fieldCapacity,
+                         {instance->fieldValues, instance->fieldPresence});
+      instance->fieldValues = nullptr;
+      instance->fieldPresence = nullptr;
+      instance->fieldCapacity = 0;
+    }
+    return;
+  }
+
+  if (instance->fieldCapacity >= required)
+    return;
+
+  FieldBuffer buffer = acquireFieldBuffer(required);
+  if (preserveExisting && instance->fieldValues && instance->fieldPresence) {
+    std::memcpy(buffer.values, instance->fieldValues,
+                instance->fieldCapacity * sizeof(uint64_t));
+    std::memcpy(buffer.presence, instance->fieldPresence,
+                instance->fieldCapacity * sizeof(uint8_t));
+  }
+
+  if (instance->fieldValues || instance->fieldPresence) {
+    releaseFieldBuffer(instance->fieldCapacity,
+                       {instance->fieldValues, instance->fieldPresence});
+  }
+
+  instance->fieldValues = buffer.values;
+  instance->fieldPresence = buffer.presence;
+  instance->fieldCapacity = required;
+}
+
+static void resetInstanceFields(ObjInstance *instance, size_t slotCount) {
+  if (!instance)
+    return;
+
+  if (slotCount == 0) {
+    ensureInstanceCapacity(instance, 0, false);
+    return;
+  }
+
+  ensureInstanceCapacity(instance, slotCount, false);
+  size_t capacity = instance->fieldCapacity;
+  std::fill_n(instance->fieldValues, capacity, Value::nil().getBits());
+  std::memset(instance->fieldPresence, 0, capacity * sizeof(uint8_t));
+}
+
+static ObjInstance *acquireInstanceObject() {
+  ObjInstance *instance = nullptr;
+  if (instance_pool_head) {
+    instance = instance_pool_head;
+    instance_pool_head = instance->nextFree;
+  } else {
+    instance = new ObjInstance();
+    instance->fieldValues = nullptr;
+    instance->fieldPresence = nullptr;
+    instance->fieldCapacity = 0;
+    instance->nextFree = nullptr;
+  }
+
+  instance->obj.type = ObjType::INSTANCE;
+  instance->klass = nullptr;
+  instance->nextFree = nullptr;
+  return instance;
+}
+
+static void releaseInstanceObject(ObjInstance *instance) {
+  if (!instance)
+    return;
+
+  if (instance->fieldValues || instance->fieldPresence) {
+    releaseFieldBuffer(instance->fieldCapacity,
+                       {instance->fieldValues, instance->fieldPresence});
+    instance->fieldValues = nullptr;
+    instance->fieldPresence = nullptr;
+    instance->fieldCapacity = 0;
+  }
+
+  instance->klass = nullptr;
+  instance->nextFree = instance_pool_head;
+  instance_pool_head = instance;
+}
+
 constexpr int MAX_CALL_DEPTH = 256;
 thread_local int current_call_depth = 0;
 
@@ -200,20 +326,6 @@ static ObjBoundMethod *getBoundMethod(Value v) {
   return bound;
 }
 
-static ObjNative *getNative(Value v) {
-  if (!v.isObj())
-    return nullptr;
-
-  void *obj_ptr = v.asObj();
-  if (obj_ptr == nullptr)
-    return nullptr;
-
-  ObjNative *native = static_cast<ObjNative *>(obj_ptr);
-  if (native->obj.type != ObjType::NATIVE)
-    return nullptr;
-  return native;
-}
-
 static uint64_t findMethodOnClass(ObjClass *klass, ObjString *name);
 
 static ObjString *extractStringKey(uint64_t string_bits, std::string *out) {
@@ -235,7 +347,7 @@ static void destroyObject(Obj *obj) {
     delete reinterpret_cast<ObjClass *>(obj);
     break;
   case ObjType::INSTANCE:
-    delete reinterpret_cast<ObjInstance *>(obj);
+    releaseInstanceObject(reinterpret_cast<ObjInstance *>(obj));
     break;
   case ObjType::BOUND_METHOD:
     delete reinterpret_cast<ObjBoundMethod *>(obj);
@@ -347,10 +459,6 @@ uint64_t elx_print(uint64_t bits) {
       std::cout << "<bound method>";
       break;
     }
-    case ObjType::NATIVE: {
-      std::cout << "<native fn>";
-      break;
-    }
     default:
       std::cout << "<obj>";
       break;
@@ -366,8 +474,10 @@ uint64_t elx_print(uint64_t bits) {
 }
 
 uint64_t elx_clock() {
-  using namespace std::chrono;
-  auto secs = duration<double>(system_clock::now().time_since_epoch()).count();
+  auto secs =
+      std::chrono::duration<double>(std::chrono::system_clock::now()
+                                        .time_since_epoch())
+          .count();
   return Value::number(secs).getBits();
 }
 
@@ -560,40 +670,6 @@ uint64_t elx_allocate_function(const char *name, int arity,
   return Value::object(func).getBits();
 }
 
-uint64_t elx_allocate_native(const char *name, NativeFn function) {
-  size_t name_len = 0;
-  if (name) {
-    const char *p = name;
-    while (*p) {
-      ++name_len;
-      ++p;
-    }
-  }
-
-  size_t size = sizeof(ObjNative) + name_len + 1;
-  ObjNative *native = static_cast<ObjNative *>(malloc(size));
-  if (!native) {
-    return Value::nil().getBits();
-  }
-
-  native->obj.type = ObjType::NATIVE;
-  native->function = function;
-
-  char *name_storage = reinterpret_cast<char *>(native + 1);
-  if (name && name_len > 0) {
-    std::memcpy(name_storage, name, name_len);
-    name_storage[name_len] = '\0';
-    native->name = name_storage;
-  } else {
-    name_storage[0] = '\0';
-    native->name = nullptr;
-  }
-
-  allocated_objects.insert(native);
-
-  return Value::object(native).getBits();
-}
-
 uint64_t elx_call_function(uint64_t func_bits, uint64_t *args, int arg_count) {
   // Clear any previous runtime errors
   elx_clear_runtime_error();
@@ -778,11 +854,34 @@ uint64_t elx_allocate_native(const char *name, int arity, NativeFn function) {
     return Value::nil().getBits();
   }
 
-  ObjNative *native = new ObjNative();
+  size_t name_len = 0;
+  if (name) {
+    const char *p = name;
+    while (*p) {
+      ++name_len;
+      ++p;
+    }
+  }
+
+  size_t size = sizeof(ObjNative) + name_len + 1;
+  ObjNative *native = static_cast<ObjNative *>(malloc(size));
+  if (!native) {
+    return Value::nil().getBits();
+  }
+
   native->obj.type = ObjType::NATIVE;
   native->function = function;
-  native->name = name;
   native->arity = arity;
+
+  char *name_storage = reinterpret_cast<char *>(native + 1);
+  if (name && name_len > 0) {
+    std::memcpy(name_storage, name, name_len);
+    name_storage[name_len] = '\0';
+    native->name = name_storage;
+  } else {
+    name_storage[0] = '\0';
+    native->name = nullptr;
+  }
 
   allocated_objects.insert(native);
   return Value::object(native).getBits();
@@ -845,35 +944,10 @@ uint64_t elx_call_value(uint64_t callee_bits, uint64_t *args, int arg_count) {
   switch (obj->type) {
   case ObjType::FUNCTION:
     return elx_call_function(callee_bits, args, arg_count);
-  case ObjType::NATIVE: {
-    ObjNative *native = getNative(callee_val);
-    if (!native || !native->function) {
-      elx_runtime_error("Can only call functions and classes.");
-      return Value::nil().getBits();
-    }
-
-    CallDepthGuard depth_guard;
-    if (!depth_guard.entered()) {
-      elx_runtime_error("Stack overflow.");
-      return Value::nil().getBits();
-    }
-
-    try {
-      return native->function(arg_count, args);
-    } catch (const std::exception &e) {
-      std::string error_msg =
-          "Exception during native call: " + std::string(e.what());
-      elx_runtime_error(error_msg.c_str());
-      return Value::nil().getBits();
-    } catch (...) {
-      elx_runtime_error("Unknown exception during native call.");
-      return Value::nil().getBits();
-    }
-  }
-  case ObjType::CLOSURE:
-    return elx_call_closure(callee_bits, args, arg_count);
   case ObjType::NATIVE:
     return elx_call_native(callee_bits, args, arg_count);
+  case ObjType::CLOSURE:
+    return elx_call_closure(callee_bits, args, arg_count);
   case ObjType::CLASS: {
     ObjClass *klass = static_cast<ObjClass *>(obj_ptr);
 
@@ -1523,12 +1597,10 @@ uint64_t elx_instantiate_class(uint64_t class_bits) {
     return Value::nil().getBits();
   }
 
-  ObjInstance *instance = new ObjInstance();
-  instance->obj.type = ObjType::INSTANCE;
+  ObjInstance *instance = acquireInstanceObject();
   instance->klass = klass;
   size_t slotCount = klass ? klass->fieldSlots.size() : 0;
-  instance->fieldValues.assign(slotCount, Value::nil().getBits());
-  instance->fieldPresence.assign(slotCount, 0);
+  resetInstanceFields(instance, slotCount);
 
   allocated_objects.insert(instance);
   return Value::object(instance).getBits();
@@ -1570,9 +1642,8 @@ uint64_t elx_get_instance_field(uint64_t instance_bits, uint64_t name_bits) {
     auto slotIt = klass->fieldSlots.find(field_key);
     if (slotIt != klass->fieldSlots.end()) {
       size_t slot = slotIt->second;
-      if (slot < instance->fieldValues.size() &&
-          slot < instance->fieldPresence.size() &&
-          instance->fieldPresence[slot]) {
+      if (instance->fieldValues && instance->fieldPresence &&
+          slot < instance->fieldCapacity && instance->fieldPresence[slot]) {
         return instance->fieldValues[slot];
       }
     }
@@ -1610,13 +1681,14 @@ uint64_t elx_set_instance_field(uint64_t instance_bits, uint64_t name_bits,
     }
   }
 
-  if (instance->fieldValues.size() <= slot) {
-    instance->fieldValues.resize(slot + 1, Value::nil().getBits());
-    instance->fieldPresence.resize(slot + 1, 0);
+  if (slot >= instance->fieldCapacity) {
+    ensureInstanceCapacity(instance, slot + 1, true);
   }
 
-  instance->fieldValues[slot] = value_bits;
-  instance->fieldPresence[slot] = 1;
+  if (instance->fieldValues && instance->fieldPresence) {
+    instance->fieldValues[slot] = value_bits;
+    instance->fieldPresence[slot] = 1;
+  }
   return value_bits;
 }
 
@@ -1641,9 +1713,8 @@ int elx_try_get_instance_field(uint64_t instance_bits, uint64_t name_bits,
     auto slotIt = klass->fieldSlots.find(field_key);
     if (slotIt != klass->fieldSlots.end()) {
       size_t slot = slotIt->second;
-      if (slot < instance->fieldValues.size() &&
-          slot < instance->fieldPresence.size() &&
-          instance->fieldPresence[slot]) {
+      if (instance->fieldValues && instance->fieldPresence &&
+          slot < instance->fieldCapacity && instance->fieldPresence[slot]) {
         if (out_value)
           *out_value = instance->fieldValues[slot];
         return 1;

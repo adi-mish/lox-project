@@ -113,9 +113,9 @@ public:
 class Class : public Stmt {
 public:
   Token name;
-  std::unique_ptr<Variable> superclass; // nullable
+  std::unique_ptr<Expr> superclass; // nullable
   std::vector<std::unique_ptr<Function>> methods;
-  Class(Token n, std::unique_ptr<Variable> sc,
+  Class(Token n, std::unique_ptr<Expr> sc,
         std::vector<std::unique_ptr<Function>> m)
       : name(std::move(n)), superclass(std::move(sc)), methods(std::move(m)) {}
   void accept(StmtVisitor *v) override;

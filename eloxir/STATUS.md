@@ -5,14 +5,14 @@
 - Latest compile succeeded via `cmake --build eloxir/build --target eloxir`.
 
 ## Test Matrix
-- `pytest eloxir/tests -q` — **pass** (6 regression cases for runtime and compiler edge conditions).
-- `python eloxir/tools/run_official_tests.py` — **fails** (258 passed / 7 failed / 265 total). Only the long-running benchmark fixtures time out; see below.
+- `pytest eloxir/tests -q` — **pass** (9 regression cases for runtime and compiler edge conditions).
+- `python eloxir/tools/run_official_tests.py` — **fails** (260 passed / 5 failed / 265 total). Five long-running benchmark fixtures still time out; see below.
 
 ## Outstanding Issues
 
 ### 1. Benchmark programs exceed the 10 s harness timeout
-- **Symptoms:** All benchmark fixtures (`benchmark/binary_trees.lox`, `instantiation.lox`, `invocation.lox`, `properties.lox`, `string_equality.lox`, `trees.lox`, `zoo_batch.lox`) terminate via the harness timeout instead of producing output.
-- **Cause:** We now run LLVM’s per-module O3 pipeline before handing IR to ORC and request the aggressive code-generation level from the JIT, but the generated machine code still mirrors the high-level object model too closely—instance field maps, method dispatch, and allocation hotspots dominate runtime. Additional work (e.g. specialised instance layouts or cached property lookups) is required before the benchmarks complete inside the 10 s harness limit.
+- **Symptoms:** Five benchmark fixtures (`benchmark/binary_trees.lox`, `instantiation.lox`, `string_equality.lox`, `trees.lox`, `zoo_batch.lox`) still time out under the harness. `invocation.lox`, `properties.lox`, `equality.lox`, and the remaining short benchmarks now finish within the 10 s budget after the allocator changes.
+- **Cause:** Even with pooled instance/field storage reducing allocation churn, the generated code continues to mirror the high-level object model—shape lookups, deep recursion, and property equality paths dominate runtime. Specialised layouts and inline caches are still required before these programs can complete within the limit.
 - **Repro:** `python eloxir/tools/run_official_tests.py --filter benchmark/*`.
 
 ## Additional Notes
@@ -24,3 +24,4 @@
 - Resolver/code-generation updates honour lexical shadowing ahead of upvalues, which fixed the closure fixtures (`closure/shadow_closure_with_local.lox`, `for/closure_in_body.lox`) and restored the expected `for/syntax.lox` output ordering.
 - Loop lowering now enforces the Crafting Interpreters 65 535-instruction ceiling and surfaces `CompileError("Loop body too large.")`, satisfying both the official limit test and the accompanying regression coverage.
 - Regression coverage for the resolved issues lives under `eloxir/tests/regression/` and is exercised by the smoke-test `pytest` target.
+- Instance allocation now goes through a free-list allocator that reuses both `ObjInstance` objects and their field buffers, trimming repeated heap growth during tight loops and enabling the passing benchmarks above.

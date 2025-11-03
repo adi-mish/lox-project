@@ -217,6 +217,20 @@ private:
   void ensureParameterLimit(size_t arity);
   void closeAllCapturedLocals();
   bool removeLocalSlot(llvm::Value *slot);
+
+  void enterLoop();
+  void exitLoop();
+  void addLoopInstructions(std::size_t count);
+
+  class LoopInstructionScopeReset {
+  public:
+    explicit LoopInstructionScopeReset(CodeGenVisitor &visitor);
+    ~LoopInstructionScopeReset();
+
+  private:
+    CodeGenVisitor &visitor;
+    std::size_t depth;
+  };
 };
 
 } // namespace eloxir
