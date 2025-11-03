@@ -1,10 +1,10 @@
 #pragma once
 #include "Value.h"
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <unordered_map>
 #include <llvm/ADT/DenseMap.h>
-#include <vector>
 
 namespace eloxir {
 
@@ -17,8 +17,7 @@ enum class ObjType {
   UPVALUE,
   CLASS,
   INSTANCE,
-  BOUND_METHOD,
-  SHAPE
+  BOUND_METHOD
 };
 
 struct Obj {
@@ -82,66 +81,16 @@ struct ObjClass {
 struct ObjInstance {
   Obj obj;
   ObjClass *klass;
-  ObjShape *shape;
-  std::vector<uint64_t> fieldValues;
-  std::vector<uint8_t> fieldPresence;
+  uint64_t *fieldValues;
+  uint8_t *fieldPresence;
+  size_t fieldCapacity;
+  ObjInstance *nextFree;
 };
 
 struct ObjBoundMethod {
   Obj obj;
   uint64_t receiver;
   uint64_t method;
-};
-
-constexpr uint32_t PROPERTY_CACHE_MAX_SIZE = 4;
-
-struct PropertyCacheEntry {
-  ObjShape *shape;
-  uint32_t slot;
-};
-
-struct PropertyCache {
-  PropertyCacheEntry entries[PROPERTY_CACHE_MAX_SIZE];
-  uint32_t size;
-};
-
-struct CacheStats {
-  uint64_t property_get_hits;
-  uint64_t property_get_misses;
-  uint64_t property_get_shape_transitions;
-  uint64_t property_set_hits;
-  uint64_t property_set_misses;
-  uint64_t property_set_shape_transitions;
-  uint64_t call_hits;
-  uint64_t call_misses;
-  uint64_t call_shape_transitions;
-};
-
-enum class CallInlineCacheKind : int32_t {
-  EMPTY = 0,
-  FUNCTION = 1,
-  CLOSURE = 2,
-  NATIVE = 3,
-  CLASS = 4,
-  BOUND_METHOD = 5
-};
-
-enum CallInlineCacheFlags : int32_t {
-  CALL_CACHE_FLAG_METHOD_IS_CLOSURE = 1 << 0,
-  CALL_CACHE_FLAG_METHOD_IS_FUNCTION = 1 << 1,
-  CALL_CACHE_FLAG_METHOD_IS_NATIVE = 1 << 2,
-  CALL_CACHE_FLAG_CLASS_HAS_INITIALIZER = 1 << 3
-};
-
-struct CallInlineCache {
-  uint64_t callee_bits;
-  uint64_t method_bits;
-  uint64_t aux_bits;
-  void *target_ptr;
-  int32_t expected_arity;
-  int32_t kind;
-  int32_t flags;
-  int32_t padding;
 };
 
 } // namespace eloxir

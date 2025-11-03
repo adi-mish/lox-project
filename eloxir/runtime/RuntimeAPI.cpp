@@ -1,6 +1,5 @@
 #include "RuntimeAPI.h"
 #include <algorithm>
-#include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -10,6 +9,7 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 using namespace eloxir;
 
@@ -32,54 +32,129 @@ static bool runtime_error_flag = false;
 static std::string runtime_error_message;
 
 namespace {
-#if defined(ELOXIR_ENABLE_CACHE_STATS)
-struct CacheStatsState {
-  std::atomic<uint64_t> property_get_hits{0};
-  std::atomic<uint64_t> property_get_misses{0};
-  std::atomic<uint64_t> property_get_shape_transitions{0};
-  std::atomic<uint64_t> property_set_hits{0};
-  std::atomic<uint64_t> property_set_misses{0};
-  std::atomic<uint64_t> property_set_shape_transitions{0};
-  std::atomic<uint64_t> call_hits{0};
-  std::atomic<uint64_t> call_misses{0};
-  std::atomic<uint64_t> call_shape_transitions{0};
-
-  void reset() {
-    property_get_hits.store(0, std::memory_order_relaxed);
-    property_get_misses.store(0, std::memory_order_relaxed);
-    property_get_shape_transitions.store(0, std::memory_order_relaxed);
-    property_set_hits.store(0, std::memory_order_relaxed);
-    property_set_misses.store(0, std::memory_order_relaxed);
-    property_set_shape_transitions.store(0, std::memory_order_relaxed);
-    call_hits.store(0, std::memory_order_relaxed);
-    call_misses.store(0, std::memory_order_relaxed);
-    call_shape_transitions.store(0, std::memory_order_relaxed);
-  }
-
-  eloxir::CacheStats snapshot() const {
-    eloxir::CacheStats stats{};
-    stats.property_get_hits = property_get_hits.load(std::memory_order_relaxed);
-    stats.property_get_misses =
-        property_get_misses.load(std::memory_order_relaxed);
-    stats.property_get_shape_transitions =
-        property_get_shape_transitions.load(std::memory_order_relaxed);
-    stats.property_set_hits = property_set_hits.load(std::memory_order_relaxed);
-    stats.property_set_misses =
-        property_set_misses.load(std::memory_order_relaxed);
-    stats.property_set_shape_transitions =
-        property_set_shape_transitions.load(std::memory_order_relaxed);
-    stats.call_hits = call_hits.load(std::memory_order_relaxed);
-    stats.call_misses = call_misses.load(std::memory_order_relaxed);
-    stats.call_shape_transitions =
-        call_shape_transitions.load(std::memory_order_relaxed);
-    return stats;
-  }
+struct FieldBuffer {
+  uint64_t *values;
+  uint8_t *presence;
 };
 
-static CacheStatsState g_cache_stats;
-#else
-static constexpr eloxir::CacheStats kEmptyCacheStats{};
-#endif
+static std::unordered_map<size_t, std::vector<FieldBuffer>> field_buffer_pool;
+static ObjInstance *instance_pool_head = nullptr;
+
+static FieldBuffer acquireFieldBuffer(size_t slotCount) {
+  if (slotCount == 0) {
+    return {nullptr, nullptr};
+  }
+
+  auto &bucket = field_buffer_pool[slotCount];
+  FieldBuffer buffer;
+  if (!bucket.empty()) {
+    buffer = bucket.back();
+    bucket.pop_back();
+  } else {
+    buffer.values = new uint64_t[slotCount];
+    buffer.presence = new uint8_t[slotCount];
+  }
+
+  std::fill_n(buffer.values, slotCount, Value::nil().getBits());
+  std::memset(buffer.presence, 0, slotCount * sizeof(uint8_t));
+  return buffer;
+}
+
+static void releaseFieldBuffer(size_t slotCount, FieldBuffer buffer) {
+  if (slotCount == 0 || !buffer.values || !buffer.presence) {
+    return;
+  }
+
+  field_buffer_pool[slotCount].push_back(buffer);
+}
+
+static void ensureInstanceCapacity(ObjInstance *instance, size_t required,
+                                   bool preserveExisting) {
+  if (!instance)
+    return;
+
+  if (required == 0) {
+    if (instance->fieldValues) {
+      releaseFieldBuffer(instance->fieldCapacity,
+                         {instance->fieldValues, instance->fieldPresence});
+      instance->fieldValues = nullptr;
+      instance->fieldPresence = nullptr;
+      instance->fieldCapacity = 0;
+    }
+    return;
+  }
+
+  if (instance->fieldCapacity >= required)
+    return;
+
+  FieldBuffer buffer = acquireFieldBuffer(required);
+  if (preserveExisting && instance->fieldValues && instance->fieldPresence) {
+    std::memcpy(buffer.values, instance->fieldValues,
+                instance->fieldCapacity * sizeof(uint64_t));
+    std::memcpy(buffer.presence, instance->fieldPresence,
+                instance->fieldCapacity * sizeof(uint8_t));
+  }
+
+  if (instance->fieldValues || instance->fieldPresence) {
+    releaseFieldBuffer(instance->fieldCapacity,
+                       {instance->fieldValues, instance->fieldPresence});
+  }
+
+  instance->fieldValues = buffer.values;
+  instance->fieldPresence = buffer.presence;
+  instance->fieldCapacity = required;
+}
+
+static void resetInstanceFields(ObjInstance *instance, size_t slotCount) {
+  if (!instance)
+    return;
+
+  if (slotCount == 0) {
+    ensureInstanceCapacity(instance, 0, false);
+    return;
+  }
+
+  ensureInstanceCapacity(instance, slotCount, false);
+  size_t capacity = instance->fieldCapacity;
+  std::fill_n(instance->fieldValues, capacity, Value::nil().getBits());
+  std::memset(instance->fieldPresence, 0, capacity * sizeof(uint8_t));
+}
+
+static ObjInstance *acquireInstanceObject() {
+  ObjInstance *instance = nullptr;
+  if (instance_pool_head) {
+    instance = instance_pool_head;
+    instance_pool_head = instance->nextFree;
+  } else {
+    instance = new ObjInstance();
+    instance->fieldValues = nullptr;
+    instance->fieldPresence = nullptr;
+    instance->fieldCapacity = 0;
+    instance->nextFree = nullptr;
+  }
+
+  instance->obj.type = ObjType::INSTANCE;
+  instance->klass = nullptr;
+  instance->nextFree = nullptr;
+  return instance;
+}
+
+static void releaseInstanceObject(ObjInstance *instance) {
+  if (!instance)
+    return;
+
+  if (instance->fieldValues || instance->fieldPresence) {
+    releaseFieldBuffer(instance->fieldCapacity,
+                       {instance->fieldValues, instance->fieldPresence});
+    instance->fieldValues = nullptr;
+    instance->fieldPresence = nullptr;
+    instance->fieldCapacity = 0;
+  }
+
+  instance->klass = nullptr;
+  instance->nextFree = instance_pool_head;
+  instance_pool_head = instance;
+}
 
 constexpr int MAX_CALL_DEPTH = 256;
 thread_local int current_call_depth = 0;
@@ -335,126 +410,6 @@ static ObjBoundMethod *getBoundMethod(Value v) {
   return bound;
 }
 
-static ObjShape *createShape(ObjShape *parent, ObjString *newField) {
-  ObjShape *shape = new ObjShape();
-  shape->obj.type = ObjType::SHAPE;
-  shape->parent = parent;
-  if (parent) {
-    shape->fieldOrder = parent->fieldOrder;
-    shape->slotCache = parent->slotCache;
-  }
-  if (newField) {
-    size_t slot = shape->fieldOrder.size();
-    shape->fieldOrder.push_back(newField);
-    shape->slotCache[newField] = slot;
-  }
-
-  allocated_objects.insert(shape);
-  return shape;
-}
-
-static bool shapeTryGetSlot(const ObjShape *shape, ObjString *field,
-                            size_t *outSlot) {
-  if (!shape)
-    return false;
-
-  auto it = shape->slotCache.find(field);
-  if (it == shape->slotCache.end())
-    return false;
-
-  if (outSlot)
-    *outSlot = it->second;
-  return true;
-}
-
-static ObjShape *shapeEnsureField(ObjShape *shape, ObjString *field) {
-  if (!shape)
-    shape = createShape(nullptr, nullptr);
-
-  if (shape->slotCache.find(field) != shape->slotCache.end())
-    return shape;
-
-  auto transIt = shape->transitions.find(field);
-  if (transIt != shape->transitions.end())
-    return transIt->second;
-
-  ObjShape *next = createShape(shape, field);
-  shape->transitions[field] = next;
-  return next;
-}
-
-static void ensureInstanceShape(ObjInstance *instance, ObjShape *target) {
-  if (!instance)
-    return;
-
-  if (!target)
-    target = createShape(nullptr, nullptr);
-
-  if (instance->shape == target)
-    return;
-
-  size_t newCount = target->fieldCount();
-
-  instance->fieldValues.resize(newCount, Value::nil().getBits());
-  instance->fieldPresence.resize(newCount, 0);
-
-  instance->shape = target;
-}
-
-static void propertyCacheUpdate(PropertyCache *cache, ObjShape *shape,
-                                size_t slot, uint32_t capacity,
-                                bool is_set_operation) {
-  if (!cache || !shape)
-    return;
-
-  if (slot > std::numeric_limits<uint32_t>::max())
-    return;
-
-  uint32_t slotIndex = static_cast<uint32_t>(slot);
-  uint32_t limit = std::min<uint32_t>(capacity, PROPERTY_CACHE_MAX_SIZE);
-  if (limit == 0)
-    return;
-
-  cache->size = std::min<uint32_t>(cache->size, PROPERTY_CACHE_MAX_SIZE);
-
-  bool saw_existing_shape = false;
-
-  for (uint32_t i = 0; i < cache->size; ++i) {
-    if (cache->entries[i].shape == shape) {
-      saw_existing_shape = true;
-      cache->entries[i].slot = slotIndex;
-      if (i != 0) {
-        PropertyCacheEntry entry = cache->entries[i];
-        for (uint32_t j = i; j > 0; --j) {
-          cache->entries[j] = cache->entries[j - 1];
-        }
-        cache->entries[0] = entry;
-      }
-      return;
-    }
-  }
-
-  if (!saw_existing_shape) {
-#if defined(ELOXIR_ENABLE_CACHE_STATS)
-    elx_cache_stats_record_property_shape_transition(is_set_operation ? 1 : 0);
-#endif
-  }
-
-  if (cache->size < limit) {
-    for (uint32_t j = cache->size; j > 0; --j) {
-      cache->entries[j] = cache->entries[j - 1];
-    }
-    cache->entries[0] = {shape, slotIndex};
-    cache->size += 1;
-  } else {
-    for (uint32_t j = limit - 1; j > 0; --j) {
-      cache->entries[j] = cache->entries[j - 1];
-    }
-    cache->entries[0] = {shape, slotIndex};
-    cache->size = limit;
-  }
-}
-
 static uint64_t findMethodOnClass(ObjClass *klass, ObjString *name);
 
 static ObjString *extractStringKey(uint64_t string_bits, std::string *out) {
@@ -476,7 +431,7 @@ static void destroyObject(Obj *obj) {
     delete reinterpret_cast<ObjClass *>(obj);
     break;
   case ObjType::INSTANCE:
-    delete reinterpret_cast<ObjInstance *>(obj);
+    releaseInstanceObject(reinterpret_cast<ObjInstance *>(obj));
     break;
   case ObjType::BOUND_METHOD:
     delete reinterpret_cast<ObjBoundMethod *>(obj);
@@ -589,10 +544,6 @@ uint64_t elx_print(uint64_t bits) {
         }
       }
       std::cout << "<bound method>";
-      break;
-    }
-    case ObjType::SHAPE: {
-      std::cout << "<shape>";
       break;
     }
     default:
@@ -812,9 +763,32 @@ uint64_t elx_allocate_function(const char *name, int arity,
   return Value::object(func).getBits();
 }
 
-static uint64_t invoke_function_pointer(void *function_ptr, uint64_t *args,
-                                        int arg_count) {
-  if (!function_ptr) {
+uint64_t elx_call_function(uint64_t func_bits, uint64_t *args, int arg_count) {
+  // Clear any previous runtime errors
+  elx_clear_runtime_error();
+
+  Value func_val = Value::fromBits(func_bits);
+  ObjFunction *func = getFunction(func_val);
+  if (!func) {
+    elx_runtime_error("Can only call functions and classes.");
+    return Value::nil().getBits();
+  }
+
+  if (arg_count != func->arity) {
+    std::string error_msg = formatArityError(func, arg_count);
+    elx_runtime_error(error_msg.c_str());
+    return Value::nil().getBits();
+  }
+
+  // Validate argument count against Lox limit
+  if (arg_count > 255) {
+    std::string error_msg = "Function arity (" + std::to_string(arg_count) +
+                            ") exceeds Lox limit of 255 parameters.";
+    elx_runtime_error(error_msg.c_str());
+    return Value::nil().getBits();
+  }
+
+  if (!func->llvm_function) {
     elx_runtime_error("Function has no implementation.");
     return Value::nil().getBits();
   }
@@ -965,245 +939,6 @@ static uint64_t invoke_function_pointer(void *function_ptr, uint64_t *args,
     elx_runtime_error("Unknown exception during function call.");
     return Value::nil().getBits();
   }
-}
-
-static uint64_t invoke_closure_pointer(void *function_ptr, uint64_t *args,
-                                       int arg_count,
-                                       uint64_t *upvalue_args) {
-  if (!function_ptr) {
-    if (upvalue_args) {
-      free(upvalue_args);
-    }
-    elx_runtime_error("Closure function has no implementation.");
-    return Value::nil().getBits();
-  }
-
-  try {
-    uint64_t result = Value::nil().getBits();
-    switch (arg_count) {
-    case 0: {
-      using FunctionPtr = uint64_t (*)(uint64_t *);
-      auto fn = reinterpret_cast<FunctionPtr>(function_ptr);
-      result = fn(upvalue_args);
-      break;
-    }
-    case 1: {
-      using FunctionPtr = uint64_t (*)(uint64_t, uint64_t *);
-      auto fn = reinterpret_cast<FunctionPtr>(function_ptr);
-      result = fn(args[0], upvalue_args);
-      break;
-    }
-    case 2: {
-      using FunctionPtr = uint64_t (*)(uint64_t, uint64_t, uint64_t *);
-      auto fn = reinterpret_cast<FunctionPtr>(function_ptr);
-      result = fn(args[0], args[1], upvalue_args);
-      break;
-    }
-    case 3: {
-      using FunctionPtr =
-          uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t *);
-      auto fn = reinterpret_cast<FunctionPtr>(function_ptr);
-      result = fn(args[0], args[1], args[2], upvalue_args);
-      break;
-    }
-    case 4: {
-      using FunctionPtr =
-          uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t *);
-      auto fn = reinterpret_cast<FunctionPtr>(function_ptr);
-      result = fn(args[0], args[1], args[2], args[3], upvalue_args);
-      break;
-    }
-    case 5: {
-      using FunctionPtr =
-          uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
-                       uint64_t *);
-      auto fn = reinterpret_cast<FunctionPtr>(function_ptr);
-      result = fn(args[0], args[1], args[2], args[3], args[4], upvalue_args);
-      break;
-    }
-    case 6: {
-      using FunctionPtr =
-          uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
-                       uint64_t, uint64_t *);
-      auto fn = reinterpret_cast<FunctionPtr>(function_ptr);
-      result = fn(args[0], args[1], args[2], args[3], args[4], args[5],
-                  upvalue_args);
-      break;
-    }
-    case 7: {
-      using FunctionPtr =
-          uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
-                       uint64_t, uint64_t, uint64_t *);
-      auto fn = reinterpret_cast<FunctionPtr>(function_ptr);
-      result = fn(args[0], args[1], args[2], args[3], args[4], args[5], args[6],
-                  upvalue_args);
-      break;
-    }
-    case 8: {
-      using FunctionPtr =
-          uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
-                       uint64_t, uint64_t, uint64_t, uint64_t *);
-      auto fn = reinterpret_cast<FunctionPtr>(function_ptr);
-      result = fn(args[0], args[1], args[2], args[3], args[4], args[5], args[6],
-                  args[7], upvalue_args);
-      break;
-    }
-    case 9: {
-      using FunctionPtr =
-          uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
-                       uint64_t, uint64_t, uint64_t, uint64_t, uint64_t *);
-      auto fn = reinterpret_cast<FunctionPtr>(function_ptr);
-      result = fn(args[0], args[1], args[2], args[3], args[4], args[5], args[6],
-                  args[7], args[8], upvalue_args);
-      break;
-    }
-    case 10: {
-      using FunctionPtr =
-          uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
-                       uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
-                       uint64_t *);
-      auto fn = reinterpret_cast<FunctionPtr>(function_ptr);
-      result = fn(args[0], args[1], args[2], args[3], args[4], args[5], args[6],
-                  args[7], args[8], args[9], upvalue_args);
-      break;
-    }
-    case 11: {
-      using FunctionPtr =
-          uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
-                       uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
-                       uint64_t, uint64_t *);
-      auto fn = reinterpret_cast<FunctionPtr>(function_ptr);
-      result = fn(args[0], args[1], args[2], args[3], args[4], args[5], args[6],
-                  args[7], args[8], args[9], args[10], upvalue_args);
-      break;
-    }
-    case 12: {
-      using FunctionPtr =
-          uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
-                       uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
-                       uint64_t, uint64_t, uint64_t *);
-      auto fn = reinterpret_cast<FunctionPtr>(function_ptr);
-      result = fn(args[0], args[1], args[2], args[3], args[4], args[5], args[6],
-                  args[7], args[8], args[9], args[10], args[11], upvalue_args);
-      break;
-    }
-    case 13: {
-      using FunctionPtr =
-          uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
-                       uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
-                       uint64_t, uint64_t, uint64_t, uint64_t *);
-      auto fn = reinterpret_cast<FunctionPtr>(function_ptr);
-      result = fn(args[0], args[1], args[2], args[3], args[4], args[5], args[6],
-                  args[7], args[8], args[9], args[10], args[11], args[12],
-                  upvalue_args);
-      break;
-    }
-    case 14: {
-      using FunctionPtr =
-          uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
-                       uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
-                       uint64_t, uint64_t, uint64_t, uint64_t, uint64_t *);
-      auto fn = reinterpret_cast<FunctionPtr>(function_ptr);
-      result = fn(args[0], args[1], args[2], args[3], args[4], args[5], args[6],
-                  args[7], args[8], args[9], args[10], args[11], args[12],
-                  args[13], upvalue_args);
-      break;
-    }
-    case 15: {
-      using FunctionPtr =
-          uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
-                       uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
-                       uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
-                       uint64_t *);
-      auto fn = reinterpret_cast<FunctionPtr>(function_ptr);
-      result = fn(args[0], args[1], args[2], args[3], args[4], args[5], args[6],
-                  args[7], args[8], args[9], args[10], args[11], args[12],
-                  args[13], args[14], upvalue_args);
-      break;
-    }
-    case 16: {
-      using FunctionPtr =
-          uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
-                       uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
-                       uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
-                       uint64_t, uint64_t *);
-      auto fn = reinterpret_cast<FunctionPtr>(function_ptr);
-      result = fn(args[0], args[1], args[2], args[3], args[4], args[5], args[6],
-                  args[7], args[8], args[9], args[10], args[11], args[12],
-                  args[13], args[14], args[15], upvalue_args);
-      break;
-    }
-    default: {
-      std::string error_msg = "Closures with " + std::to_string(arg_count) +
-                              " arguments are not yet fully supported.";
-      elx_runtime_error(error_msg.c_str());
-      if (upvalue_args) {
-        free(upvalue_args);
-      }
-      return Value::nil().getBits();
-    }
-    }
-
-    if (upvalue_args) {
-      free(upvalue_args);
-    }
-    return result;
-
-  } catch (const std::exception &e) {
-    if (upvalue_args) {
-      free(upvalue_args);
-    }
-    std::string error_msg =
-        "Exception during closure call: " + std::string(e.what());
-    elx_runtime_error(error_msg.c_str());
-    return Value::nil().getBits();
-  } catch (...) {
-    if (upvalue_args) {
-      free(upvalue_args);
-    }
-    elx_runtime_error("Unknown exception during closure call.");
-    return Value::nil().getBits();
-  }
-}
-
-uint64_t elx_call_function(uint64_t func_bits, uint64_t *args, int arg_count) {
-  // Clear any previous runtime errors
-  elx_clear_runtime_error();
-
-  Value func_val = Value::fromBits(func_bits);
-  ObjFunction *func = getFunction(func_val);
-  if (!func) {
-    elx_runtime_error("Can only call functions and classes.");
-    return Value::nil().getBits();
-  }
-
-  if (arg_count != func->arity) {
-    std::string error_msg = formatArityError(func, arg_count);
-    elx_runtime_error(error_msg.c_str());
-    return Value::nil().getBits();
-  }
-
-  // Validate argument count against Lox limit
-  if (arg_count > 255) {
-    std::string error_msg = "Function arity (" + std::to_string(arg_count) +
-                            ") exceeds Lox limit of 255 parameters.";
-    elx_runtime_error(error_msg.c_str());
-    return Value::nil().getBits();
-  }
-
-  void *target = func->llvm_function;
-  if (!target) {
-    elx_runtime_error("Function has no implementation.");
-    return Value::nil().getBits();
-  }
-
-  CallDepthGuard depth_guard;
-  if (!depth_guard.entered()) {
-    elx_runtime_error("Stack overflow.");
-    return Value::nil().getBits();
-  }
-
-  return invoke_function_pointer(target, args, arg_count);
 }
 
 uint64_t elx_allocate_native(const char *name, int arity, NativeFn function) {
@@ -2282,25 +2017,10 @@ uint64_t elx_instantiate_class(uint64_t class_bits) {
     return Value::nil().getBits();
   }
 
-  ObjInstance *instance = new ObjInstance();
-  instance->obj.type = ObjType::INSTANCE;
+  ObjInstance *instance = acquireInstanceObject();
   instance->klass = klass;
-  ObjShape *shape = nullptr;
-  if (klass) {
-    shape = klass->shape;
-    if (!shape) {
-      shape = createShape(nullptr, nullptr);
-      klass->shape = shape;
-    }
-  }
-  if (!shape) {
-    shape = createShape(nullptr, nullptr);
-  }
-
-  instance->shape = shape;
-  size_t slotCount = shape ? shape->fieldCount() : 0;
-  instance->fieldValues.assign(slotCount, Value::nil().getBits());
-  instance->fieldPresence.assign(slotCount, 0);
+  size_t slotCount = klass ? klass->fieldSlots.size() : 0;
+  resetInstanceFields(instance, slotCount);
 
   allocated_objects.insert(instance);
   return Value::object(instance).getBits();
@@ -2338,17 +2058,14 @@ uint64_t elx_get_instance_field(uint64_t instance_bits, uint64_t name_bits) {
   }
 
   ObjClass *klass = instance->klass;
-  size_t slot = 0;
-  bool found = shapeTryGetSlot(instance->shape, field_key, &slot);
-  if (!found && klass) {
-    ObjShape *classShape = klass->shape;
-    found = shapeTryGetSlot(classShape, field_key, &slot);
-  }
-  if (found) {
-    if (slot < instance->fieldValues.size() &&
-        slot < instance->fieldPresence.size() &&
-        instance->fieldPresence[slot]) {
-      return instance->fieldValues[slot];
+  if (klass) {
+    auto slotIt = klass->fieldSlots.find(field_key);
+    if (slotIt != klass->fieldSlots.end()) {
+      size_t slot = slotIt->second;
+      if (instance->fieldValues && instance->fieldPresence &&
+          slot < instance->fieldCapacity && instance->fieldPresence[slot]) {
+        return instance->fieldValues[slot];
+      }
     }
   }
 
@@ -2388,19 +2105,14 @@ uint64_t elx_set_instance_field(uint64_t instance_bits, uint64_t name_bits,
     }
   }
 
-  shape = instance->shape;
-  if (!shapeTryGetSlot(shape, field_key, &slot)) {
-    elx_runtime_error("Failed to assign property on instance shape.");
-    return Value::nil().getBits();
+  if (slot >= instance->fieldCapacity) {
+    ensureInstanceCapacity(instance, slot + 1, true);
   }
 
-  if (instance->fieldValues.size() <= slot)
-    instance->fieldValues.resize(slot + 1, Value::nil().getBits());
-  if (instance->fieldPresence.size() <= slot)
-    instance->fieldPresence.resize(slot + 1, 0);
-
-  instance->fieldValues[slot] = value_bits;
-  instance->fieldPresence[slot] = 1;
+  if (instance->fieldValues && instance->fieldPresence) {
+    instance->fieldValues[slot] = value_bits;
+    instance->fieldPresence[slot] = 1;
+  }
   return value_bits;
 }
 
@@ -2493,9 +2205,15 @@ uint64_t elx_get_property_slow(uint64_t instance_bits, uint64_t name_bits,
 
   ObjClass *klass = instance->klass;
   if (klass) {
-    uint64_t method_bits = findMethodOnClass(klass, field_key);
-    if (method_bits != Value::nil().getBits()) {
-      return elx_bind_method(instance_bits, method_bits);
+    auto slotIt = klass->fieldSlots.find(field_key);
+    if (slotIt != klass->fieldSlots.end()) {
+      size_t slot = slotIt->second;
+      if (instance->fieldValues && instance->fieldPresence &&
+          slot < instance->fieldCapacity && instance->fieldPresence[slot]) {
+        if (out_value)
+          *out_value = instance->fieldValues[slot];
+        return 1;
+      }
     }
   }
 
