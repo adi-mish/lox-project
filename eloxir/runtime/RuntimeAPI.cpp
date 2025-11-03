@@ -198,6 +198,90 @@ static std::string formatArityError(const ObjFunction *func, int got) {
 }
 } // namespace
 
+int elx_cache_stats_enabled() {
+#if defined(ELOXIR_ENABLE_CACHE_STATS)
+  return 1;
+#else
+  return 0;
+#endif
+}
+
+void elx_cache_stats_reset() {
+#if defined(ELOXIR_ENABLE_CACHE_STATS)
+  g_cache_stats.reset();
+#endif
+}
+
+CacheStats elx_cache_stats_snapshot() {
+#if defined(ELOXIR_ENABLE_CACHE_STATS)
+  return g_cache_stats.snapshot();
+#else
+  return kEmptyCacheStats;
+#endif
+}
+
+void elx_cache_stats_dump() {
+#if defined(ELOXIR_ENABLE_CACHE_STATS)
+  CacheStats stats = elx_cache_stats_snapshot();
+  std::cout << "CACHE_STATS {\"enabled\": true";
+  std::cout << ", \"property_get_hits\": " << stats.property_get_hits;
+  std::cout << ", \"property_get_misses\": " << stats.property_get_misses;
+  std::cout << ", \"property_get_shape_transitions\": "
+            << stats.property_get_shape_transitions;
+  std::cout << ", \"property_set_hits\": " << stats.property_set_hits;
+  std::cout << ", \"property_set_misses\": " << stats.property_set_misses;
+  std::cout << ", \"property_set_shape_transitions\": "
+            << stats.property_set_shape_transitions;
+  std::cout << ", \"call_hits\": " << stats.call_hits;
+  std::cout << ", \"call_misses\": " << stats.call_misses;
+  std::cout << ", \"call_shape_transitions\": "
+            << stats.call_shape_transitions;
+  std::cout << "}" << std::endl;
+#else
+  std::cout << "CACHE_STATS {\"enabled\": false}" << std::endl;
+#endif
+}
+
+#if defined(ELOXIR_ENABLE_CACHE_STATS)
+void elx_cache_stats_record_property_hit(int is_set) {
+  if (is_set) {
+    g_cache_stats.property_set_hits.fetch_add(1, std::memory_order_relaxed);
+  } else {
+    g_cache_stats.property_get_hits.fetch_add(1, std::memory_order_relaxed);
+  }
+}
+
+void elx_cache_stats_record_property_miss(int is_set) {
+  if (is_set) {
+    g_cache_stats.property_set_misses.fetch_add(1, std::memory_order_relaxed);
+  } else {
+    g_cache_stats.property_get_misses.fetch_add(1, std::memory_order_relaxed);
+  }
+}
+
+void elx_cache_stats_record_property_shape_transition(int is_set) {
+  if (is_set) {
+    g_cache_stats.property_set_shape_transitions.fetch_add(
+        1, std::memory_order_relaxed);
+  } else {
+    g_cache_stats.property_get_shape_transitions.fetch_add(
+        1, std::memory_order_relaxed);
+  }
+}
+
+void elx_cache_stats_record_call_hit(int /*kind*/) {
+  g_cache_stats.call_hits.fetch_add(1, std::memory_order_relaxed);
+}
+
+void elx_cache_stats_record_call_miss() {
+  g_cache_stats.call_misses.fetch_add(1, std::memory_order_relaxed);
+}
+
+void elx_cache_stats_record_call_transition(int /*previous_kind*/, int /*new_kind*/) {
+  g_cache_stats.call_shape_transitions.fetch_add(1, std::memory_order_relaxed);
+}
+#endif
+
 static const char *getString(Value v) {
   if (!v.isObj())
     return nullptr;
@@ -354,6 +438,9 @@ static void destroyObject(Obj *obj) {
     break;
   case ObjType::NATIVE:
     delete reinterpret_cast<ObjNative *>(obj);
+    break;
+  case ObjType::SHAPE:
+    delete reinterpret_cast<ObjShape *>(obj);
     break;
   default:
     free(obj);
@@ -634,6 +721,12 @@ int elx_value_is_string(uint64_t value_bits) {
   return string_obj != nullptr ? 1 : 0;
 }
 
+int elx_is_function(uint64_t value_bits) {
+  Value v = Value::fromBits(value_bits);
+  ObjFunction *func = getFunction(v);
+  return func ? 1 : 0;
+}
+
 uint64_t elx_allocate_function(const char *name, int arity,
                                void *llvm_function) {
   // Allocate memory for the function object
@@ -700,137 +793,136 @@ uint64_t elx_call_function(uint64_t func_bits, uint64_t *args, int arg_count) {
     return Value::nil().getBits();
   }
 
-  CallDepthGuard depth_guard;
-  if (!depth_guard.entered()) {
-    elx_runtime_error("Stack overflow.");
-    return Value::nil().getBits();
-  }
-
-  // Use a more flexible calling mechanism that supports up to 16 arguments
-  // For functions with more arguments, we'd need libffi or similar
   try {
     switch (arg_count) {
     case 0: {
-      typedef uint64_t (*FunctionPtr0)();
-      FunctionPtr0 fn = reinterpret_cast<FunctionPtr0>(func->llvm_function);
+      using FunctionPtr = uint64_t (*)();
+      auto fn = reinterpret_cast<FunctionPtr>(function_ptr);
       return fn();
     }
     case 1: {
-      typedef uint64_t (*FunctionPtr1)(uint64_t);
-      FunctionPtr1 fn = reinterpret_cast<FunctionPtr1>(func->llvm_function);
+      using FunctionPtr = uint64_t (*)(uint64_t);
+      auto fn = reinterpret_cast<FunctionPtr>(function_ptr);
       return fn(args[0]);
     }
     case 2: {
-      typedef uint64_t (*FunctionPtr2)(uint64_t, uint64_t);
-      FunctionPtr2 fn = reinterpret_cast<FunctionPtr2>(func->llvm_function);
+      using FunctionPtr = uint64_t (*)(uint64_t, uint64_t);
+      auto fn = reinterpret_cast<FunctionPtr>(function_ptr);
       return fn(args[0], args[1]);
     }
     case 3: {
-      typedef uint64_t (*FunctionPtr3)(uint64_t, uint64_t, uint64_t);
-      FunctionPtr3 fn = reinterpret_cast<FunctionPtr3>(func->llvm_function);
+      using FunctionPtr = uint64_t (*)(uint64_t, uint64_t, uint64_t);
+      auto fn = reinterpret_cast<FunctionPtr>(function_ptr);
       return fn(args[0], args[1], args[2]);
     }
     case 4: {
-      typedef uint64_t (*FunctionPtr4)(uint64_t, uint64_t, uint64_t, uint64_t);
-      FunctionPtr4 fn = reinterpret_cast<FunctionPtr4>(func->llvm_function);
+      using FunctionPtr = uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t);
+      auto fn = reinterpret_cast<FunctionPtr>(function_ptr);
       return fn(args[0], args[1], args[2], args[3]);
     }
     case 5: {
-      typedef uint64_t (*FunctionPtr5)(uint64_t, uint64_t, uint64_t, uint64_t,
-                                       uint64_t);
-      FunctionPtr5 fn = reinterpret_cast<FunctionPtr5>(func->llvm_function);
+      using FunctionPtr =
+          uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+      auto fn = reinterpret_cast<FunctionPtr>(function_ptr);
       return fn(args[0], args[1], args[2], args[3], args[4]);
     }
     case 6: {
-      typedef uint64_t (*FunctionPtr6)(uint64_t, uint64_t, uint64_t, uint64_t,
-                                       uint64_t, uint64_t);
-      FunctionPtr6 fn = reinterpret_cast<FunctionPtr6>(func->llvm_function);
+      using FunctionPtr =
+          uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
+                       uint64_t);
+      auto fn = reinterpret_cast<FunctionPtr>(function_ptr);
       return fn(args[0], args[1], args[2], args[3], args[4], args[5]);
     }
     case 7: {
-      typedef uint64_t (*FunctionPtr7)(uint64_t, uint64_t, uint64_t, uint64_t,
-                                       uint64_t, uint64_t, uint64_t);
-      FunctionPtr7 fn = reinterpret_cast<FunctionPtr7>(func->llvm_function);
+      using FunctionPtr =
+          uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
+                       uint64_t, uint64_t);
+      auto fn = reinterpret_cast<FunctionPtr>(function_ptr);
       return fn(args[0], args[1], args[2], args[3], args[4], args[5], args[6]);
     }
     case 8: {
-      typedef uint64_t (*FunctionPtr8)(uint64_t, uint64_t, uint64_t, uint64_t,
-                                       uint64_t, uint64_t, uint64_t, uint64_t);
-      FunctionPtr8 fn = reinterpret_cast<FunctionPtr8>(func->llvm_function);
+      using FunctionPtr =
+          uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
+                       uint64_t, uint64_t, uint64_t);
+      auto fn = reinterpret_cast<FunctionPtr>(function_ptr);
       return fn(args[0], args[1], args[2], args[3], args[4], args[5], args[6],
                 args[7]);
     }
     case 9: {
-      typedef uint64_t (*FunctionPtr9)(uint64_t, uint64_t, uint64_t, uint64_t,
-                                       uint64_t, uint64_t, uint64_t, uint64_t,
-                                       uint64_t);
-      FunctionPtr9 fn = reinterpret_cast<FunctionPtr9>(func->llvm_function);
+      using FunctionPtr =
+          uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
+                       uint64_t, uint64_t, uint64_t, uint64_t);
+      auto fn = reinterpret_cast<FunctionPtr>(function_ptr);
       return fn(args[0], args[1], args[2], args[3], args[4], args[5], args[6],
                 args[7], args[8]);
     }
     case 10: {
-      typedef uint64_t (*FunctionPtr10)(uint64_t, uint64_t, uint64_t, uint64_t,
-                                        uint64_t, uint64_t, uint64_t, uint64_t,
-                                        uint64_t, uint64_t);
-      FunctionPtr10 fn = reinterpret_cast<FunctionPtr10>(func->llvm_function);
+      using FunctionPtr =
+          uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
+                       uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+      auto fn = reinterpret_cast<FunctionPtr>(function_ptr);
       return fn(args[0], args[1], args[2], args[3], args[4], args[5], args[6],
                 args[7], args[8], args[9]);
     }
     case 11: {
-      typedef uint64_t (*FunctionPtr11)(uint64_t, uint64_t, uint64_t, uint64_t,
-                                        uint64_t, uint64_t, uint64_t, uint64_t,
-                                        uint64_t, uint64_t, uint64_t);
-      FunctionPtr11 fn = reinterpret_cast<FunctionPtr11>(func->llvm_function);
+      using FunctionPtr =
+          uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
+                       uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
+                       uint64_t);
+      auto fn = reinterpret_cast<FunctionPtr>(function_ptr);
       return fn(args[0], args[1], args[2], args[3], args[4], args[5], args[6],
                 args[7], args[8], args[9], args[10]);
     }
     case 12: {
-      typedef uint64_t (*FunctionPtr12)(uint64_t, uint64_t, uint64_t, uint64_t,
-                                        uint64_t, uint64_t, uint64_t, uint64_t,
-                                        uint64_t, uint64_t, uint64_t, uint64_t);
-      FunctionPtr12 fn = reinterpret_cast<FunctionPtr12>(func->llvm_function);
+      using FunctionPtr =
+          uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
+                       uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
+                       uint64_t, uint64_t);
+      auto fn = reinterpret_cast<FunctionPtr>(function_ptr);
       return fn(args[0], args[1], args[2], args[3], args[4], args[5], args[6],
                 args[7], args[8], args[9], args[10], args[11]);
     }
     case 13: {
-      typedef uint64_t (*FunctionPtr13)(
-          uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
-          uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
-      FunctionPtr13 fn = reinterpret_cast<FunctionPtr13>(func->llvm_function);
+      using FunctionPtr =
+          uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
+                       uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
+                       uint64_t, uint64_t, uint64_t);
+      auto fn = reinterpret_cast<FunctionPtr>(function_ptr);
       return fn(args[0], args[1], args[2], args[3], args[4], args[5], args[6],
                 args[7], args[8], args[9], args[10], args[11], args[12]);
     }
     case 14: {
-      typedef uint64_t (*FunctionPtr14)(
-          uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
-          uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
-      FunctionPtr14 fn = reinterpret_cast<FunctionPtr14>(func->llvm_function);
+      using FunctionPtr =
+          uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
+                       uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
+                       uint64_t, uint64_t, uint64_t, uint64_t);
+      auto fn = reinterpret_cast<FunctionPtr>(function_ptr);
       return fn(args[0], args[1], args[2], args[3], args[4], args[5], args[6],
                 args[7], args[8], args[9], args[10], args[11], args[12],
                 args[13]);
     }
     case 15: {
-      typedef uint64_t (*FunctionPtr15)(uint64_t, uint64_t, uint64_t, uint64_t,
-                                        uint64_t, uint64_t, uint64_t, uint64_t,
-                                        uint64_t, uint64_t, uint64_t, uint64_t,
-                                        uint64_t, uint64_t, uint64_t);
-      FunctionPtr15 fn = reinterpret_cast<FunctionPtr15>(func->llvm_function);
+      using FunctionPtr =
+          uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
+                       uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
+                       uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+      auto fn = reinterpret_cast<FunctionPtr>(function_ptr);
       return fn(args[0], args[1], args[2], args[3], args[4], args[5], args[6],
                 args[7], args[8], args[9], args[10], args[11], args[12],
                 args[13], args[14]);
     }
     case 16: {
-      typedef uint64_t (*FunctionPtr16)(uint64_t, uint64_t, uint64_t, uint64_t,
-                                        uint64_t, uint64_t, uint64_t, uint64_t,
-                                        uint64_t, uint64_t, uint64_t, uint64_t,
-                                        uint64_t, uint64_t, uint64_t, uint64_t);
-      FunctionPtr16 fn = reinterpret_cast<FunctionPtr16>(func->llvm_function);
+      using FunctionPtr =
+          uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
+                       uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
+                       uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
+                       uint64_t);
+      auto fn = reinterpret_cast<FunctionPtr>(function_ptr);
       return fn(args[0], args[1], args[2], args[3], args[4], args[5], args[6],
                 args[7], args[8], args[9], args[10], args[11], args[12],
                 args[13], args[14], args[15]);
     }
     default: {
-      // For functions with more than 16 arguments, we need libffi or similar
       std::string error_msg =
           "Functions with " + std::to_string(arg_count) +
           " arguments are not yet supported. Maximum supported: 16.";
@@ -1257,13 +1349,10 @@ uint64_t elx_call_closure(uint64_t closure_bits, uint64_t *args,
     return Value::nil().getBits();
   }
 
-  if (!func->llvm_function) {
+  void *target = func->llvm_function;
+  if (!target) {
     elx_runtime_error("Closure function has no implementation.");
     return Value::nil().getBits();
-  }
-
-  if (closure->upvalue_count == 0) {
-    return elx_call_function(Value::object(func).getBits(), args, arg_count);
   }
 
   CallDepthGuard depth_guard;
@@ -1272,217 +1361,26 @@ uint64_t elx_call_closure(uint64_t closure_bits, uint64_t *args,
     return Value::nil().getBits();
   }
 
-  // Create upvalue array for function call
-  uint64_t *upvalue_args = nullptr;
-  if (closure->upvalue_count > 0) {
-    upvalue_args = static_cast<uint64_t *>(
-        malloc(sizeof(uint64_t) * closure->upvalue_count));
-    if (!upvalue_args) {
-      elx_runtime_error("Failed to allocate upvalue arguments.");
-      return Value::nil().getBits();
-    }
+  if (closure->upvalue_count == 0) {
+    return invoke_function_pointer(target, args, arg_count);
+  }
 
-    // Pass upvalue objects through to the JITed function so it can fetch and
-    // update them via the runtime helpers.
-    for (int i = 0; i < closure->upvalue_count; i++) {
-      if (closure->upvalues[i] != nullptr) {
-        upvalue_args[i] = Value::object(closure->upvalues[i]).getBits();
-      } else {
-        upvalue_args[i] = Value::nil().getBits();
-      }
+  uint64_t *upvalue_args =
+      static_cast<uint64_t *>(malloc(sizeof(uint64_t) * closure->upvalue_count));
+  if (!upvalue_args) {
+    elx_runtime_error("Failed to allocate upvalue arguments.");
+    return Value::nil().getBits();
+  }
+
+  for (int i = 0; i < closure->upvalue_count; i++) {
+    if (closure->upvalues[i] != nullptr) {
+      upvalue_args[i] = Value::object(closure->upvalues[i]).getBits();
+    } else {
+      upvalue_args[i] = Value::nil().getBits();
     }
   }
 
-  try {
-    uint64_t result;
-    // Call function with original args plus upvalues pointer as the final
-    // parameter. Support up to 16 user arguments (matching elx_call_function).
-    switch (arg_count) {
-    case 0: {
-      typedef uint64_t (*FunctionPtr)(uint64_t *);
-      FunctionPtr fn = reinterpret_cast<FunctionPtr>(func->llvm_function);
-      result = fn(upvalue_args);
-      break;
-    }
-    case 1: {
-      typedef uint64_t (*FunctionPtr)(uint64_t, uint64_t *);
-      FunctionPtr fn = reinterpret_cast<FunctionPtr>(func->llvm_function);
-      result = fn(args[0], upvalue_args);
-      break;
-    }
-    case 2: {
-      typedef uint64_t (*FunctionPtr)(uint64_t, uint64_t, uint64_t *);
-      FunctionPtr fn = reinterpret_cast<FunctionPtr>(func->llvm_function);
-      result = fn(args[0], args[1], upvalue_args);
-      break;
-    }
-    case 3: {
-      typedef uint64_t (*FunctionPtr)(uint64_t, uint64_t, uint64_t, uint64_t *);
-      FunctionPtr fn = reinterpret_cast<FunctionPtr>(func->llvm_function);
-      result = fn(args[0], args[1], args[2], upvalue_args);
-      break;
-    }
-    case 4: {
-      typedef uint64_t (*FunctionPtr)(uint64_t, uint64_t, uint64_t, uint64_t,
-                                      uint64_t *);
-      FunctionPtr fn = reinterpret_cast<FunctionPtr>(func->llvm_function);
-      result = fn(args[0], args[1], args[2], args[3], upvalue_args);
-      break;
-    }
-    case 5: {
-      typedef uint64_t (*FunctionPtr)(uint64_t, uint64_t, uint64_t, uint64_t,
-                                      uint64_t, uint64_t *);
-      FunctionPtr fn = reinterpret_cast<FunctionPtr>(func->llvm_function);
-      result = fn(args[0], args[1], args[2], args[3], args[4], upvalue_args);
-      break;
-    }
-    case 6: {
-      typedef uint64_t (*FunctionPtr)(uint64_t, uint64_t, uint64_t, uint64_t,
-                                      uint64_t, uint64_t, uint64_t *);
-      FunctionPtr fn = reinterpret_cast<FunctionPtr>(func->llvm_function);
-      result = fn(args[0], args[1], args[2], args[3], args[4], args[5],
-                  upvalue_args);
-      break;
-    }
-    case 7: {
-      typedef uint64_t (*FunctionPtr)(uint64_t, uint64_t, uint64_t, uint64_t,
-                                      uint64_t, uint64_t, uint64_t,
-                                      uint64_t *);
-      FunctionPtr fn = reinterpret_cast<FunctionPtr>(func->llvm_function);
-      result = fn(args[0], args[1], args[2], args[3], args[4], args[5], args[6],
-                  upvalue_args);
-      break;
-    }
-    case 8: {
-      typedef uint64_t (*FunctionPtr)(uint64_t, uint64_t, uint64_t, uint64_t,
-                                      uint64_t, uint64_t, uint64_t, uint64_t,
-                                      uint64_t *);
-      FunctionPtr fn = reinterpret_cast<FunctionPtr>(func->llvm_function);
-      result = fn(args[0], args[1], args[2], args[3], args[4], args[5], args[6],
-                  args[7], upvalue_args);
-      break;
-    }
-    case 9: {
-      typedef uint64_t (*FunctionPtr)(uint64_t, uint64_t, uint64_t, uint64_t,
-                                      uint64_t, uint64_t, uint64_t, uint64_t,
-                                      uint64_t, uint64_t *);
-      FunctionPtr fn = reinterpret_cast<FunctionPtr>(func->llvm_function);
-      result = fn(args[0], args[1], args[2], args[3], args[4], args[5], args[6],
-                  args[7], args[8], upvalue_args);
-      break;
-    }
-    case 10: {
-      typedef uint64_t (*FunctionPtr)(uint64_t, uint64_t, uint64_t, uint64_t,
-                                      uint64_t, uint64_t, uint64_t, uint64_t,
-                                      uint64_t, uint64_t, uint64_t *);
-      FunctionPtr fn = reinterpret_cast<FunctionPtr>(func->llvm_function);
-      result = fn(args[0], args[1], args[2], args[3], args[4], args[5], args[6],
-                  args[7], args[8], args[9], upvalue_args);
-      break;
-    }
-    case 11: {
-      typedef uint64_t (*FunctionPtr)(uint64_t, uint64_t, uint64_t, uint64_t,
-                                      uint64_t, uint64_t, uint64_t, uint64_t,
-                                      uint64_t, uint64_t, uint64_t, uint64_t *);
-      FunctionPtr fn = reinterpret_cast<FunctionPtr>(func->llvm_function);
-      result = fn(args[0], args[1], args[2], args[3], args[4], args[5], args[6],
-                  args[7], args[8], args[9], args[10], upvalue_args);
-      break;
-    }
-    case 12: {
-      typedef uint64_t (*FunctionPtr)(uint64_t, uint64_t, uint64_t, uint64_t,
-                                      uint64_t, uint64_t, uint64_t, uint64_t,
-                                      uint64_t, uint64_t, uint64_t, uint64_t,
-                                      uint64_t *);
-      FunctionPtr fn = reinterpret_cast<FunctionPtr>(func->llvm_function);
-      result = fn(args[0], args[1], args[2], args[3], args[4], args[5], args[6],
-                  args[7], args[8], args[9], args[10], args[11], upvalue_args);
-      break;
-    }
-    case 13: {
-      typedef uint64_t (*FunctionPtr)(uint64_t, uint64_t, uint64_t, uint64_t,
-                                      uint64_t, uint64_t, uint64_t, uint64_t,
-                                      uint64_t, uint64_t, uint64_t, uint64_t,
-                                      uint64_t, uint64_t *);
-      FunctionPtr fn = reinterpret_cast<FunctionPtr>(func->llvm_function);
-      result = fn(args[0], args[1], args[2], args[3], args[4], args[5], args[6],
-                  args[7], args[8], args[9], args[10], args[11], args[12],
-                  upvalue_args);
-      break;
-    }
-    case 14: {
-      typedef uint64_t (*FunctionPtr)(uint64_t, uint64_t, uint64_t, uint64_t,
-                                      uint64_t, uint64_t, uint64_t, uint64_t,
-                                      uint64_t, uint64_t, uint64_t, uint64_t,
-                                      uint64_t, uint64_t, uint64_t *);
-      FunctionPtr fn = reinterpret_cast<FunctionPtr>(func->llvm_function);
-      result = fn(args[0], args[1], args[2], args[3], args[4], args[5], args[6],
-                  args[7], args[8], args[9], args[10], args[11], args[12],
-                  args[13], upvalue_args);
-      break;
-    }
-    case 15: {
-      typedef uint64_t (*FunctionPtr)(uint64_t, uint64_t, uint64_t, uint64_t,
-                                      uint64_t, uint64_t, uint64_t, uint64_t,
-                                      uint64_t, uint64_t, uint64_t, uint64_t,
-                                      uint64_t, uint64_t, uint64_t, uint64_t *);
-      FunctionPtr fn = reinterpret_cast<FunctionPtr>(func->llvm_function);
-      result = fn(args[0], args[1], args[2], args[3], args[4], args[5], args[6],
-                  args[7], args[8], args[9], args[10], args[11], args[12],
-                  args[13], args[14], upvalue_args);
-      break;
-    }
-    case 16: {
-      typedef uint64_t (*FunctionPtr)(uint64_t, uint64_t, uint64_t, uint64_t,
-                                      uint64_t, uint64_t, uint64_t, uint64_t,
-                                      uint64_t, uint64_t, uint64_t, uint64_t,
-                                      uint64_t, uint64_t, uint64_t, uint64_t,
-                                      uint64_t *);
-      FunctionPtr fn = reinterpret_cast<FunctionPtr>(func->llvm_function);
-      result = fn(args[0], args[1], args[2], args[3], args[4], args[5], args[6],
-                  args[7], args[8], args[9], args[10], args[11], args[12],
-                  args[13], args[14], args[15], upvalue_args);
-      break;
-    }
-    default: {
-      std::string error_msg = "Closures with " + std::to_string(arg_count) +
-                              " arguments are not yet fully supported.";
-      elx_runtime_error(error_msg.c_str());
-      result = Value::nil().getBits();
-    }
-    }
-
-    if (upvalue_args) {
-      free(upvalue_args);
-    }
-    return result;
-
-  } catch (const std::exception &e) {
-    if (upvalue_args) {
-      free(upvalue_args);
-    }
-    std::string error_msg =
-        "Exception during closure call: " + std::string(e.what());
-    elx_runtime_error(error_msg.c_str());
-    return Value::nil().getBits();
-  } catch (...) {
-    if (upvalue_args) {
-      free(upvalue_args);
-    }
-    elx_runtime_error("Unknown exception during closure call.");
-    return Value::nil().getBits();
-  }
-}
-
-int elx_is_function(uint64_t value_bits) {
-  Value v = Value::fromBits(value_bits);
-  ObjFunction *func = getFunction(v);
-  if (func)
-    return 1;
-
-  ObjNative *native = getNative(v);
-  bool result = native != nullptr;
-  return result ? 1 : 0;
+  return invoke_closure_pointer(target, args, arg_count, upvalue_args);
 }
 
 int elx_is_closure(uint64_t value_bits) {
@@ -1490,6 +1388,528 @@ int elx_is_closure(uint64_t value_bits) {
   ObjClosure *closure = getClosure(v);
   bool result = closure != nullptr;
   return result ? 1 : 0;
+}
+
+int elx_is_native(uint64_t value_bits) {
+  Value v = Value::fromBits(value_bits);
+  ObjNative *native = getNative(v);
+  return native ? 1 : 0;
+}
+
+int elx_is_class(uint64_t value_bits) {
+  Value v = Value::fromBits(value_bits);
+  ObjClass *klass = getClass(v);
+  return klass ? 1 : 0;
+}
+
+int elx_is_bound_method(uint64_t value_bits) {
+  Value v = Value::fromBits(value_bits);
+  ObjBoundMethod *bound = getBoundMethod(v);
+  return bound ? 1 : 0;
+}
+
+int elx_bound_method_matches(uint64_t callee_bits, uint64_t method_bits,
+                             uint64_t expected_class_ptr) {
+  Value callee_val = Value::fromBits(callee_bits);
+  ObjBoundMethod *bound = getBoundMethod(callee_val);
+  if (!bound)
+    return 0;
+
+  if (bound->method != method_bits)
+    return 0;
+
+  if (expected_class_ptr == 0)
+    return 1;
+
+  Value receiver_val = Value::fromBits(bound->receiver);
+  ObjInstance *instance = getInstance(receiver_val);
+  if (!instance || !instance->klass)
+    return 0;
+
+  return reinterpret_cast<uint64_t>(instance->klass) == expected_class_ptr ? 1
+                                                                           : 0;
+}
+
+void elx_call_cache_invalidate(CallInlineCache *cache) {
+  if (!cache)
+    return;
+
+  cache->callee_bits = 0;
+  cache->method_bits = 0;
+  cache->aux_bits = 0;
+  cache->target_ptr = nullptr;
+  cache->expected_arity = 0;
+  cache->kind = static_cast<int32_t>(CallInlineCacheKind::EMPTY);
+  cache->flags = 0;
+  cache->padding = 0;
+}
+
+void elx_call_cache_update(CallInlineCache *cache, uint64_t callee_bits) {
+  if (!cache)
+    return;
+
+#if defined(ELOXIR_ENABLE_CACHE_STATS)
+  CallInlineCache previous = *cache;
+#endif
+
+  elx_call_cache_invalidate(cache);
+
+  Value callee_val = Value::fromBits(callee_bits);
+  if (!callee_val.isObj())
+    return;
+
+  void *obj_ptr = callee_val.asObj();
+  if (!obj_ptr)
+    return;
+
+  Obj *obj = static_cast<Obj *>(obj_ptr);
+  bool updated = false;
+
+  switch (obj->type) {
+  case ObjType::FUNCTION: {
+    ObjFunction *func = static_cast<ObjFunction *>(obj_ptr);
+    if (!func->llvm_function)
+      return;
+
+    cache->callee_bits = callee_bits;
+    cache->kind = static_cast<int32_t>(CallInlineCacheKind::FUNCTION);
+    cache->target_ptr = func->llvm_function;
+    cache->expected_arity = func->arity;
+    updated = true;
+    break;
+  }
+  case ObjType::CLOSURE: {
+    ObjClosure *closure = static_cast<ObjClosure *>(obj_ptr);
+    if (!closure->function || !closure->function->llvm_function)
+      return;
+
+    cache->callee_bits = callee_bits;
+    cache->kind = static_cast<int32_t>(CallInlineCacheKind::CLOSURE);
+    cache->target_ptr = closure->function->llvm_function;
+    cache->expected_arity = closure->function->arity;
+    updated = true;
+    break;
+  }
+  case ObjType::NATIVE: {
+    ObjNative *native = static_cast<ObjNative *>(obj_ptr);
+    if (!native->function)
+      return;
+
+    cache->callee_bits = callee_bits;
+    cache->kind = static_cast<int32_t>(CallInlineCacheKind::NATIVE);
+    cache->target_ptr = reinterpret_cast<void *>(native->function);
+    cache->expected_arity = native->arity;
+    updated = true;
+    break;
+  }
+  case ObjType::BOUND_METHOD: {
+    ObjBoundMethod *bound = static_cast<ObjBoundMethod *>(obj_ptr);
+    Value method_val = Value::fromBits(bound->method);
+    ObjClosure *closure = getClosure(method_val);
+    ObjFunction *func = closure ? closure->function : getFunction(method_val);
+    ObjNative *native = closure ? nullptr : getNative(method_val);
+
+    void *target = nullptr;
+    int flags = 0;
+    int expected_total = 0;
+
+    if (closure && closure->function && closure->function->llvm_function) {
+      target = closure->function->llvm_function;
+      expected_total = closure->function->arity;
+      flags |= CALL_CACHE_FLAG_METHOD_IS_CLOSURE;
+    } else if (func && func->llvm_function) {
+      target = func->llvm_function;
+      expected_total = func->arity;
+      flags |= CALL_CACHE_FLAG_METHOD_IS_FUNCTION;
+    } else if (native && native->function) {
+      target = reinterpret_cast<void *>(native->function);
+      expected_total = native->arity;
+      flags |= CALL_CACHE_FLAG_METHOD_IS_NATIVE;
+    } else {
+      return;
+    }
+
+    Value receiver_val = Value::fromBits(bound->receiver);
+    ObjInstance *instance = getInstance(receiver_val);
+    if (!instance || !instance->klass)
+      return;
+
+    cache->callee_bits = callee_bits;
+    cache->method_bits = bound->method;
+    cache->aux_bits = reinterpret_cast<uint64_t>(instance->klass);
+    cache->target_ptr = target;
+    cache->kind = static_cast<int32_t>(CallInlineCacheKind::BOUND_METHOD);
+    cache->flags = flags;
+    cache->expected_arity = (expected_total >= 0)
+                                ? (expected_total > 0 ? expected_total - 1 : 0)
+                                : expected_total;
+    updated = true;
+    break;
+  }
+  case ObjType::CLASS: {
+    ObjClass *klass = static_cast<ObjClass *>(obj_ptr);
+    cache->callee_bits = callee_bits;
+    cache->kind = static_cast<int32_t>(CallInlineCacheKind::CLASS);
+    cache->aux_bits = reinterpret_cast<uint64_t>(klass);
+
+    uint64_t init_bits = elx_intern_string("init", 4);
+    ObjString *init_name = getStringObject(Value::fromBits(init_bits));
+    uint64_t initializer_bits =
+        init_name ? findMethodOnClass(klass, init_name) : Value::nil().getBits();
+
+    if (initializer_bits == Value::nil().getBits()) {
+      cache->expected_arity = 0;
+      return;
+    }
+
+    Value init_val = Value::fromBits(initializer_bits);
+    ObjClosure *closure = getClosure(init_val);
+    ObjFunction *func = closure ? closure->function : getFunction(init_val);
+    ObjNative *native = closure ? nullptr : getNative(init_val);
+
+    void *target = nullptr;
+    int flags = CALL_CACHE_FLAG_CLASS_HAS_INITIALIZER;
+    int expected_total = 0;
+
+    if (closure && closure->function && closure->function->llvm_function) {
+      target = closure->function->llvm_function;
+      expected_total = closure->function->arity;
+      flags |= CALL_CACHE_FLAG_METHOD_IS_CLOSURE;
+    } else if (func && func->llvm_function) {
+      target = func->llvm_function;
+      expected_total = func->arity;
+      flags |= CALL_CACHE_FLAG_METHOD_IS_FUNCTION;
+    } else if (native && native->function) {
+      target = reinterpret_cast<void *>(native->function);
+      expected_total = native->arity;
+      flags |= CALL_CACHE_FLAG_METHOD_IS_NATIVE;
+    } else {
+      return;
+    }
+
+    cache->method_bits = initializer_bits;
+    cache->target_ptr = target;
+    cache->flags = flags;
+    cache->expected_arity = (expected_total >= 0)
+                                ? (expected_total > 0 ? expected_total - 1 : 0)
+                                : expected_total;
+    updated = true;
+    break;
+  }
+  default:
+    break;
+  }
+
+#if defined(ELOXIR_ENABLE_CACHE_STATS)
+  if (updated) {
+    auto previous_kind = static_cast<CallInlineCacheKind>(previous.kind);
+    auto new_kind = static_cast<CallInlineCacheKind>(cache->kind);
+    bool changed = previous_kind != new_kind;
+
+    if (!changed) {
+      switch (new_kind) {
+      case CallInlineCacheKind::FUNCTION:
+      case CallInlineCacheKind::CLOSURE:
+      case CallInlineCacheKind::NATIVE:
+      case CallInlineCacheKind::CLASS:
+        changed = (previous.callee_bits != cache->callee_bits) ||
+                  (previous.method_bits != cache->method_bits) ||
+                  (previous.aux_bits != cache->aux_bits);
+        break;
+      case CallInlineCacheKind::BOUND_METHOD:
+        changed = (previous.callee_bits != cache->callee_bits) ||
+                  (previous.method_bits != cache->method_bits) ||
+                  (previous.aux_bits != cache->aux_bits);
+        break;
+      case CallInlineCacheKind::EMPTY:
+        changed = false;
+        break;
+      }
+    }
+
+    if (changed) {
+      elx_cache_stats_record_call_transition(static_cast<int>(previous.kind),
+                                             static_cast<int>(cache->kind));
+    }
+  }
+#endif
+}
+
+uint64_t elx_call_function_fast(uint64_t func_bits, uint64_t *args,
+                                int arg_count, void *function_ptr,
+                                int expected_arity) {
+  elx_clear_runtime_error();
+
+  Value func_val = Value::fromBits(func_bits);
+  ObjFunction *func = getFunction(func_val);
+  if (!func) {
+    elx_runtime_error("Can only call functions and classes.");
+    return Value::nil().getBits();
+  }
+
+  if (expected_arity >= 0 && arg_count != expected_arity) {
+    std::string error_msg = formatArityError(func, arg_count);
+    elx_runtime_error(error_msg.c_str());
+    return Value::nil().getBits();
+  }
+
+  if (arg_count > 255) {
+    std::string error_msg = "Function arity (" + std::to_string(arg_count) +
+                            ") exceeds Lox limit of 255 parameters.";
+    elx_runtime_error(error_msg.c_str());
+    return Value::nil().getBits();
+  }
+
+  void *target = function_ptr ? function_ptr : func->llvm_function;
+  if (!target) {
+    elx_runtime_error("Function has no implementation.");
+    return Value::nil().getBits();
+  }
+
+  CallDepthGuard depth_guard;
+  if (!depth_guard.entered()) {
+    elx_runtime_error("Stack overflow.");
+    return Value::nil().getBits();
+  }
+
+  return invoke_function_pointer(target, args, arg_count);
+}
+
+uint64_t elx_call_closure_fast(uint64_t closure_bits, uint64_t *args,
+                               int arg_count, void *function_ptr,
+                               int expected_arity) {
+  elx_clear_runtime_error();
+
+  Value closure_val = Value::fromBits(closure_bits);
+  ObjClosure *closure = getClosure(closure_val);
+  if (!closure) {
+    elx_runtime_error("Can only call functions and classes.");
+    return Value::nil().getBits();
+  }
+
+  ObjFunction *func = closure->function;
+  if (!func) {
+    elx_runtime_error("Closure has no function.");
+    return Value::nil().getBits();
+  }
+
+  if (expected_arity >= 0 && arg_count != expected_arity) {
+    std::string error_msg = formatArityError(func, arg_count);
+    elx_runtime_error(error_msg.c_str());
+    return Value::nil().getBits();
+  }
+
+  if (arg_count > 255) {
+    std::string error_msg = "Function arity (" + std::to_string(arg_count) +
+                            ") exceeds Lox limit of 255 parameters.";
+    elx_runtime_error(error_msg.c_str());
+    return Value::nil().getBits();
+  }
+
+  void *target = function_ptr ? function_ptr
+                              : (func ? func->llvm_function : nullptr);
+  if (!target) {
+    elx_runtime_error("Closure function has no implementation.");
+    return Value::nil().getBits();
+  }
+
+  CallDepthGuard depth_guard;
+  if (!depth_guard.entered()) {
+    elx_runtime_error("Stack overflow.");
+    return Value::nil().getBits();
+  }
+
+  if (closure->upvalue_count == 0) {
+    return invoke_function_pointer(target, args, arg_count);
+  }
+
+  uint64_t *upvalue_args =
+      static_cast<uint64_t *>(malloc(sizeof(uint64_t) * closure->upvalue_count));
+  if (!upvalue_args) {
+    elx_runtime_error("Failed to allocate upvalue arguments.");
+    return Value::nil().getBits();
+  }
+
+  for (int i = 0; i < closure->upvalue_count; i++) {
+    if (closure->upvalues[i] != nullptr) {
+      upvalue_args[i] = Value::object(closure->upvalues[i]).getBits();
+    } else {
+      upvalue_args[i] = Value::nil().getBits();
+    }
+  }
+
+  return invoke_closure_pointer(target, args, arg_count, upvalue_args);
+}
+
+uint64_t elx_call_native_fast(uint64_t native_bits, uint64_t *args,
+                              int arg_count, void *function_ptr,
+                              int expected_arity) {
+  elx_clear_runtime_error();
+
+  Value native_val = Value::fromBits(native_bits);
+  ObjNative *native = getNative(native_val);
+  if (!native) {
+    elx_runtime_error("Can only call functions and classes.");
+    return Value::nil().getBits();
+  }
+
+  if (expected_arity >= 0 && arg_count != expected_arity) {
+    const char *name = native->name ? native->name : "<native fn>";
+    std::string error_msg = formatArityError(name, expected_arity, arg_count);
+    elx_runtime_error(error_msg.c_str());
+    return Value::nil().getBits();
+  }
+
+  CallDepthGuard depth_guard;
+  if (!depth_guard.entered()) {
+    elx_runtime_error("Stack overflow.");
+    return Value::nil().getBits();
+  }
+
+  NativeFn target = function_ptr
+                        ? reinterpret_cast<NativeFn>(function_ptr)
+                        : native->function;
+  if (!target) {
+    elx_runtime_error("Can only call functions and classes.");
+    return Value::nil().getBits();
+  }
+
+  try {
+    return target(args, arg_count);
+  } catch (const std::exception &e) {
+    std::string error_msg =
+        "Exception during native call: " + std::string(e.what());
+    elx_runtime_error(error_msg.c_str());
+    return Value::nil().getBits();
+  } catch (...) {
+    elx_runtime_error("Unknown exception during native call.");
+    return Value::nil().getBits();
+  }
+}
+
+uint64_t elx_call_bound_method_fast(uint64_t bound_bits, uint64_t *args,
+                                    int arg_count, uint64_t method_bits,
+                                    void *function_ptr, int expected_arity,
+                                    uint64_t expected_class_ptr, int flags) {
+  elx_clear_runtime_error();
+
+  Value bound_val = Value::fromBits(bound_bits);
+  ObjBoundMethod *bound = getBoundMethod(bound_val);
+  if (!bound) {
+    elx_runtime_error("Can only call functions and classes.");
+    return Value::nil().getBits();
+  }
+
+  if (!elx_bound_method_matches(bound_bits, method_bits, expected_class_ptr)) {
+    return elx_call_value(bound_bits, args, arg_count);
+  }
+
+  std::vector<uint64_t> method_args(static_cast<size_t>(arg_count) + 1);
+  method_args[0] = bound->receiver;
+  for (int i = 0; i < arg_count; ++i) {
+    method_args[i + 1] = args ? args[i] : Value::nil().getBits();
+  }
+
+  int total_expected = expected_arity;
+  if (total_expected >= 0)
+    total_expected += 1;
+  int total_arg_count = static_cast<int>(method_args.size());
+
+  if (flags & CALL_CACHE_FLAG_METHOD_IS_CLOSURE) {
+    return elx_call_closure_fast(method_bits, method_args.data(),
+                                 total_arg_count, function_ptr,
+                                 total_expected);
+  }
+
+  if (flags & CALL_CACHE_FLAG_METHOD_IS_FUNCTION) {
+    return elx_call_function_fast(method_bits, method_args.data(),
+                                  total_arg_count, function_ptr,
+                                  total_expected);
+  }
+
+  if (flags & CALL_CACHE_FLAG_METHOD_IS_NATIVE) {
+    return elx_call_native_fast(method_bits, method_args.data(),
+                                total_arg_count, function_ptr,
+                                total_expected);
+  }
+
+  return elx_call_value(method_bits, method_args.data(), total_arg_count);
+}
+
+uint64_t elx_call_class_fast(uint64_t class_bits, uint64_t *args, int arg_count,
+                             uint64_t initializer_bits, void *function_ptr,
+                             int expected_arity, int flags) {
+  elx_clear_runtime_error();
+
+  Value class_val = Value::fromBits(class_bits);
+  ObjClass *klass = getClass(class_val);
+  if (!klass) {
+    elx_runtime_error("Can only call functions and classes.");
+    return Value::nil().getBits();
+  }
+
+  uint64_t instance_bits = elx_instantiate_class(class_bits);
+  if (elx_has_runtime_error())
+    return Value::nil().getBits();
+
+  bool has_initializer =
+      (flags & CALL_CACHE_FLAG_CLASS_HAS_INITIALIZER) != 0;
+  if (!has_initializer) {
+    if (arg_count != 0) {
+      const char *class_name =
+          (klass->name && klass->name->chars && klass->name->length > 0)
+              ? klass->name->chars
+              : "<anonymous>";
+      std::string error_msg = formatArityError(class_name, 0, arg_count);
+      elx_runtime_error(error_msg.c_str());
+      return Value::nil().getBits();
+    }
+    return instance_bits;
+  }
+
+  if (expected_arity >= 0 && arg_count != expected_arity) {
+    const char *class_name =
+        (klass->name && klass->name->chars && klass->name->length > 0)
+            ? klass->name->chars
+            : "<anonymous>";
+    std::string error_msg = formatArityError(class_name, expected_arity, arg_count);
+    elx_runtime_error(error_msg.c_str());
+    return Value::nil().getBits();
+  }
+
+  std::vector<uint64_t> init_args(static_cast<size_t>(arg_count) + 1);
+  init_args[0] = instance_bits;
+  for (int i = 0; i < arg_count; ++i) {
+    init_args[i + 1] = args ? args[i] : Value::nil().getBits();
+  }
+
+  int total_expected = expected_arity;
+  if (total_expected >= 0)
+    total_expected += 1;
+  int total_arg_count = static_cast<int>(init_args.size());
+
+  uint64_t result = Value::nil().getBits();
+  if (flags & CALL_CACHE_FLAG_METHOD_IS_CLOSURE) {
+    result = elx_call_closure_fast(initializer_bits, init_args.data(),
+                                   total_arg_count, function_ptr,
+                                   total_expected);
+  } else if (flags & CALL_CACHE_FLAG_METHOD_IS_FUNCTION) {
+    result = elx_call_function_fast(initializer_bits, init_args.data(),
+                                    total_arg_count, function_ptr,
+                                    total_expected);
+  } else if (flags & CALL_CACHE_FLAG_METHOD_IS_NATIVE) {
+    result = elx_call_native_fast(initializer_bits, init_args.data(),
+                                  total_arg_count, function_ptr,
+                                  total_expected);
+  } else {
+    result = elx_call_value(initializer_bits, init_args.data(), total_arg_count);
+  }
+
+  if (elx_has_runtime_error())
+    return Value::nil().getBits();
+
+  (void)result;
+  return instance_bits;
 }
 
 static uint64_t findMethodOnClass(ObjClass *klass, ObjString *name) {
@@ -1556,7 +1976,7 @@ uint64_t elx_allocate_class(uint64_t name_bits, uint64_t superclass_bits) {
   klass->name = name_str;
   klass->superclass = superclass;
   klass->methods.clear();
-  klass->fieldSlots.clear();
+  klass->shape = createShape(nullptr, nullptr);
 
   allocated_objects.insert(klass);
   return Value::object(klass).getBits();
@@ -1671,13 +2091,17 @@ uint64_t elx_set_instance_field(uint64_t instance_bits, uint64_t name_bits,
 
   ObjClass *klass = instance->klass;
   size_t slot = 0;
-  if (klass) {
-    auto slotIt = klass->fieldSlots.find(field_key);
-    if (slotIt == klass->fieldSlots.end()) {
-      slot = klass->fieldSlots.size();
-      klass->fieldSlots[field_key] = slot;
+  ObjShape *shape = instance->shape;
+  if (!shapeTryGetSlot(shape, field_key, &slot)) {
+    ObjShape *classShape = klass ? klass->shape : nullptr;
+    if (classShape && shapeTryGetSlot(classShape, field_key, &slot)) {
+      ensureInstanceShape(instance, classShape);
     } else {
-      slot = slotIt->second;
+      ObjShape *baseShape = classShape ? classShape : shape;
+      ObjShape *nextShape = shapeEnsureField(baseShape, field_key);
+      if (klass)
+        klass->shape = nextShape;
+      ensureInstanceShape(instance, nextShape);
     }
   }
 
@@ -1709,6 +2133,77 @@ int elx_try_get_instance_field(uint64_t instance_bits, uint64_t name_bits,
   }
 
   ObjClass *klass = instance->klass;
+  size_t slot = 0;
+  bool found = shapeTryGetSlot(instance->shape, field_key, &slot);
+  if (!found && klass) {
+    ObjShape *classShape = klass->shape;
+    found = shapeTryGetSlot(classShape, field_key, &slot);
+  }
+  if (found && slot < instance->fieldValues.size() &&
+      slot < instance->fieldPresence.size() &&
+      instance->fieldPresence[slot]) {
+    if (out_value)
+      *out_value = instance->fieldValues[slot];
+    return 1;
+  }
+
+  return 0;
+}
+
+ObjShape *elx_instance_shape_ptr(uint64_t instance_bits) {
+  Value instance_val = Value::fromBits(instance_bits);
+  ObjInstance *instance = getInstance(instance_val);
+  if (!instance)
+    return nullptr;
+  return instance->shape;
+}
+
+uint64_t *elx_instance_field_values_ptr(uint64_t instance_bits) {
+  Value instance_val = Value::fromBits(instance_bits);
+  ObjInstance *instance = getInstance(instance_val);
+  if (!instance || instance->fieldValues.empty())
+    return nullptr;
+  return instance->fieldValues.data();
+}
+
+uint8_t *elx_instance_field_presence_ptr(uint64_t instance_bits) {
+  Value instance_val = Value::fromBits(instance_bits);
+  ObjInstance *instance = getInstance(instance_val);
+  if (!instance || instance->fieldPresence.empty())
+    return nullptr;
+  return instance->fieldPresence.data();
+}
+
+uint64_t elx_get_property_slow(uint64_t instance_bits, uint64_t name_bits,
+                               PropertyCache *cache, uint32_t capacity) {
+#if defined(ELOXIR_ENABLE_CACHE_STATS)
+  elx_cache_stats_record_property_miss(0);
+#endif
+  Value instance_val = Value::fromBits(instance_bits);
+  ObjInstance *instance = getInstance(instance_val);
+  if (!instance) {
+    elx_runtime_error("Only instances have properties.");
+    return Value::nil().getBits();
+  }
+
+  std::string field_name;
+  ObjString *field_key = extractStringKey(name_bits, &field_name);
+  if (!field_key) {
+    elx_runtime_error("Property name must be a string.");
+    return Value::nil().getBits();
+  }
+
+  size_t slot = 0;
+  bool found = shapeTryGetSlot(instance->shape, field_key, &slot);
+  if (found && slot < instance->fieldValues.size() &&
+      slot < instance->fieldPresence.size() &&
+      instance->fieldPresence[slot]) {
+    uint64_t result = instance->fieldValues[slot];
+    propertyCacheUpdate(cache, instance->shape, slot, capacity, false);
+    return result;
+  }
+
+  ObjClass *klass = instance->klass;
   if (klass) {
     auto slotIt = klass->fieldSlots.find(field_key);
     if (slotIt != klass->fieldSlots.end()) {
@@ -1722,7 +2217,38 @@ int elx_try_get_instance_field(uint64_t instance_bits, uint64_t name_bits,
     }
   }
 
-  return 0;
+  std::string message = "Undefined property '" + field_name + "'.";
+  elx_runtime_error_silent(message.c_str());
+  elx_emit_runtime_error();
+  return Value::nil().getBits();
+}
+
+uint64_t elx_set_property_slow(uint64_t instance_bits, uint64_t name_bits,
+                               uint64_t value_bits, PropertyCache *cache,
+                               uint32_t capacity) {
+#if defined(ELOXIR_ENABLE_CACHE_STATS)
+  elx_cache_stats_record_property_miss(1);
+#endif
+  uint64_t result =
+      elx_set_instance_field(instance_bits, name_bits, value_bits);
+  if (elx_has_runtime_error())
+    return result;
+
+  Value instance_val = Value::fromBits(instance_bits);
+  ObjInstance *instance = getInstance(instance_val);
+  if (!instance)
+    return result;
+
+  ObjString *field_key = extractStringKey(name_bits, nullptr);
+  if (!field_key)
+    return result;
+
+  size_t slot = 0;
+  if (shapeTryGetSlot(instance->shape, field_key, &slot)) {
+    propertyCacheUpdate(cache, instance->shape, slot, capacity, true);
+  }
+
+  return result;
 }
 
 uint64_t elx_bind_method(uint64_t instance_bits, uint64_t method_bits) {
