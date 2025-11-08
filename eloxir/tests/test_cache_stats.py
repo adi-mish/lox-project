@@ -88,7 +88,8 @@ class CacheStatsTests(unittest.TestCase):
         self._require_enabled(stats)
 
         self.assertEqual(stats.get("property_get_shape_transitions"), 1)
-        self.assertEqual(stats.get("property_get_misses"), 16)
+        self.assertEqual(stats.get("property_get_hits"), 15)
+        self.assertEqual(stats.get("property_get_misses"), 1)
         self.assertEqual(stats.get("property_set_shape_transitions"), 1)
         self.assertEqual(stats.get("property_set_misses"), 1)
 
@@ -124,7 +125,8 @@ class CacheStatsTests(unittest.TestCase):
         self._require_enabled(stats)
 
         self.assertEqual(stats.get("property_get_shape_transitions"), 2)
-        self.assertEqual(stats.get("property_get_misses"), 20)
+        self.assertEqual(stats.get("property_get_hits"), 18)
+        self.assertEqual(stats.get("property_get_misses"), 2)
         self.assertEqual(stats.get("property_set_shape_transitions"), 2)
         self.assertEqual(stats.get("property_set_misses"), 2)
 

@@ -264,6 +264,392 @@ static std::string formatArityError(const ObjFunction *func, int got) {
   const char *name = func->name;
   return formatArityError(name, func->arity, got);
 }
+
+static uint64_t invoke_function_pointer(void *function_ptr, uint64_t *args,
+                                        int arg_count) {
+  if (!function_ptr) {
+    elx_runtime_error("Function has no implementation.");
+    return Value::nil().getBits();
+  }
+
+  try {
+    switch (arg_count) {
+    case 0: {
+      using Fn = uint64_t (*)();
+      return reinterpret_cast<Fn>(function_ptr)();
+    }
+    case 1: {
+      using Fn = uint64_t (*)(uint64_t);
+      return reinterpret_cast<Fn>(function_ptr)(args[0]);
+    }
+    case 2: {
+      using Fn = uint64_t (*)(uint64_t, uint64_t);
+      return reinterpret_cast<Fn>(function_ptr)(args[0], args[1]);
+    }
+    case 3: {
+      using Fn = uint64_t (*)(uint64_t, uint64_t, uint64_t);
+      return reinterpret_cast<Fn>(function_ptr)(args[0], args[1], args[2]);
+    }
+    case 4: {
+      using Fn = uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t);
+      return reinterpret_cast<Fn>(function_ptr)(args[0], args[1], args[2],
+                                                args[3]);
+    }
+    case 5: {
+      using Fn = uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t,
+                              uint64_t);
+      return reinterpret_cast<Fn>(function_ptr)(args[0], args[1], args[2],
+                                                args[3], args[4]);
+    }
+    case 6: {
+      using Fn = uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t,
+                              uint64_t, uint64_t);
+      return reinterpret_cast<Fn>(function_ptr)(args[0], args[1], args[2],
+                                                args[3], args[4], args[5]);
+    }
+    case 7: {
+      using Fn = uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t,
+                              uint64_t, uint64_t, uint64_t);
+      return reinterpret_cast<Fn>(function_ptr)(args[0], args[1], args[2],
+                                                args[3], args[4], args[5],
+                                                args[6]);
+    }
+    case 8: {
+      using Fn = uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t,
+                              uint64_t, uint64_t, uint64_t, uint64_t);
+      return reinterpret_cast<Fn>(function_ptr)(args[0], args[1], args[2],
+                                                args[3], args[4], args[5],
+                                                args[6], args[7]);
+    }
+    case 9: {
+      using Fn = uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t,
+                              uint64_t, uint64_t, uint64_t, uint64_t,
+                              uint64_t);
+      return reinterpret_cast<Fn>(function_ptr)(args[0], args[1], args[2],
+                                                args[3], args[4], args[5],
+                                                args[6], args[7], args[8]);
+    }
+    case 10: {
+      using Fn = uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t,
+                              uint64_t, uint64_t, uint64_t, uint64_t,
+                              uint64_t, uint64_t);
+      return reinterpret_cast<Fn>(function_ptr)(args[0], args[1], args[2],
+                                                args[3], args[4], args[5],
+                                                args[6], args[7], args[8],
+                                                args[9]);
+    }
+    case 11: {
+      using Fn = uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t,
+                              uint64_t, uint64_t, uint64_t, uint64_t,
+                              uint64_t, uint64_t, uint64_t);
+      return reinterpret_cast<Fn>(function_ptr)(args[0], args[1], args[2],
+                                                args[3], args[4], args[5],
+                                                args[6], args[7], args[8],
+                                                args[9], args[10]);
+    }
+    case 12: {
+      using Fn = uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t,
+                              uint64_t, uint64_t, uint64_t, uint64_t,
+                              uint64_t, uint64_t, uint64_t, uint64_t);
+      return reinterpret_cast<Fn>(function_ptr)(args[0], args[1], args[2],
+                                                args[3], args[4], args[5],
+                                                args[6], args[7], args[8],
+                                                args[9], args[10], args[11]);
+    }
+    case 13: {
+      using Fn = uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t,
+                              uint64_t, uint64_t, uint64_t, uint64_t,
+                              uint64_t, uint64_t, uint64_t, uint64_t,
+                              uint64_t);
+      return reinterpret_cast<Fn>(function_ptr)(args[0], args[1], args[2],
+                                                args[3], args[4], args[5],
+                                                args[6], args[7], args[8],
+                                                args[9], args[10], args[11],
+                                                args[12]);
+    }
+    case 14: {
+      using Fn = uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t,
+                              uint64_t, uint64_t, uint64_t, uint64_t,
+                              uint64_t, uint64_t, uint64_t, uint64_t,
+                              uint64_t, uint64_t);
+      return reinterpret_cast<Fn>(function_ptr)(args[0], args[1], args[2],
+                                                args[3], args[4], args[5],
+                                                args[6], args[7], args[8],
+                                                args[9], args[10], args[11],
+                                                args[12], args[13]);
+    }
+    case 15: {
+      using Fn = uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t,
+                              uint64_t, uint64_t, uint64_t, uint64_t,
+                              uint64_t, uint64_t, uint64_t, uint64_t,
+                              uint64_t, uint64_t, uint64_t);
+      return reinterpret_cast<Fn>(function_ptr)(args[0], args[1], args[2],
+                                                args[3], args[4], args[5],
+                                                args[6], args[7], args[8],
+                                                args[9], args[10], args[11],
+                                                args[12], args[13], args[14]);
+    }
+    case 16: {
+      using Fn = uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t,
+                              uint64_t, uint64_t, uint64_t, uint64_t,
+                              uint64_t, uint64_t, uint64_t, uint64_t,
+                              uint64_t, uint64_t, uint64_t, uint64_t);
+      return reinterpret_cast<Fn>(function_ptr)(args[0], args[1], args[2],
+                                                args[3], args[4], args[5],
+                                                args[6], args[7], args[8],
+                                                args[9], args[10], args[11],
+                                                args[12], args[13], args[14],
+                                                args[15]);
+    }
+    default: {
+      std::string error_msg =
+          "Functions with " + std::to_string(arg_count) +
+          " arguments are not yet supported. Maximum supported: 16.";
+      elx_runtime_error(error_msg.c_str());
+      return Value::nil().getBits();
+    }
+    }
+  } catch (const std::exception &e) {
+    std::string error_msg =
+        "Exception during function call: " + std::string(e.what());
+    elx_runtime_error(error_msg.c_str());
+    return Value::nil().getBits();
+  } catch (...) {
+    elx_runtime_error("Unknown exception during function call.");
+    return Value::nil().getBits();
+  }
+}
+
+static uint64_t invoke_closure_pointer(void *function_ptr, uint64_t *args,
+                                        int arg_count, uint64_t *upvalue_args) {
+  std::unique_ptr<uint64_t, decltype(&free)> upvalues(upvalue_args, free);
+  if (!function_ptr) {
+    elx_runtime_error("Closure function has no implementation.");
+    return Value::nil().getBits();
+  }
+
+  try {
+    switch (arg_count) {
+    case 0: {
+      using Fn = uint64_t (*)(uint64_t *);
+      return reinterpret_cast<Fn>(function_ptr)(upvalues.get());
+    }
+    case 1: {
+      using Fn = uint64_t (*)(uint64_t, uint64_t *);
+      return reinterpret_cast<Fn>(function_ptr)(args[0], upvalues.get());
+    }
+    case 2: {
+      using Fn = uint64_t (*)(uint64_t, uint64_t, uint64_t *);
+      return reinterpret_cast<Fn>(function_ptr)(args[0], args[1],
+                                                upvalues.get());
+    }
+    case 3: {
+      using Fn = uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t *);
+      return reinterpret_cast<Fn>(function_ptr)(args[0], args[1], args[2],
+                                                upvalues.get());
+    }
+    case 4: {
+      using Fn = uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t,
+                              uint64_t *);
+      return reinterpret_cast<Fn>(function_ptr)(args[0], args[1], args[2],
+                                                args[3], upvalues.get());
+    }
+    case 5: {
+      using Fn = uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t,
+                              uint64_t, uint64_t *);
+      return reinterpret_cast<Fn>(function_ptr)(args[0], args[1], args[2],
+                                                args[3], args[4],
+                                                upvalues.get());
+    }
+    case 6: {
+      using Fn = uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t,
+                              uint64_t, uint64_t, uint64_t *);
+      return reinterpret_cast<Fn>(function_ptr)(args[0], args[1], args[2],
+                                                args[3], args[4], args[5],
+                                                upvalues.get());
+    }
+    case 7: {
+      using Fn = uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t,
+                              uint64_t, uint64_t, uint64_t, uint64_t *);
+      return reinterpret_cast<Fn>(function_ptr)(args[0], args[1], args[2],
+                                                args[3], args[4], args[5],
+                                                args[6], upvalues.get());
+    }
+    case 8: {
+      using Fn = uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t,
+                              uint64_t, uint64_t, uint64_t, uint64_t,
+                              uint64_t *);
+      return reinterpret_cast<Fn>(function_ptr)(args[0], args[1], args[2],
+                                                args[3], args[4], args[5],
+                                                args[6], args[7],
+                                                upvalues.get());
+    }
+    case 9: {
+      using Fn = uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t,
+                              uint64_t, uint64_t, uint64_t, uint64_t,
+                              uint64_t, uint64_t *);
+      return reinterpret_cast<Fn>(function_ptr)(args[0], args[1], args[2],
+                                                args[3], args[4], args[5],
+                                                args[6], args[7], args[8],
+                                                upvalues.get());
+    }
+    case 10: {
+      using Fn = uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t,
+                              uint64_t, uint64_t, uint64_t, uint64_t,
+                              uint64_t, uint64_t, uint64_t *);
+      return reinterpret_cast<Fn>(function_ptr)(args[0], args[1], args[2],
+                                                args[3], args[4], args[5],
+                                                args[6], args[7], args[8],
+                                                args[9], upvalues.get());
+    }
+    case 11: {
+      using Fn = uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t,
+                              uint64_t, uint64_t, uint64_t, uint64_t,
+                              uint64_t, uint64_t, uint64_t, uint64_t *);
+      return reinterpret_cast<Fn>(function_ptr)(args[0], args[1], args[2],
+                                                args[3], args[4], args[5],
+                                                args[6], args[7], args[8],
+                                                args[9], args[10],
+                                                upvalues.get());
+    }
+    case 12: {
+      using Fn = uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t,
+                              uint64_t, uint64_t, uint64_t, uint64_t,
+                              uint64_t, uint64_t, uint64_t, uint64_t,
+                              uint64_t *);
+      return reinterpret_cast<Fn>(function_ptr)(args[0], args[1], args[2],
+                                                args[3], args[4], args[5],
+                                                args[6], args[7], args[8],
+                                                args[9], args[10], args[11],
+                                                upvalues.get());
+    }
+    case 13: {
+      using Fn = uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t,
+                              uint64_t, uint64_t, uint64_t, uint64_t,
+                              uint64_t, uint64_t, uint64_t, uint64_t,
+                              uint64_t, uint64_t *);
+      return reinterpret_cast<Fn>(function_ptr)(args[0], args[1], args[2],
+                                                args[3], args[4], args[5],
+                                                args[6], args[7], args[8],
+                                                args[9], args[10], args[11],
+                                                args[12], upvalues.get());
+    }
+    case 14: {
+      using Fn = uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t,
+                              uint64_t, uint64_t, uint64_t, uint64_t,
+                              uint64_t, uint64_t, uint64_t, uint64_t,
+                              uint64_t, uint64_t, uint64_t *);
+      return reinterpret_cast<Fn>(function_ptr)(args[0], args[1], args[2],
+                                                args[3], args[4], args[5],
+                                                args[6], args[7], args[8],
+                                                args[9], args[10], args[11],
+                                                args[12], args[13],
+                                                upvalues.get());
+    }
+    case 15: {
+      using Fn = uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t,
+                              uint64_t, uint64_t, uint64_t, uint64_t,
+                              uint64_t, uint64_t, uint64_t, uint64_t,
+                              uint64_t, uint64_t, uint64_t, uint64_t *);
+      return reinterpret_cast<Fn>(function_ptr)(args[0], args[1], args[2],
+                                                args[3], args[4], args[5],
+                                                args[6], args[7], args[8],
+                                                args[9], args[10], args[11],
+                                                args[12], args[13], args[14],
+                                                upvalues.get());
+    }
+    case 16: {
+      using Fn = uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t,
+                              uint64_t, uint64_t, uint64_t, uint64_t,
+                              uint64_t, uint64_t, uint64_t, uint64_t,
+                              uint64_t, uint64_t, uint64_t, uint64_t,
+                              uint64_t *);
+      return reinterpret_cast<Fn>(function_ptr)(args[0], args[1], args[2],
+                                                args[3], args[4], args[5],
+                                                args[6], args[7], args[8],
+                                                args[9], args[10], args[11],
+                                                args[12], args[13], args[14],
+                                                args[15], upvalues.get());
+    }
+    default: {
+      std::string error_msg =
+          "Closures with " + std::to_string(arg_count) +
+          " arguments are not yet supported. Maximum supported: 16.";
+      elx_runtime_error(error_msg.c_str());
+      return Value::nil().getBits();
+    }
+    }
+  } catch (const std::exception &e) {
+    std::string error_msg =
+        "Exception during closure call: " + std::string(e.what());
+    elx_runtime_error(error_msg.c_str());
+    return Value::nil().getBits();
+  } catch (...) {
+    elx_runtime_error("Unknown exception during closure call.");
+    return Value::nil().getBits();
+  }
+}
+
+static ObjShape *createShape(ObjShape *parent, ObjString *newField) {
+  auto *shape = new ObjShape();
+  shape->obj.type = ObjType::SHAPE;
+  shape->parent = parent;
+  if (parent) {
+    shape->fieldOrder = parent->fieldOrder;
+    shape->slotCache = parent->slotCache;
+  }
+
+  if (newField) {
+    size_t slot = shape->fieldOrder.size();
+    shape->fieldOrder.push_back(newField);
+    shape->slotCache[newField] = slot;
+  }
+
+  allocated_objects.insert(shape);
+  return shape;
+}
+
+static bool shapeTryGetSlot(ObjShape *shape, ObjString *field, size_t *slotOut) {
+  if (!shape || !field)
+    return false;
+
+  auto it = shape->slotCache.find(field);
+  if (it == shape->slotCache.end())
+    return false;
+
+  if (slotOut)
+    *slotOut = it->second;
+  return true;
+}
+
+static ObjShape *shapeEnsureField(ObjShape *base, ObjString *field) {
+  if (!field)
+    return base;
+
+  if (!base)
+    base = createShape(nullptr, nullptr);
+
+  auto it = base->transitions.find(field);
+  if (it != base->transitions.end())
+    return it->second;
+
+  ObjShape *next = createShape(base, field);
+  base->transitions[field] = next;
+  return next;
+}
+
+static void ensureInstanceShape(ObjInstance *instance, ObjShape *shape) {
+  if (!instance)
+    return;
+
+  if (instance->shape == shape)
+    return;
+
+  instance->shape = shape;
+  size_t slotCount = shape ? shape->fieldCount() : 0;
+  ensureInstanceCapacity(instance, slotCount, true);
+}
+
 } // namespace
 
 static void propertyCacheUpdate(PropertyCache *cache, ObjShape *shape,
@@ -895,6 +1281,8 @@ uint64_t elx_call_function(uint64_t func_bits, uint64_t *args, int arg_count) {
     elx_runtime_error("Function has no implementation.");
     return Value::nil().getBits();
   }
+
+  void *function_ptr = func->llvm_function;
 
   try {
     switch (arg_count) {
@@ -1538,8 +1926,8 @@ void elx_call_cache_invalidate(CallInlineCache *cache) {
     return;
 
   cache->callee_bits = 0;
-  cache->method_bits = 0;
-  cache->aux_bits = 0;
+  cache->guard0_bits = 0;
+  cache->guard1_bits = 0;
   cache->target_ptr = nullptr;
   cache->expected_arity = 0;
   cache->kind = static_cast<int32_t>(CallInlineCacheKind::EMPTY);
@@ -1638,8 +2026,8 @@ void elx_call_cache_update(CallInlineCache *cache, uint64_t callee_bits) {
       return;
 
     cache->callee_bits = callee_bits;
-    cache->method_bits = bound->method;
-    cache->aux_bits = reinterpret_cast<uint64_t>(instance->klass);
+    cache->guard0_bits = bound->method;
+    cache->guard1_bits = reinterpret_cast<uint64_t>(instance->klass);
     cache->target_ptr = target;
     cache->kind = static_cast<int32_t>(CallInlineCacheKind::BOUND_METHOD);
     cache->flags = flags;
@@ -1653,7 +2041,7 @@ void elx_call_cache_update(CallInlineCache *cache, uint64_t callee_bits) {
     ObjClass *klass = static_cast<ObjClass *>(obj_ptr);
     cache->callee_bits = callee_bits;
     cache->kind = static_cast<int32_t>(CallInlineCacheKind::CLASS);
-    cache->aux_bits = reinterpret_cast<uint64_t>(klass);
+    cache->guard1_bits = reinterpret_cast<uint64_t>(klass);
 
     uint64_t init_bits = elx_intern_string("init", 4);
     ObjString *init_name = getStringObject(Value::fromBits(init_bits));
@@ -1690,7 +2078,7 @@ void elx_call_cache_update(CallInlineCache *cache, uint64_t callee_bits) {
       return;
     }
 
-    cache->method_bits = initializer_bits;
+    cache->guard0_bits = initializer_bits;
     cache->target_ptr = target;
     cache->flags = flags;
     cache->expected_arity = (expected_total >= 0)
@@ -1716,13 +2104,13 @@ void elx_call_cache_update(CallInlineCache *cache, uint64_t callee_bits) {
       case CallInlineCacheKind::NATIVE:
       case CallInlineCacheKind::CLASS:
         changed = (previous.callee_bits != cache->callee_bits) ||
-                  (previous.method_bits != cache->method_bits) ||
-                  (previous.aux_bits != cache->aux_bits);
+                  (previous.guard0_bits != cache->guard0_bits) ||
+                  (previous.guard1_bits != cache->guard1_bits);
         break;
       case CallInlineCacheKind::BOUND_METHOD:
         changed = (previous.callee_bits != cache->callee_bits) ||
-                  (previous.method_bits != cache->method_bits) ||
-                  (previous.aux_bits != cache->aux_bits);
+                  (previous.guard0_bits != cache->guard0_bits) ||
+                  (previous.guard1_bits != cache->guard1_bits);
         break;
       case CallInlineCacheKind::EMPTY:
         changed = false;
@@ -2242,9 +2630,8 @@ int elx_try_get_instance_field(uint64_t instance_bits, uint64_t name_bits,
     ObjShape *classShape = klass->shape;
     found = shapeTryGetSlot(classShape, field_key, &slot);
   }
-  if (found && slot < instance->fieldValues.size() &&
-      slot < instance->fieldPresence.size() &&
-      instance->fieldPresence[slot]) {
+  if (found && instance->fieldValues && instance->fieldPresence &&
+      slot < instance->fieldCapacity && instance->fieldPresence[slot]) {
     if (out_value)
       *out_value = instance->fieldValues[slot];
     return 1;
@@ -2264,17 +2651,17 @@ ObjShape *elx_instance_shape_ptr(uint64_t instance_bits) {
 uint64_t *elx_instance_field_values_ptr(uint64_t instance_bits) {
   Value instance_val = Value::fromBits(instance_bits);
   ObjInstance *instance = getInstance(instance_val);
-  if (!instance || instance->fieldValues.empty())
+  if (!instance || !instance->fieldValues)
     return nullptr;
-  return instance->fieldValues.data();
+  return instance->fieldValues;
 }
 
 uint8_t *elx_instance_field_presence_ptr(uint64_t instance_bits) {
   Value instance_val = Value::fromBits(instance_bits);
   ObjInstance *instance = getInstance(instance_val);
-  if (!instance || instance->fieldPresence.empty())
+  if (!instance || !instance->fieldPresence)
     return nullptr;
-  return instance->fieldPresence.data();
+  return instance->fieldPresence;
 }
 
 uint64_t elx_get_property_slow(uint64_t instance_bits, uint64_t name_bits,
@@ -2298,9 +2685,8 @@ uint64_t elx_get_property_slow(uint64_t instance_bits, uint64_t name_bits,
 
   size_t slot = 0;
   bool found = shapeTryGetSlot(instance->shape, field_key, &slot);
-  if (found && slot < instance->fieldValues.size() &&
-      slot < instance->fieldPresence.size() &&
-      instance->fieldPresence[slot]) {
+  if (found && instance->fieldValues && instance->fieldPresence &&
+      slot < instance->fieldCapacity && instance->fieldPresence[slot]) {
     uint64_t result = instance->fieldValues[slot];
     propertyCacheUpdate(cache, instance->shape, slot, capacity, false);
     return result;
@@ -2310,13 +2696,19 @@ uint64_t elx_get_property_slow(uint64_t instance_bits, uint64_t name_bits,
   if (klass) {
     auto slotIt = klass->fieldSlots.find(field_key);
     if (slotIt != klass->fieldSlots.end()) {
-      size_t slot = slotIt->second;
+      size_t slotIndex = slotIt->second;
       if (instance->fieldValues && instance->fieldPresence &&
-          slot < instance->fieldCapacity && instance->fieldPresence[slot]) {
-        if (out_value)
-          *out_value = instance->fieldValues[slot];
-        return 1;
+          slotIndex < instance->fieldCapacity &&
+          instance->fieldPresence[slotIndex]) {
+        uint64_t result = instance->fieldValues[slotIndex];
+        propertyCacheUpdate(cache, instance->shape, slotIndex, capacity, false);
+        return result;
       }
+    }
+
+    auto methodIt = klass->methods.find(field_key);
+    if (methodIt != klass->methods.end()) {
+      return elx_bind_method(instance_bits, methodIt->second);
     }
   }
 

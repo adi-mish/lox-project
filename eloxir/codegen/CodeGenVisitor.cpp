@@ -1415,11 +1415,6 @@ void CodeGenVisitor::visitCallExpr(Call *e) {
       mod.getFunction("elx_call_bound_method_fast");
   llvm::Function *callClassFastFn = mod.getFunction("elx_call_class_fast");
   llvm::Function *callCacheUpdateFn = mod.getFunction("elx_call_cache_update");
-  llvm::Function *isFunctionFn = mod.getFunction("elx_is_function");
-  llvm::Function *isClosureFn = mod.getFunction("elx_is_closure");
-  llvm::Function *isNativeFn = mod.getFunction("elx_is_native");
-  llvm::Function *isClassFn = mod.getFunction("elx_is_class");
-  llvm::Function *isBoundMethodFn = mod.getFunction("elx_is_bound_method");
   llvm::Function *boundMatchesFn =
       mod.getFunction("elx_bound_method_matches");
 
@@ -1446,8 +1441,7 @@ void CodeGenVisitor::visitCallExpr(Call *e) {
 
   if (!callValueFn || !callFunctionFastFn || !callClosureFastFn ||
       !callNativeFastFn || !callBoundFastFn || !callClassFastFn ||
-      !callCacheUpdateFn || !isFunctionFn || !isClosureFn || !isNativeFn ||
-      !isClassFn || !isBoundMethodFn || !boundMatchesFn) {
+      !callCacheUpdateFn || !boundMatchesFn) {
     if (!callValueFn) {
       value = nilConst();
       return;
@@ -1461,76 +1455,96 @@ void CodeGenVisitor::visitCallExpr(Call *e) {
   auto cacheTy = getCallCacheType();
   auto int32Ty = llvm::Type::getInt32Ty(ctx);
   auto int64Ty = llvm::Type::getInt64Ty(ctx);
+  auto boolTy = llvm::Type::getInt1Ty(ctx);
   auto i8PtrTy = llvm::PointerType::get(llvm::Type::getInt8Ty(ctx), 0);
   auto zero32 = llvm::ConstantInt::get(int32Ty, 0);
   auto zero64 = llvm::ConstantInt::get(int64Ty, 0);
+  auto trueConst = llvm::ConstantInt::get(boolTy, 1);
   auto nullI8Ptr = llvm::ConstantPointerNull::get(i8PtrTy);
-
-  auto kindPtr = builder.CreateStructGEP(cacheTy, cacheGV, 5,
-                                         "call_cache_kind_ptr");
-  auto kindVal = builder.CreateLoad(int32Ty, kindPtr, "call_cache_kind");
 
   llvm::Function *fn = builder.GetInsertBlock()->getParent();
 
-  auto functionCheckBB =
-      llvm::BasicBlock::Create(ctx, "call.cache.function", fn);
-  auto closureCheckBB =
-      llvm::BasicBlock::Create(ctx, "call.cache.closure", fn);
-  auto nativeCheckBB =
-      llvm::BasicBlock::Create(ctx, "call.cache.native", fn);
-  auto boundCheckBB =
-      llvm::BasicBlock::Create(ctx, "call.cache.bound", fn);
-  auto classCheckBB =
-      llvm::BasicBlock::Create(ctx, "call.cache.class", fn);
   auto slowBB = llvm::BasicBlock::Create(ctx, "call.cache.slow", fn);
   auto exitBB = llvm::BasicBlock::Create(ctx, "call.cache.exit", fn);
 
-  builder.CreateBr(functionCheckBB);
+  auto kindPtr = builder.CreateStructGEP(cacheTy, cacheGV, 5,
+                                         "call_cache_kind_ptr");
+  auto cachedKind = builder.CreateLoad(int32Ty, kindPtr, "call_cache_kind");
+  auto cachedCalleePtr = builder.CreateStructGEP(cacheTy, cacheGV, 0,
+                                                 "call_cache_callee_ptr");
+  auto cachedCallee = builder.CreateLoad(llvmValueTy(), cachedCalleePtr,
+                                        "call_cache_callee");
+  auto guard0Ptr = builder.CreateStructGEP(cacheTy, cacheGV, 1,
+                                           "call_cache_guard0_ptr");
+  auto guard0 = builder.CreateLoad(llvmValueTy(), guard0Ptr,
+                                   "call_cache_guard0");
+  auto guard1Ptr = builder.CreateStructGEP(cacheTy, cacheGV, 2,
+                                           "call_cache_guard1_ptr");
+  auto guard1 = builder.CreateLoad(llvmValueTy(), guard1Ptr,
+                                   "call_cache_guard1");
+  auto targetPtr = builder.CreateStructGEP(cacheTy, cacheGV, 3,
+                                           "call_cache_target_ptr");
+  auto cachedTarget = builder.CreateLoad(i8PtrTy, targetPtr,
+                                         "call_cache_target");
+  auto expectedPtr = builder.CreateStructGEP(cacheTy, cacheGV, 4,
+                                             "call_cache_expected_ptr");
+  auto cachedExpected = builder.CreateLoad(int32Ty, expectedPtr,
+                                           "call_cache_expected");
+  auto flagsPtr = builder.CreateStructGEP(cacheTy, cacheGV, 6,
+                                          "call_cache_flags_ptr");
+  auto cachedFlags = builder.CreateLoad(int32Ty, flagsPtr,
+                                        "call_cache_flags");
+
+  auto expectedNonNeg = builder.CreateICmpSGE(cachedExpected, zero32,
+                                              "call_cache_expected_ge0");
+  auto arityMatches = builder.CreateICmpEQ(cachedExpected, argCount,
+                                           "call_cache_arity_match");
+
+  auto functionBB =
+      llvm::BasicBlock::Create(ctx, "call.cache.function", fn);
+  auto closureBB =
+      llvm::BasicBlock::Create(ctx, "call.cache.closure", fn);
+  auto nativeBB =
+      llvm::BasicBlock::Create(ctx, "call.cache.native", fn);
+  auto boundBB =
+      llvm::BasicBlock::Create(ctx, "call.cache.bound", fn);
+  auto classBB =
+      llvm::BasicBlock::Create(ctx, "call.cache.class", fn);
+
+  builder.CreateBr(functionBB);
 
   std::vector<std::pair<llvm::BasicBlock *, llvm::Value *>> results;
 
-  builder.SetInsertPoint(functionCheckBB);
+  // Function fast path
+  builder.SetInsertPoint(functionBB);
   auto functionKindConst = llvm::ConstantInt::get(
       int32Ty, static_cast<int>(eloxir::CallInlineCacheKind::FUNCTION));
-  auto isFunctionKind =
-      builder.CreateICmpEQ(kindVal, functionKindConst, "cache_function_kind");
+  auto isFunctionKind = builder.CreateICmpEQ(
+      cachedKind, functionKindConst, "call_cache_function_kind");
   auto functionGuardBB =
       llvm::BasicBlock::Create(ctx, "call.cache.function.guard", fn);
-  builder.CreateCondBr(isFunctionKind, functionGuardBB, closureCheckBB);
+  builder.CreateCondBr(isFunctionKind, functionGuardBB, closureBB);
 
   builder.SetInsertPoint(functionGuardBB);
-  auto isFunctionValue =
-      builder.CreateCall(isFunctionFn, {callee}, "is_function");
-  auto isFunctionBool =
-      builder.CreateICmpNE(isFunctionValue, zero32, "is_function_bool");
-  auto functionCalleePtr =
-      builder.CreateStructGEP(cacheTy, cacheGV, 0, "function_callee_ptr");
-  auto cachedFunction =
-      builder.CreateLoad(llvmValueTy(), functionCalleePtr, "cached_function");
-  auto functionMatch =
-      builder.CreateICmpEQ(callee, cachedFunction, "function_match");
-  auto functionTargetPtr =
-      builder.CreateStructGEP(cacheTy, cacheGV, 3, "function_target_ptr");
-  auto functionTarget =
-      builder.CreateLoad(i8PtrTy, functionTargetPtr, "function_target");
-  auto functionTargetValid =
-      builder.CreateICmpNE(functionTarget, nullI8Ptr, "function_target_valid");
-  auto functionExpectedPtr =
-      builder.CreateStructGEP(cacheTy, cacheGV, 4, "function_expected_ptr");
-  auto functionExpected = builder.CreateLoad(int32Ty, functionExpectedPtr,
-                                             "function_expected");
-  auto functionMeta =
-      builder.CreateAnd(isFunctionBool, functionMatch, "function_meta");
-  auto functionReady =
-      builder.CreateAnd(functionMeta, functionTargetValid, "function_ready");
+  auto functionMatch = builder.CreateICmpEQ(
+      callee, cachedCallee, "call_cache_function_match");
+  auto functionTargetValid = builder.CreateICmpNE(
+      cachedTarget, nullI8Ptr, "call_cache_function_target_valid");
+  auto functionReadyBase = builder.CreateAnd(
+      functionMatch, functionTargetValid, "call_cache_function_ready_base");
+  auto functionReadyWithArity = builder.CreateAnd(
+      functionReadyBase, arityMatches, "call_cache_function_ready_arity");
+  auto functionReady = builder.CreateSelect(
+      expectedNonNeg, functionReadyWithArity, functionReadyBase,
+      "call_cache_function_ready");
   auto functionFastBB =
       llvm::BasicBlock::Create(ctx, "call.cache.function.fast", fn);
-  builder.CreateCondBr(functionReady, functionFastBB, closureCheckBB);
+  builder.CreateCondBr(functionReady, functionFastBB, closureBB);
 
   builder.SetInsertPoint(functionFastBB);
   auto functionResult = builder.CreateCall(
       callFunctionFastFn,
-      {callee, argArray, argCount, functionTarget, functionExpected},
+      {callee, argArray, argCount, cachedTarget, cachedExpected},
       "call_function_fast");
 #ifdef ELOXIR_ENABLE_CACHE_STATS
   if (auto *callHitFn = mod.getFunction("elx_cache_stats_record_call_hit")) {
@@ -1540,48 +1554,36 @@ void CodeGenVisitor::visitCallExpr(Call *e) {
   builder.CreateBr(exitBB);
   results.emplace_back(builder.GetInsertBlock(), functionResult);
 
-  builder.SetInsertPoint(closureCheckBB);
+  // Closure fast path
+  builder.SetInsertPoint(closureBB);
   auto closureKindConst = llvm::ConstantInt::get(
       int32Ty, static_cast<int>(eloxir::CallInlineCacheKind::CLOSURE));
-  auto isClosureKind =
-      builder.CreateICmpEQ(kindVal, closureKindConst, "cache_closure_kind");
+  auto isClosureKind = builder.CreateICmpEQ(
+      cachedKind, closureKindConst, "call_cache_closure_kind");
   auto closureGuardBB =
       llvm::BasicBlock::Create(ctx, "call.cache.closure.guard", fn);
-  builder.CreateCondBr(isClosureKind, closureGuardBB, nativeCheckBB);
+  builder.CreateCondBr(isClosureKind, closureGuardBB, nativeBB);
 
   builder.SetInsertPoint(closureGuardBB);
-  auto isClosureValue =
-      builder.CreateCall(isClosureFn, {callee}, "is_closure");
-  auto isClosureBool =
-      builder.CreateICmpNE(isClosureValue, zero32, "is_closure_bool");
-  auto closureCalleePtr =
-      builder.CreateStructGEP(cacheTy, cacheGV, 0, "closure_callee_ptr");
-  auto cachedClosure =
-      builder.CreateLoad(llvmValueTy(), closureCalleePtr, "cached_closure");
-  auto closureMatch =
-      builder.CreateICmpEQ(callee, cachedClosure, "closure_match");
-  auto closureTargetPtr =
-      builder.CreateStructGEP(cacheTy, cacheGV, 3, "closure_target_ptr");
-  auto closureTarget =
-      builder.CreateLoad(i8PtrTy, closureTargetPtr, "closure_target");
-  auto closureTargetValid = builder.CreateICmpNE(closureTarget, nullI8Ptr,
-                                                 "closure_target_valid");
-  auto closureExpectedPtr =
-      builder.CreateStructGEP(cacheTy, cacheGV, 4, "closure_expected_ptr");
-  auto closureExpected = builder.CreateLoad(int32Ty, closureExpectedPtr,
-                                            "closure_expected");
-  auto closureMeta =
-      builder.CreateAnd(isClosureBool, closureMatch, "closure_meta");
-  auto closureReady =
-      builder.CreateAnd(closureMeta, closureTargetValid, "closure_ready");
+  auto closureMatch = builder.CreateICmpEQ(
+      callee, cachedCallee, "call_cache_closure_match");
+  auto closureTargetValid = builder.CreateICmpNE(
+      cachedTarget, nullI8Ptr, "call_cache_closure_target_valid");
+  auto closureReadyBase = builder.CreateAnd(
+      closureMatch, closureTargetValid, "call_cache_closure_ready_base");
+  auto closureReadyWithArity = builder.CreateAnd(
+      closureReadyBase, arityMatches, "call_cache_closure_ready_arity");
+  auto closureReady = builder.CreateSelect(
+      expectedNonNeg, closureReadyWithArity, closureReadyBase,
+      "call_cache_closure_ready");
   auto closureFastBB =
       llvm::BasicBlock::Create(ctx, "call.cache.closure.fast", fn);
-  builder.CreateCondBr(closureReady, closureFastBB, nativeCheckBB);
+  builder.CreateCondBr(closureReady, closureFastBB, nativeBB);
 
   builder.SetInsertPoint(closureFastBB);
   auto closureResult = builder.CreateCall(
       callClosureFastFn,
-      {callee, argArray, argCount, closureTarget, closureExpected},
+      {callee, argArray, argCount, cachedTarget, cachedExpected},
       "call_closure_fast");
 #ifdef ELOXIR_ENABLE_CACHE_STATS
   if (auto *callHitFn = mod.getFunction("elx_cache_stats_record_call_hit")) {
@@ -1591,48 +1593,36 @@ void CodeGenVisitor::visitCallExpr(Call *e) {
   builder.CreateBr(exitBB);
   results.emplace_back(builder.GetInsertBlock(), closureResult);
 
-  builder.SetInsertPoint(nativeCheckBB);
+  // Native fast path
+  builder.SetInsertPoint(nativeBB);
   auto nativeKindConst = llvm::ConstantInt::get(
       int32Ty, static_cast<int>(eloxir::CallInlineCacheKind::NATIVE));
-  auto isNativeKind =
-      builder.CreateICmpEQ(kindVal, nativeKindConst, "cache_native_kind");
+  auto isNativeKind = builder.CreateICmpEQ(
+      cachedKind, nativeKindConst, "call_cache_native_kind");
   auto nativeGuardBB =
       llvm::BasicBlock::Create(ctx, "call.cache.native.guard", fn);
-  builder.CreateCondBr(isNativeKind, nativeGuardBB, boundCheckBB);
+  builder.CreateCondBr(isNativeKind, nativeGuardBB, boundBB);
 
   builder.SetInsertPoint(nativeGuardBB);
-  auto isNativeValue =
-      builder.CreateCall(isNativeFn, {callee}, "is_native");
-  auto isNativeBool =
-      builder.CreateICmpNE(isNativeValue, zero32, "is_native_bool");
-  auto nativeCalleePtr =
-      builder.CreateStructGEP(cacheTy, cacheGV, 0, "native_callee_ptr");
-  auto cachedNative =
-      builder.CreateLoad(llvmValueTy(), nativeCalleePtr, "cached_native");
-  auto nativeMatch =
-      builder.CreateICmpEQ(callee, cachedNative, "native_match");
-  auto nativeTargetPtr =
-      builder.CreateStructGEP(cacheTy, cacheGV, 3, "native_target_ptr");
-  auto nativeTarget =
-      builder.CreateLoad(i8PtrTy, nativeTargetPtr, "native_target");
-  auto nativeTargetValid = builder.CreateICmpNE(nativeTarget, nullI8Ptr,
-                                                "native_target_valid");
-  auto nativeExpectedPtr =
-      builder.CreateStructGEP(cacheTy, cacheGV, 4, "native_expected_ptr");
-  auto nativeExpected = builder.CreateLoad(int32Ty, nativeExpectedPtr,
-                                           "native_expected");
-  auto nativeMeta =
-      builder.CreateAnd(isNativeBool, nativeMatch, "native_meta");
-  auto nativeReady =
-      builder.CreateAnd(nativeMeta, nativeTargetValid, "native_ready");
+  auto nativeMatch = builder.CreateICmpEQ(
+      callee, cachedCallee, "call_cache_native_match");
+  auto nativeTargetValid = builder.CreateICmpNE(
+      cachedTarget, nullI8Ptr, "call_cache_native_target_valid");
+  auto nativeReadyBase = builder.CreateAnd(
+      nativeMatch, nativeTargetValid, "call_cache_native_ready_base");
+  auto nativeReadyWithArity = builder.CreateAnd(
+      nativeReadyBase, arityMatches, "call_cache_native_ready_arity");
+  auto nativeReady = builder.CreateSelect(
+      expectedNonNeg, nativeReadyWithArity, nativeReadyBase,
+      "call_cache_native_ready");
   auto nativeFastBB =
       llvm::BasicBlock::Create(ctx, "call.cache.native.fast", fn);
-  builder.CreateCondBr(nativeReady, nativeFastBB, boundCheckBB);
+  builder.CreateCondBr(nativeReady, nativeFastBB, boundBB);
 
   builder.SetInsertPoint(nativeFastBB);
   auto nativeResult = builder.CreateCall(
       callNativeFastFn,
-      {callee, argArray, argCount, nativeTarget, nativeExpected},
+      {callee, argArray, argCount, cachedTarget, cachedExpected},
       "call_native_fast");
 #ifdef ELOXIR_ENABLE_CACHE_STATS
   if (auto *callHitFn = mod.getFunction("elx_cache_stats_record_call_hit")) {
@@ -1642,65 +1632,47 @@ void CodeGenVisitor::visitCallExpr(Call *e) {
   builder.CreateBr(exitBB);
   results.emplace_back(builder.GetInsertBlock(), nativeResult);
 
-  builder.SetInsertPoint(boundCheckBB);
+  // Bound method fast path
+  builder.SetInsertPoint(boundBB);
   auto boundKindConst = llvm::ConstantInt::get(
       int32Ty, static_cast<int>(eloxir::CallInlineCacheKind::BOUND_METHOD));
-  auto isBoundKind =
-      builder.CreateICmpEQ(kindVal, boundKindConst, "cache_bound_kind");
+  auto isBoundKind = builder.CreateICmpEQ(
+      cachedKind, boundKindConst, "call_cache_bound_kind");
   auto boundGuardBB =
       llvm::BasicBlock::Create(ctx, "call.cache.bound.guard", fn);
-  builder.CreateCondBr(isBoundKind, boundGuardBB, classCheckBB);
+  builder.CreateCondBr(isBoundKind, boundGuardBB, classBB);
 
   builder.SetInsertPoint(boundGuardBB);
-  auto isBoundValue =
-      builder.CreateCall(isBoundMethodFn, {callee}, "is_bound_method");
-  auto isBoundBool =
-      builder.CreateICmpNE(isBoundValue, zero32, "is_bound_bool");
-  auto boundMethodPtr =
-      builder.CreateStructGEP(cacheTy, cacheGV, 1, "bound_method_ptr");
-  auto cachedMethod =
-      builder.CreateLoad(llvmValueTy(), boundMethodPtr, "cached_method");
-  auto hasMethodBits =
-      builder.CreateICmpNE(cachedMethod, zero64, "bound_has_method");
-  auto boundClassPtr =
-      builder.CreateStructGEP(cacheTy, cacheGV, 2, "bound_class_ptr");
-  auto cachedClass =
-      builder.CreateLoad(llvmValueTy(), boundClassPtr, "cached_class");
-  auto boundTargetPtr =
-      builder.CreateStructGEP(cacheTy, cacheGV, 3, "bound_target_ptr");
-  auto boundTarget =
-      builder.CreateLoad(i8PtrTy, boundTargetPtr, "bound_target");
-  auto boundTargetValid = builder.CreateICmpNE(boundTarget, nullI8Ptr,
-                                               "bound_target_valid");
-  auto boundExpectedPtr =
-      builder.CreateStructGEP(cacheTy, cacheGV, 4, "bound_expected_ptr");
-  auto boundExpected = builder.CreateLoad(int32Ty, boundExpectedPtr,
-                                          "bound_expected");
-  auto boundFlagsPtr =
-      builder.CreateStructGEP(cacheTy, cacheGV, 6, "bound_flags_ptr");
-  auto boundFlags =
-      builder.CreateLoad(int32Ty, boundFlagsPtr, "bound_flags");
-  auto hasFlags =
-      builder.CreateICmpNE(boundFlags, zero32, "bound_has_flags");
+  auto boundMethodReady = builder.CreateICmpNE(
+      guard0, zero64, "call_cache_bound_has_method");
+  auto boundTargetValid = builder.CreateICmpNE(
+      cachedTarget, nullI8Ptr, "call_cache_bound_target_valid");
+  auto boundFlagsReady = builder.CreateICmpNE(
+      cachedFlags, zero32, "call_cache_bound_has_flags");
   auto boundMatchesCall = builder.CreateCall(
-      boundMatchesFn, {callee, cachedMethod, cachedClass}, "bound_matches");
-  auto boundMatchesBool =
-      builder.CreateICmpNE(boundMatchesCall, zero32, "bound_matches_bool");
-  llvm::Value *boundCond =
-      builder.CreateAnd(isBoundBool, hasMethodBits, "bound_meta");
-  boundCond = builder.CreateAnd(boundCond, boundMatchesBool, "bound_match");
-  boundCond = builder.CreateAnd(boundCond, boundTargetValid,
-                                "bound_target_ready");
-  boundCond = builder.CreateAnd(boundCond, hasFlags, "bound_ready");
+      boundMatchesFn, {callee, guard0, guard1}, "call_cache_bound_matches");
+  auto boundMatches = builder.CreateICmpNE(
+      boundMatchesCall, zero32, "call_cache_bound_matches_bool");
+  auto boundReadyBase = builder.CreateAnd(
+      boundMethodReady, boundMatches, "call_cache_bound_ready_base");
+  boundReadyBase = builder.CreateAnd(boundReadyBase, boundTargetValid,
+                                     "call_cache_bound_ready_target");
+  boundReadyBase = builder.CreateAnd(boundReadyBase, boundFlagsReady,
+                                     "call_cache_bound_ready_flags");
+  auto boundReadyWithArity = builder.CreateAnd(
+      boundReadyBase, arityMatches, "call_cache_bound_ready_arity");
+  auto boundReady = builder.CreateSelect(expectedNonNeg, boundReadyWithArity,
+                                         boundReadyBase,
+                                         "call_cache_bound_ready");
   auto boundFastBB =
       llvm::BasicBlock::Create(ctx, "call.cache.bound.fast", fn);
-  builder.CreateCondBr(boundCond, boundFastBB, classCheckBB);
+  builder.CreateCondBr(boundReady, boundFastBB, classBB);
 
   builder.SetInsertPoint(boundFastBB);
   auto boundResult = builder.CreateCall(
       callBoundFastFn,
-      {callee, argArray, argCount, cachedMethod, boundTarget, boundExpected,
-       cachedClass, boundFlags},
+      {callee, argArray, argCount, guard0, cachedTarget, cachedExpected,
+       guard1, cachedFlags},
       "call_bound_fast");
 #ifdef ELOXIR_ENABLE_CACHE_STATS
   if (auto *callHitFn = mod.getFunction("elx_cache_stats_record_call_hit")) {
@@ -1710,61 +1682,43 @@ void CodeGenVisitor::visitCallExpr(Call *e) {
   builder.CreateBr(exitBB);
   results.emplace_back(builder.GetInsertBlock(), boundResult);
 
-  builder.SetInsertPoint(classCheckBB);
+  // Class fast path
+  builder.SetInsertPoint(classBB);
   auto classKindConst = llvm::ConstantInt::get(
       int32Ty, static_cast<int>(eloxir::CallInlineCacheKind::CLASS));
-  auto isClassKind =
-      builder.CreateICmpEQ(kindVal, classKindConst, "cache_class_kind");
+  auto isClassKind = builder.CreateICmpEQ(
+      cachedKind, classKindConst, "call_cache_class_kind");
   auto classGuardBB =
       llvm::BasicBlock::Create(ctx, "call.cache.class.guard", fn);
   builder.CreateCondBr(isClassKind, classGuardBB, slowBB);
 
   builder.SetInsertPoint(classGuardBB);
-  auto isClassValue = builder.CreateCall(isClassFn, {callee}, "is_class");
-  auto isClassBool =
-      builder.CreateICmpNE(isClassValue, zero32, "is_class_bool");
-  auto classCalleePtr =
-      builder.CreateStructGEP(cacheTy, cacheGV, 0, "class_callee_ptr");
-  auto cachedClassCallee = builder.CreateLoad(llvmValueTy(), classCalleePtr,
-                                              "cached_class_bits");
-  auto classMatch =
-      builder.CreateICmpEQ(callee, cachedClassCallee, "class_match");
-  auto classMethodPtr =
-      builder.CreateStructGEP(cacheTy, cacheGV, 1, "class_method_ptr");
-  auto classMethodBits =
-      builder.CreateLoad(llvmValueTy(), classMethodPtr, "class_method_bits");
-  auto classTargetPtr =
-      builder.CreateStructGEP(cacheTy, cacheGV, 3, "class_target_ptr");
-  auto classTarget =
-      builder.CreateLoad(i8PtrTy, classTargetPtr, "class_target");
-  auto classExpectedPtr =
-      builder.CreateStructGEP(cacheTy, cacheGV, 4, "class_expected_ptr");
-  auto classExpected = builder.CreateLoad(int32Ty, classExpectedPtr,
-                                          "class_expected");
-  auto classFlagsPtr =
-      builder.CreateStructGEP(cacheTy, cacheGV, 6, "class_flags_ptr");
-  auto classFlags = builder.CreateLoad(int32Ty, classFlagsPtr,
-                                       "class_flags");
-  auto initMask = builder.CreateAnd(
-      classFlags,
+  auto classMatch = builder.CreateICmpEQ(
+      callee, cachedCallee, "call_cache_class_match");
+  auto classFlagsHasInit = builder.CreateAnd(
+      cachedFlags,
       llvm::ConstantInt::get(int32Ty,
-                             static_cast<int>(eloxir::CALL_CACHE_FLAG_CLASS_HAS_INITIALIZER)),
-      "class_init_mask");
-  auto hasInitializer =
-      builder.CreateICmpNE(initMask, zero32, "class_has_initializer");
-  auto methodNonZero =
-      builder.CreateICmpNE(classMethodBits, zero64, "class_method_nonzero");
-  auto classTargetValid =
-      builder.CreateICmpNE(classTarget, nullI8Ptr, "class_target_valid");
-  auto initReady =
-      builder.CreateAnd(methodNonZero, classTargetValid, "class_init_ready");
-  auto noInitializer = builder.CreateNot(hasInitializer, "class_no_init");
-  auto initializerReady = builder.CreateOr(noInitializer, initReady,
-                                           "class_init_ok");
-  auto classMeta =
-      builder.CreateAnd(isClassBool, classMatch, "class_meta");
-  auto classReady =
-      builder.CreateAnd(classMeta, initializerReady, "class_ready");
+                             eloxir::CALL_CACHE_FLAG_CLASS_HAS_INITIALIZER),
+      "call_cache_class_init_flag");
+  auto classHasInitializer = builder.CreateICmpNE(
+      classFlagsHasInit, zero32, "call_cache_class_has_init");
+  auto classTargetValid = builder.CreateICmpNE(
+      cachedTarget, nullI8Ptr, "call_cache_class_target_valid");
+  auto classInitBitsReady = builder.CreateICmpNE(
+      guard0, zero64, "call_cache_class_init_bits_ready");
+  auto classInitializerReadyBase = builder.CreateAnd(
+      classInitBitsReady, classTargetValid,
+      "call_cache_class_initializer_ready_base");
+  auto classInitializerReady = builder.CreateSelect(
+      classHasInitializer, classInitializerReadyBase, trueConst,
+      "call_cache_class_initializer_ready");
+  auto classReadyBase = builder.CreateAnd(
+      classMatch, classInitializerReady, "call_cache_class_ready_base");
+  auto classReadyWithArity = builder.CreateAnd(
+      classReadyBase, arityMatches, "call_cache_class_ready_arity");
+  auto classReady = builder.CreateSelect(expectedNonNeg, classReadyWithArity,
+                                         classReadyBase,
+                                         "call_cache_class_ready");
   auto classFastBB =
       llvm::BasicBlock::Create(ctx, "call.cache.class.fast", fn);
   builder.CreateCondBr(classReady, classFastBB, slowBB);
@@ -1772,8 +1726,8 @@ void CodeGenVisitor::visitCallExpr(Call *e) {
   builder.SetInsertPoint(classFastBB);
   auto classResult = builder.CreateCall(
       callClassFastFn,
-      {callee, argArray, argCount, classMethodBits, classTarget, classExpected,
-       classFlags},
+      {callee, argArray, argCount, guard0, cachedTarget, cachedExpected,
+       cachedFlags},
       "call_class_fast");
 #ifdef ELOXIR_ENABLE_CACHE_STATS
   if (auto *callHitFn = mod.getFunction("elx_cache_stats_record_call_hit")) {

@@ -119,13 +119,13 @@ enum class CallInlineCacheKind : int32_t {
 };
 
 struct CallInlineCache {
-  uint64_t callee_bits;
-  uint64_t method_bits;
-  uint64_t aux_bits;
-  void *target_ptr;
-  int32_t expected_arity;
-  int32_t kind;
-  int32_t flags;
+  uint64_t callee_bits;   // Last callee value observed at this site
+  uint64_t guard0_bits;   // Kind specific guard (method/initializer bits)
+  uint64_t guard1_bits;   // Additional guard (expected class/shape pointer)
+  void *target_ptr;       // Specialized entry point for the cached callee
+  int32_t expected_arity; // Number of user arguments expected (or < 0 to skip)
+  int32_t kind;           // eloxir::CallInlineCacheKind discriminator
+  int32_t flags;          // Optional flags for specialised fast paths
   int32_t padding;
 };
 
