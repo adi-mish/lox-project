@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <string>
 #include <unordered_map>
+#include <vector>
 #include <llvm/ADT/DenseMap.h>
 
 namespace eloxir {
@@ -17,7 +18,8 @@ enum class ObjType {
   UPVALUE,
   CLASS,
   INSTANCE,
-  BOUND_METHOD
+  BOUND_METHOD,
+  SHAPE
 };
 
 struct Obj {
@@ -75,12 +77,14 @@ struct ObjClass {
   ObjString *name;
   struct ObjClass *superclass;
   llvm::DenseMap<ObjString *, uint64_t> methods;
+  llvm::DenseMap<ObjString *, size_t> fieldSlots;
   ObjShape *shape;
 };
 
 struct ObjInstance {
   Obj obj;
   ObjClass *klass;
+  ObjShape *shape;
   uint64_t *fieldValues;
   uint8_t *fieldPresence;
   size_t fieldCapacity;
@@ -92,6 +96,45 @@ struct ObjBoundMethod {
   uint64_t receiver;
   uint64_t method;
 };
+
+inline constexpr uint32_t PROPERTY_CACHE_MAX_SIZE = 4;
+
+struct PropertyCacheEntry {
+  ObjShape *shape;
+  uint32_t slot;
+};
+
+struct PropertyCache {
+  uint32_t size;
+  PropertyCacheEntry entries[PROPERTY_CACHE_MAX_SIZE];
+};
+
+enum class CallInlineCacheKind : int32_t {
+  EMPTY = 0,
+  FUNCTION = 1,
+  CLOSURE = 2,
+  NATIVE = 3,
+  BOUND_METHOD = 4,
+  CLASS = 5
+};
+
+struct CallInlineCache {
+  uint64_t callee_bits;
+  uint64_t method_bits;
+  uint64_t aux_bits;
+  void *target_ptr;
+  int32_t expected_arity;
+  int32_t kind;
+  int32_t flags;
+  int32_t padding;
+};
+
+inline constexpr int CALL_CACHE_FLAG_METHOD_IS_CLOSURE = 1 << 0;
+inline constexpr int CALL_CACHE_FLAG_METHOD_IS_FUNCTION = 1 << 1;
+inline constexpr int CALL_CACHE_FLAG_METHOD_IS_NATIVE = 1 << 2;
+inline constexpr int CALL_CACHE_FLAG_CLASS_HAS_INITIALIZER = 1 << 3;
+
+struct CacheStats;
 
 } // namespace eloxir
 
