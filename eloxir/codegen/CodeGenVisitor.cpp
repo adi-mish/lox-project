@@ -308,12 +308,15 @@ llvm::StructType *CodeGenVisitor::getPropertyCacheType() {
 
   auto shapePtrTy = llvm::PointerType::get(llvm::Type::getInt8Ty(ctx), 0);
   auto slotTy = llvm::Type::getInt32Ty(ctx);
-  auto shapesArrayTy =
-      llvm::ArrayType::get(shapePtrTy, PROPERTY_CACHE_MAX_SIZE);
-  auto slotsArrayTy =
-      llvm::ArrayType::get(slotTy, PROPERTY_CACHE_MAX_SIZE);
-
-  std::vector<llvm::Type *> elements = {shapesArrayTy, slotsArrayTy, slotTy};
+  static llvm::StructType *entryTy = nullptr;
+  if (!entryTy) {
+    entryTy = llvm::StructType::create(
+        ctx, {shapePtrTy, slotTy}, "struct.elx.PropertyCacheEntry");
+  }
+  auto entriesArrayTy =
+      llvm::ArrayType::get(entryTy, PROPERTY_CACHE_MAX_SIZE);
+  std::vector<llvm::Type *> elements = {llvm::Type::getInt32Ty(ctx),
+                                        entriesArrayTy};
   propertyCacheTy = llvm::StructType::create(ctx, elements,
                                              "struct.elx.PropertyCache");
   return propertyCacheTy;
@@ -2936,15 +2939,21 @@ void CodeGenVisitor::visitGetExpr(Get *e) {
   auto shapeValue = builder.CreateCall(shapeFn, {objectValue}, "instance_shape");
 
   auto int32Ty = llvm::Type::getInt32Ty(ctx);
-  auto sizePtr = builder.CreateStructGEP(cacheTy, cachePtr, 2, "cache_size_ptr");
-  auto sizeVal = builder.CreateLoad(int32Ty, sizePtr, "cache_size");
-  auto shapesArrayPtr =
-      builder.CreateStructGEP(cacheTy, cachePtr, 0, "cache_shapes");
-  auto slotsArrayPtr =
-      builder.CreateStructGEP(cacheTy, cachePtr, 1, "cache_slots");
-  auto shapesArrayTy = llvm::cast<llvm::ArrayType>(cacheTy->getElementType(0));
-  auto slotsArrayTy = llvm::cast<llvm::ArrayType>(cacheTy->getElementType(1));
+  auto sizePtr = builder.CreateStructGEP(cacheTy, cachePtr, 0, "cache_size_ptr");
+  auto entriesPtr =
+      builder.CreateStructGEP(cacheTy, cachePtr, 1, "cache_entries_ptr");
+  auto entriesArrayTy =
+      llvm::cast<llvm::ArrayType>(cacheTy->getElementType(1));
+  auto entryTy =
+      llvm::cast<llvm::StructType>(entriesArrayTy->getElementType());
   auto shapePtrTy = llvm::PointerType::get(llvm::Type::getInt8Ty(ctx), 0);
+
+  auto shapeNull = builder.CreateIsNull(shapeValue, "shape_null");
+  auto guardBB = llvm::BasicBlock::Create(ctx, "get.cache.start", fn);
+  builder.CreateCondBr(shapeNull, slowBB, guardBB);
+
+  builder.SetInsertPoint(guardBB);
+  auto sizeVal = builder.CreateLoad(int32Ty, sizePtr, "cache_size");
 
   llvm::BasicBlock *startBB = builder.GetInsertBlock();
   std::vector<std::pair<llvm::BasicBlock *, llvm::Value *>> phiIncoming;
@@ -2964,9 +2973,11 @@ void CodeGenVisitor::visitGetExpr(Get *e) {
     builder.CreateCondBr(hasEntry, shapeCheckBB, fallback);
 
     builder.SetInsertPoint(shapeCheckBB);
-    auto shapeElemPtr = builder.CreateInBoundsGEP(
-        shapesArrayTy, shapesArrayPtr, {builder.getInt32(0), idxConst},
-        "cache_shape_ptr");
+    auto entryPtr = builder.CreateInBoundsGEP(
+        entriesArrayTy, entriesPtr, {builder.getInt32(0), idxConst},
+        "cache_entry_ptr");
+    auto shapeElemPtr = builder.CreateStructGEP(entryTy, entryPtr, 0,
+                                                "cache_shape_ptr");
     auto cachedShape =
         builder.CreateLoad(shapePtrTy, shapeElemPtr, "cached_shape");
     auto shapeMatch =
@@ -2974,9 +2985,8 @@ void CodeGenVisitor::visitGetExpr(Get *e) {
     builder.CreateCondBr(shapeMatch, fastBB, fallback);
 
     builder.SetInsertPoint(fastBB);
-    auto slotElemPtr = builder.CreateInBoundsGEP(
-        slotsArrayTy, slotsArrayPtr, {builder.getInt32(0), idxConst},
-        "cache_slot_ptr");
+    auto slotElemPtr = builder.CreateStructGEP(entryTy, entryPtr, 1,
+                                               "cache_slot_ptr");
     auto slotVal = builder.CreateLoad(int32Ty, slotElemPtr, "cached_slot");
     auto fieldsPtr =
         builder.CreateCall(fieldsFn, {objectValue}, "fields_ptr");
@@ -3087,15 +3097,21 @@ void CodeGenVisitor::visitSetExpr(Set *e) {
   auto shapeValue = builder.CreateCall(shapeFn, {objectValue}, "instance_shape");
 
   auto int32Ty = llvm::Type::getInt32Ty(ctx);
-  auto sizePtr = builder.CreateStructGEP(cacheTy, cachePtr, 2, "cache_size_ptr");
-  auto sizeVal = builder.CreateLoad(int32Ty, sizePtr, "cache_size");
-  auto shapesArrayPtr =
-      builder.CreateStructGEP(cacheTy, cachePtr, 0, "cache_shapes");
-  auto slotsArrayPtr =
-      builder.CreateStructGEP(cacheTy, cachePtr, 1, "cache_slots");
-  auto shapesArrayTy = llvm::cast<llvm::ArrayType>(cacheTy->getElementType(0));
-  auto slotsArrayTy = llvm::cast<llvm::ArrayType>(cacheTy->getElementType(1));
+  auto sizePtr = builder.CreateStructGEP(cacheTy, cachePtr, 0, "cache_size_ptr");
+  auto entriesPtr =
+      builder.CreateStructGEP(cacheTy, cachePtr, 1, "cache_entries_ptr");
+  auto entriesArrayTy =
+      llvm::cast<llvm::ArrayType>(cacheTy->getElementType(1));
+  auto entryTy =
+      llvm::cast<llvm::StructType>(entriesArrayTy->getElementType());
   auto shapePtrTy = llvm::PointerType::get(llvm::Type::getInt8Ty(ctx), 0);
+
+  auto shapeNull = builder.CreateIsNull(shapeValue, "shape_null");
+  auto guardBB = llvm::BasicBlock::Create(ctx, "set.cache.start", fn);
+  builder.CreateCondBr(shapeNull, slowBB, guardBB);
+
+  builder.SetInsertPoint(guardBB);
+  auto sizeVal = builder.CreateLoad(int32Ty, sizePtr, "cache_size");
 
   llvm::BasicBlock *startBB = builder.GetInsertBlock();
   std::vector<std::pair<llvm::BasicBlock *, llvm::Value *>> valuePhi;
@@ -3115,9 +3131,11 @@ void CodeGenVisitor::visitSetExpr(Set *e) {
     builder.CreateCondBr(hasEntry, shapeCheckBB, fallback);
 
     builder.SetInsertPoint(shapeCheckBB);
-    auto shapeElemPtr = builder.CreateInBoundsGEP(
-        shapesArrayTy, shapesArrayPtr, {builder.getInt32(0), idxConst},
-        "cache_shape_ptr");
+    auto entryPtr = builder.CreateInBoundsGEP(
+        entriesArrayTy, entriesPtr, {builder.getInt32(0), idxConst},
+        "cache_entry_ptr");
+    auto shapeElemPtr = builder.CreateStructGEP(entryTy, entryPtr, 0,
+                                                "cache_shape_ptr");
     auto cachedShape =
         builder.CreateLoad(shapePtrTy, shapeElemPtr, "cached_shape");
     auto shapeMatch =
@@ -3125,9 +3143,8 @@ void CodeGenVisitor::visitSetExpr(Set *e) {
     builder.CreateCondBr(shapeMatch, fastBB, fallback);
 
     builder.SetInsertPoint(fastBB);
-    auto slotElemPtr = builder.CreateInBoundsGEP(
-        slotsArrayTy, slotsArrayPtr, {builder.getInt32(0), idxConst},
-        "cache_slot_ptr");
+    auto slotElemPtr = builder.CreateStructGEP(entryTy, entryPtr, 1,
+                                               "cache_slot_ptr");
     auto slotVal = builder.CreateLoad(int32Ty, slotElemPtr, "cached_slot");
     auto fieldsPtr =
         builder.CreateCall(fieldsFn, {objectValue}, "fields_ptr");

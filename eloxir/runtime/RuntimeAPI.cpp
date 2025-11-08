@@ -1,5 +1,6 @@
 #include "RuntimeAPI.h"
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -10,6 +11,65 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+
+namespace eloxir {
+
+struct CacheStats {
+  uint64_t property_get_hits = 0;
+  uint64_t property_get_misses = 0;
+  uint64_t property_get_shape_transitions = 0;
+  uint64_t property_set_hits = 0;
+  uint64_t property_set_misses = 0;
+  uint64_t property_set_shape_transitions = 0;
+  uint64_t call_hits = 0;
+  uint64_t call_misses = 0;
+  uint64_t call_shape_transitions = 0;
+};
+
+struct CacheStatsCollector {
+  std::atomic<uint64_t> property_get_hits{0};
+  std::atomic<uint64_t> property_get_misses{0};
+  std::atomic<uint64_t> property_get_shape_transitions{0};
+  std::atomic<uint64_t> property_set_hits{0};
+  std::atomic<uint64_t> property_set_misses{0};
+  std::atomic<uint64_t> property_set_shape_transitions{0};
+  std::atomic<uint64_t> call_hits{0};
+  std::atomic<uint64_t> call_misses{0};
+  std::atomic<uint64_t> call_shape_transitions{0};
+
+  void reset() {
+    property_get_hits.store(0, std::memory_order_relaxed);
+    property_get_misses.store(0, std::memory_order_relaxed);
+    property_get_shape_transitions.store(0, std::memory_order_relaxed);
+    property_set_hits.store(0, std::memory_order_relaxed);
+    property_set_misses.store(0, std::memory_order_relaxed);
+    property_set_shape_transitions.store(0, std::memory_order_relaxed);
+    call_hits.store(0, std::memory_order_relaxed);
+    call_misses.store(0, std::memory_order_relaxed);
+    call_shape_transitions.store(0, std::memory_order_relaxed);
+  }
+
+  CacheStats snapshot() const {
+    CacheStats stats;
+    stats.property_get_hits = property_get_hits.load(std::memory_order_relaxed);
+    stats.property_get_misses =
+        property_get_misses.load(std::memory_order_relaxed);
+    stats.property_get_shape_transitions =
+        property_get_shape_transitions.load(std::memory_order_relaxed);
+    stats.property_set_hits = property_set_hits.load(std::memory_order_relaxed);
+    stats.property_set_misses =
+        property_set_misses.load(std::memory_order_relaxed);
+    stats.property_set_shape_transitions =
+        property_set_shape_transitions.load(std::memory_order_relaxed);
+    stats.call_hits = call_hits.load(std::memory_order_relaxed);
+    stats.call_misses = call_misses.load(std::memory_order_relaxed);
+    stats.call_shape_transitions =
+        call_shape_transitions.load(std::memory_order_relaxed);
+    return stats;
+  }
+};
+
+} // namespace eloxir
 
 using namespace eloxir;
 
@@ -27,11 +87,17 @@ static std::unordered_map<std::string, uint64_t> global_interned_strings;
 static std::unordered_map<std::string, uint64_t> global_variables;
 static std::unordered_map<std::string, uint64_t> global_functions;
 
+namespace {
+
+#if defined(ELOXIR_ENABLE_CACHE_STATS)
+static CacheStatsCollector g_cache_stats;
+#endif
+static const CacheStats kEmptyCacheStats{};
+
 // Runtime error state
 static bool runtime_error_flag = false;
 static std::string runtime_error_message;
 
-namespace {
 struct FieldBuffer {
   uint64_t *values;
   uint8_t *presence;
@@ -135,6 +201,7 @@ static ObjInstance *acquireInstanceObject() {
 
   instance->obj.type = ObjType::INSTANCE;
   instance->klass = nullptr;
+  instance->shape = nullptr;
   instance->nextFree = nullptr;
   return instance;
 }
@@ -152,6 +219,7 @@ static void releaseInstanceObject(ObjInstance *instance) {
   }
 
   instance->klass = nullptr;
+  instance->shape = nullptr;
   instance->nextFree = instance_pool_head;
   instance_pool_head = instance;
 }
@@ -197,6 +265,41 @@ static std::string formatArityError(const ObjFunction *func, int got) {
   return formatArityError(name, func->arity, got);
 }
 } // namespace
+
+static void propertyCacheUpdate(PropertyCache *cache, ObjShape *shape,
+                                size_t slot, uint32_t capacity,
+                                bool is_set) {
+  if (!cache || !shape || capacity == 0)
+    return;
+
+  capacity = std::min<uint32_t>(capacity, PROPERTY_CACHE_MAX_SIZE);
+  if (capacity == 0)
+    return;
+
+  uint32_t boundedSlot = static_cast<uint32_t>(
+      std::min<size_t>(slot, std::numeric_limits<uint32_t>::max()));
+
+  uint32_t currentSize = std::min<uint32_t>(cache->size, capacity);
+  for (uint32_t i = 0; i < currentSize; ++i) {
+    PropertyCacheEntry &entry = cache->entries[i];
+    if (entry.shape == shape) {
+      entry.slot = boundedSlot;
+      return;
+    }
+  }
+
+  if (currentSize >= capacity)
+    return;
+
+  PropertyCacheEntry &entry = cache->entries[currentSize];
+  entry.shape = shape;
+  entry.slot = boundedSlot;
+  cache->size = currentSize + 1;
+
+#if defined(ELOXIR_ENABLE_CACHE_STATS)
+  elx_cache_stats_record_property_shape_transition(is_set ? 1 : 0);
+#endif
+}
 
 int elx_cache_stats_enabled() {
 #if defined(ELOXIR_ENABLE_CACHE_STATS)
