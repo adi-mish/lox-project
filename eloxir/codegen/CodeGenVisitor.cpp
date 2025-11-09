@@ -8,6 +8,8 @@
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/Function.h>
 #include <llvm/IR/Instructions.h>
+#include <llvm/IR/GlobalVariable.h>
+#include <llvm/Support/Alignment.h>
 #include <llvm/IR/Type.h>
 #include <llvm/IR/Verifier.h>
 #include <stdexcept>
@@ -48,6 +50,7 @@ CodeGenVisitor::CodeGenVisitor(llvm::Module &m)
   llvm::FunctionType *strEqualTy = llvm::FunctionType::get(
       llvm::Type::getInt32Ty(ctx), {llvmValueTy(), llvmValueTy()}, false);
   mod.getOrInsertFunction("elx_strings_equal", strEqualTy);
+  mod.getOrInsertFunction("elx_strings_equal_interned", strEqualTy);
 
   llvm::FunctionType *isStringFnTy = llvm::FunctionType::get(
       llvm::Type::getInt32Ty(ctx), {llvmValueTy()}, false);
@@ -447,8 +450,34 @@ llvm::Value *CodeGenVisitor::stringConst(const std::string &str,
   return strObj;
 }
 
+CodeGenVisitor::PropertyCacheEntry &
+CodeGenVisitor::ensurePropertyCache(const Expr *expr) {
+  auto it = propertyCaches.find(expr);
+  if (it != propertyCaches.end()) {
+    return it->second;
+  }
+
+  std::string baseName = "elx.prop.cache." + std::to_string(propertyCacheCounter++);
+  auto initial = llvm::ConstantInt::get(llvmValueTy(), 0);
+  auto *shapeBits = new llvm::GlobalVariable(
+      mod, llvmValueTy(), false, llvm::GlobalValue::PrivateLinkage, initial,
+      baseName + ".shape");
+  auto *slotIndex = new llvm::GlobalVariable(
+      mod, llvmValueTy(), false, llvm::GlobalValue::PrivateLinkage, initial,
+      baseName + ".slot");
+  shapeBits->setAlignment(llvm::Align(alignof(void *)));
+  slotIndex->setAlignment(llvm::Align(sizeof(uint64_t)));
+  auto [insertedIt, _] =
+      propertyCaches.emplace(expr, PropertyCacheEntry{shapeBits, slotIndex});
+  return insertedIt->second;
+}
+
 // Helper function for proper equality comparison following Lox semantics
 llvm::Value *CodeGenVisitor::valuesEqual(llvm::Value *L, llvm::Value *R) {
+  if (L == R) {
+    return builder.getTrue();
+  }
+
   auto tagL = tagOf(L);
   auto tagR = tagOf(R);
 
@@ -503,15 +532,30 @@ llvm::Value *CodeGenVisitor::valuesEqual(llvm::Value *L, llvm::Value *R) {
   builder.CreateCondBr(bothStrings, stringsBB, objPtrBB);
 
   builder.SetInsertPoint(stringsBB);
+  auto stringsFastBB = llvm::BasicBlock::Create(ctx, "eq.str.fast", fn);
+  auto stringsSlowBB = llvm::BasicBlock::Create(ctx, "eq.str.slow", fn);
+  auto samePtr = builder.CreateICmpEQ(L, R, "eq.str.sameptr");
+  builder.CreateCondBr(samePtr, stringsFastBB, stringsSlowBB);
+
+  builder.SetInsertPoint(stringsFastBB);
+  builder.CreateBr(contBB);
+  auto stringsFastResBB = builder.GetInsertBlock();
+
+  builder.SetInsertPoint(stringsSlowBB);
   llvm::Value *stringEqualBool = builder.getFalse();
-  if (auto strEqualFn = mod.getFunction("elx_strings_equal")) {
+  if (auto strEqualFn = mod.getFunction("elx_strings_equal_interned")) {
     auto strEqual = builder.CreateCall(strEqualFn, {L, R}, "streq");
     stringEqualBool = builder.CreateICmpNE(
         strEqual, llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0),
         "streqbool");
+  } else if (auto fallbackFn = mod.getFunction("elx_strings_equal")) {
+    auto strEqual = builder.CreateCall(fallbackFn, {L, R}, "streq.legacy");
+    stringEqualBool = builder.CreateICmpNE(
+        strEqual, llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0),
+        "streqbool.legacy");
   }
   builder.CreateBr(contBB);
-  auto stringsResBB = builder.GetInsertBlock();
+  auto stringsSlowResBB = builder.GetInsertBlock();
 
   builder.SetInsertPoint(objPtrBB);
   auto objEqualBool = builder.CreateICmpEQ(L, R, "objeq");
@@ -525,10 +569,11 @@ llvm::Value *CodeGenVisitor::valuesEqual(llvm::Value *L, llvm::Value *R) {
 
   // Merge results
   builder.SetInsertPoint(contBB);
-  auto phi = builder.CreatePHI(builder.getInt1Ty(), 5, "eq.res");
+  auto phi = builder.CreatePHI(builder.getInt1Ty(), 6, "eq.res");
   phi->addIncoming(builder.getFalse(), diffTypeBB);
   phi->addIncoming(numEqual, isNumBB);
-  phi->addIncoming(stringEqualBool, stringsResBB);
+  phi->addIncoming(builder.getTrue(), stringsFastResBB);
+  phi->addIncoming(stringEqualBool, stringsSlowResBB);
   phi->addIncoming(objEqualBool, objPtrResBB);
   phi->addIncoming(bitsEqual, isBoolOrNilBB);
 
@@ -804,6 +849,7 @@ void CodeGenVisitor::visitUnaryExpr(Unary *e) {
 
 void CodeGenVisitor::visitVariableExpr(Variable *e) {
   const std::string &varName = e->name.getLexeme();
+  bool captured = false;
 
   // Favour lexical bindings that are currently in scope before consulting any
   // captured upvalues so that shadowing behaves like the reference
@@ -2202,20 +2248,27 @@ void CodeGenVisitor::visitGetExpr(Get *e) {
   e->object->accept(this);
   llvm::Value *objectValue = value;
 
-  auto tryGetFn = mod.getFunction("elx_try_get_instance_field");
-  if (!tryGetFn) {
-    value = nilConst();
-    return;
-  }
-
   auto nameValue = stringConst(e->name.getLexeme(), true);
   llvm::Function *fn = builder.GetInsertBlock()->getParent();
   auto outPtr = createStackAlloca(fn, llvmValueTy(), "get_field_out");
   builder.CreateStore(nilConst(), outPtr);
 
-  auto status = builder.CreateCall(tryGetFn,
-                                   {objectValue, nameValue, outPtr},
-                                   "get_field_status");
+  llvm::Value *status = nullptr;
+  if (auto tryGetCachedFn =
+          mod.getFunction("elx_try_get_instance_field_cached")) {
+    auto &cache = ensurePropertyCache(e);
+    status = builder.CreateCall(tryGetCachedFn,
+                                {objectValue, nameValue, cache.shapeBits,
+                                 cache.slotIndex, outPtr},
+                                "get_field_status");
+  } else if (auto tryGetFn = mod.getFunction("elx_try_get_instance_field")) {
+    status = builder.CreateCall(tryGetFn,
+                                {objectValue, nameValue, outPtr},
+                                "get_field_status");
+  } else {
+    value = nilConst();
+    return;
+  }
 
   auto errorBB = llvm::BasicBlock::Create(ctx, "get.error", fn);
   auto dispatchBB = llvm::BasicBlock::Create(ctx, "get.dispatch", fn);
@@ -2322,15 +2375,32 @@ void CodeGenVisitor::visitSetExpr(Set *e) {
   llvm::Value *objectValue = value;
 
   auto hasErrorFn = mod.getFunction("elx_has_runtime_error");
-  auto setFieldFn = mod.getFunction("elx_set_instance_field");
+  llvm::Function *setFieldFn = nullptr;
+  CodeGenVisitor::PropertyCacheEntry *cacheEntry = nullptr;
+  if (auto cachedFn = mod.getFunction("elx_set_instance_field_cached")) {
+    setFieldFn = cachedFn;
+    cacheEntry = &ensurePropertyCache(e);
+  } else {
+    setFieldFn = mod.getFunction("elx_set_instance_field");
+  }
+
   if (!setFieldFn || !hasErrorFn) {
     e->value->accept(this);
     llvm::Value *assignedValue = value;
     if (setFieldFn) {
       auto nameValue = stringConst(e->name.getLexeme(), true);
-      value = builder.CreateCall(setFieldFn,
-                                 {objectValue, nameValue, assignedValue},
-                                 "set_field");
+      llvm::Value *callResult = nullptr;
+      if (cacheEntry) {
+        callResult = builder.CreateCall(
+            setFieldFn,
+            {objectValue, nameValue, assignedValue, cacheEntry->shapeBits,
+             cacheEntry->slotIndex},
+            "set_field");
+      } else {
+        callResult = builder.CreateCall(
+            setFieldFn, {objectValue, nameValue, assignedValue}, "set_field");
+      }
+      value = callResult;
       checkRuntimeError(value);
     } else {
       value = assignedValue;
@@ -2354,8 +2424,17 @@ void CodeGenVisitor::visitSetExpr(Set *e) {
   e->value->accept(this);
   llvm::Value *assignedValue = value;
   auto nameValue = stringConst(e->name.getLexeme(), true);
-  llvm::Value *setResult = builder.CreateCall(
-      setFieldFn, {objectValue, nameValue, assignedValue}, "set_field");
+  llvm::Value *setResult = nullptr;
+  if (cacheEntry) {
+    setResult = builder.CreateCall(
+        setFieldFn,
+        {objectValue, nameValue, assignedValue, cacheEntry->shapeBits,
+         cacheEntry->slotIndex},
+        "set_field");
+  } else {
+    setResult = builder.CreateCall(
+        setFieldFn, {objectValue, nameValue, assignedValue}, "set_field");
+  }
   checkRuntimeError(setResult);
   llvm::Value *successValue = value;
   builder.CreateBr(contBB);
@@ -2674,6 +2753,37 @@ bool CodeGenVisitor::removeLocalSlot(llvm::Value *slot) {
   }
 
   return captured;
+}
+
+void CodeGenVisitor::enterLoop() { loopInstructionCounts.push_back(0); }
+
+void CodeGenVisitor::exitLoop() {
+  if (!loopInstructionCounts.empty()) {
+    loopInstructionCounts.pop_back();
+  }
+}
+
+void CodeGenVisitor::addLoopInstructions(std::size_t count) {
+  if (loopInstructionCounts.empty()) {
+    return;
+  }
+
+  std::size_t current = loopInstructionCounts.back();
+  std::size_t total = saturatingLoopAdd(current, count);
+  loopInstructionCounts.back() = total;
+  if (total > MAX_LOOP_BODY_INSTRUCTIONS) {
+    throw CompileError("Loop body too large.");
+  }
+}
+
+CodeGenVisitor::LoopInstructionScopeReset::LoopInstructionScopeReset(
+    CodeGenVisitor &visitor)
+    : visitor(visitor), depth(visitor.loopInstructionCounts.size()) {}
+
+CodeGenVisitor::LoopInstructionScopeReset::~LoopInstructionScopeReset() {
+  while (visitor.loopInstructionCounts.size() > depth) {
+    visitor.loopInstructionCounts.pop_back();
+  }
 }
 
 void CodeGenVisitor::checkRuntimeError(llvm::Value *returnValue) {

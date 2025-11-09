@@ -72,6 +72,10 @@ llvm::Expected<std::unique_ptr<EloxirJIT>> EloxirJIT::Create() {
   runtimeSymbols[mangle("elx_strings_equal")] = llvm::orc::ExecutorSymbolDef(
       llvm::orc::ExecutorAddr::fromPtr(&elx_strings_equal),
       llvm::JITSymbolFlags::Exported);
+  runtimeSymbols[mangle("elx_strings_equal_interned")] =
+      llvm::orc::ExecutorSymbolDef(
+          llvm::orc::ExecutorAddr::fromPtr(&elx_strings_equal_interned),
+          llvm::JITSymbolFlags::Exported);
   runtimeSymbols[mangle("elx_value_is_string")] =
       llvm::orc::ExecutorSymbolDef(
           llvm::orc::ExecutorAddr::fromPtr(&elx_value_is_string),
@@ -210,9 +214,17 @@ llvm::Expected<std::unique_ptr<EloxirJIT>> EloxirJIT::Create() {
       llvm::orc::ExecutorSymbolDef(
           llvm::orc::ExecutorAddr::fromPtr(&elx_try_get_instance_field),
           llvm::JITSymbolFlags::Exported);
+  runtimeSymbols[mangle("elx_try_get_instance_field_cached")] =
+      llvm::orc::ExecutorSymbolDef(
+          llvm::orc::ExecutorAddr::fromPtr(&elx_try_get_instance_field_cached),
+          llvm::JITSymbolFlags::Exported);
   runtimeSymbols[mangle("elx_set_instance_field")] =
       llvm::orc::ExecutorSymbolDef(
           llvm::orc::ExecutorAddr::fromPtr(&elx_set_instance_field),
+          llvm::JITSymbolFlags::Exported);
+  runtimeSymbols[mangle("elx_set_instance_field_cached")] =
+      llvm::orc::ExecutorSymbolDef(
+          llvm::orc::ExecutorAddr::fromPtr(&elx_set_instance_field_cached),
           llvm::JITSymbolFlags::Exported);
   runtimeSymbols[mangle("elx_bind_method")] = llvm::orc::ExecutorSymbolDef(
       llvm::orc::ExecutorAddr::fromPtr(&elx_bind_method),

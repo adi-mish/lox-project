@@ -63,6 +63,13 @@ class CodeGenVisitor : public ExprVisitor, public StmtVisitor {
   // Interpreters' stack model for upvalue closing semantics.
   std::unordered_map<llvm::Function *, llvm::Instruction *> lastAllocaForFunction;
 
+  struct PropertyCacheEntry {
+    llvm::GlobalVariable *shapeBits;
+    llvm::GlobalVariable *slotIndex;
+  };
+  std::unordered_map<const Expr *, PropertyCacheEntry> propertyCaches;
+  int propertyCacheCounter = 0;
+
   enum class MethodContext { NONE, METHOD, INITIALIZER };
 
   // Function context for closure support
@@ -198,6 +205,7 @@ private:
   llvm::Value *makeBool(llvm::Value *i1);
   llvm::Value *stringConst(const std::string &str,
                            bool countAsConstant = false);
+  PropertyCacheEntry &ensurePropertyCache(const Expr *expr);
   llvm::Value *isFalsy(llvm::Value *v);  // returns i1
   llvm::Value *isTruthy(llvm::Value *v); // returns i1 (= !isFalsy)
   llvm::AllocaInst *createStackAlloca(llvm::Function *fn, llvm::Type *type,
@@ -217,6 +225,20 @@ private:
   void ensureParameterLimit(size_t arity);
   void closeAllCapturedLocals();
   bool removeLocalSlot(llvm::Value *slot);
+
+  void enterLoop();
+  void exitLoop();
+  void addLoopInstructions(std::size_t count);
+
+  class LoopInstructionScopeReset {
+  public:
+    explicit LoopInstructionScopeReset(CodeGenVisitor &visitor);
+    ~LoopInstructionScopeReset();
+
+  private:
+    CodeGenVisitor &visitor;
+    std::size_t depth;
+  };
 };
 
 } // namespace eloxir

@@ -237,11 +237,12 @@ void Resolver::visitClassStmt(Class *s) {
   declare(s->name);
   define(s->name);
 
-  if (s->superclass && s->superclass->name.getLexeme() == s->name.getLexeme()) {
-    throw std::runtime_error("A class can't inherit from itself.");
-  }
-
   if (s->superclass) {
+    if (auto *superVar = dynamic_cast<Variable *>(s->superclass.get());
+        superVar && superVar->name.getLexeme() == s->name.getLexeme()) {
+      throw std::runtime_error("A class can't inherit from itself.");
+    }
+
     currentClass = ClassType::SUBCLASS;
     resolve(s->superclass.get());
 
