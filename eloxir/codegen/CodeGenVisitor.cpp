@@ -48,6 +48,7 @@ CodeGenVisitor::CodeGenVisitor(llvm::Module &m)
   llvm::FunctionType *strEqualTy = llvm::FunctionType::get(
       llvm::Type::getInt32Ty(ctx), {llvmValueTy(), llvmValueTy()}, false);
   mod.getOrInsertFunction("elx_strings_equal", strEqualTy);
+  mod.getOrInsertFunction("elx_strings_equal_interned", strEqualTy);
 
   llvm::FunctionType *isStringFnTy = llvm::FunctionType::get(
       llvm::Type::getInt32Ty(ctx), {llvmValueTy()}, false);
@@ -616,6 +617,10 @@ llvm::Value *CodeGenVisitor::stringConst(const std::string &str,
 
 // Helper function for proper equality comparison following Lox semantics
 llvm::Value *CodeGenVisitor::valuesEqual(llvm::Value *L, llvm::Value *R) {
+  if (L == R) {
+    return builder.getTrue();
+  }
+
   auto tagL = tagOf(L);
   auto tagR = tagOf(R);
 
@@ -670,15 +675,30 @@ llvm::Value *CodeGenVisitor::valuesEqual(llvm::Value *L, llvm::Value *R) {
   builder.CreateCondBr(bothStrings, stringsBB, objPtrBB);
 
   builder.SetInsertPoint(stringsBB);
+  auto stringsFastBB = llvm::BasicBlock::Create(ctx, "eq.str.fast", fn);
+  auto stringsSlowBB = llvm::BasicBlock::Create(ctx, "eq.str.slow", fn);
+  auto samePtr = builder.CreateICmpEQ(L, R, "eq.str.sameptr");
+  builder.CreateCondBr(samePtr, stringsFastBB, stringsSlowBB);
+
+  builder.SetInsertPoint(stringsFastBB);
+  builder.CreateBr(contBB);
+  auto stringsFastResBB = builder.GetInsertBlock();
+
+  builder.SetInsertPoint(stringsSlowBB);
   llvm::Value *stringEqualBool = builder.getFalse();
-  if (auto strEqualFn = mod.getFunction("elx_strings_equal")) {
+  if (auto strEqualFn = mod.getFunction("elx_strings_equal_interned")) {
     auto strEqual = builder.CreateCall(strEqualFn, {L, R}, "streq");
     stringEqualBool = builder.CreateICmpNE(
         strEqual, llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0),
         "streqbool");
+  } else if (auto fallbackFn = mod.getFunction("elx_strings_equal")) {
+    auto strEqual = builder.CreateCall(fallbackFn, {L, R}, "streq.legacy");
+    stringEqualBool = builder.CreateICmpNE(
+        strEqual, llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0),
+        "streqbool.legacy");
   }
   builder.CreateBr(contBB);
-  auto stringsResBB = builder.GetInsertBlock();
+  auto stringsSlowResBB = builder.GetInsertBlock();
 
   builder.SetInsertPoint(objPtrBB);
   auto objEqualBool = builder.CreateICmpEQ(L, R, "objeq");
@@ -692,10 +712,11 @@ llvm::Value *CodeGenVisitor::valuesEqual(llvm::Value *L, llvm::Value *R) {
 
   // Merge results
   builder.SetInsertPoint(contBB);
-  auto phi = builder.CreatePHI(builder.getInt1Ty(), 5, "eq.res");
+  auto phi = builder.CreatePHI(builder.getInt1Ty(), 6, "eq.res");
   phi->addIncoming(builder.getFalse(), diffTypeBB);
   phi->addIncoming(numEqual, isNumBB);
-  phi->addIncoming(stringEqualBool, stringsResBB);
+  phi->addIncoming(builder.getTrue(), stringsFastResBB);
+  phi->addIncoming(stringEqualBool, stringsSlowResBB);
   phi->addIncoming(objEqualBool, objPtrResBB);
   phi->addIncoming(bitsEqual, isBoolOrNilBB);
 

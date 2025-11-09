@@ -6,16 +6,18 @@
 
 ## Test Matrix
 - `pytest eloxir/tests -q` — **pass** (9 regression cases for runtime and compiler edge conditions).
-- `python eloxir/tools/run_official_tests.py` — **fails** (260 passed / 5 failed / 265 total). Five long-running benchmark fixtures still time out; see below.
+- `python eloxir/tools/run_official_tests.py --filter benchmark/*` — **fails** (3 passed / 8 failed / 11 total). Eight long-running benchmark fixtures still time out; see below.
 
 ## Outstanding Issues
 
 ### 1. Benchmark programs exceed the 10 s harness timeout
-- **Symptoms:** Five benchmark fixtures (`benchmark/binary_trees.lox`, `instantiation.lox`, `string_equality.lox`, `trees.lox`, `zoo_batch.lox`) still time out under the harness. `invocation.lox`, `properties.lox`, `equality.lox`, and the remaining short benchmarks now finish within the 10 s budget after the allocator changes.
-- **Cause:** Even with pooled instance/field storage reducing allocation churn, the generated code continues to mirror the high-level object model—shape lookups, deep recursion, and property equality paths dominate runtime. Specialised layouts and inline caches are still required before these programs can complete within the limit.
+- **Symptoms:** Eight benchmark fixtures (`benchmark/binary_trees.lox`, `instantiation.lox`, `invocation.lox`, `properties.lox`, `string_equality.lox`, `trees.lox`, `zoo.lox`, `zoo_batch.lox`) still time out under the harness. Only the three short-running microbenchmarks now finish within the 10 s budget.
+- **Cause:** Even with pooled storage, the runtime still performs guarded shape transitions and uncached property/method lookups in the hot loops. Deep recursion (`binary_trees`, `trees`) and repeated property dispatch (`invocation`, `properties`, `zoo*`) continue to execute the slow paths.
 - **Repro:** `python eloxir/tools/run_official_tests.py --filter benchmark/*`.
 
 ## Additional Notes
+- Instance layout now relies on `ObjShape` hidden classes and shape transitions instead of mutating per-class `DenseMap` slot tables. Instances share contiguous field storage that is resized when the shape grows, reducing hash lookups during property reads and writes.
+- Property equality checks fast-path interned strings by comparing pointers and falling back to a runtime guard (`elx_strings_equal_interned`) that verifies interning before calling into the structural comparator.
 - Native built-ins such as `clock` and `readLine` now use the dedicated `ObjNative` representation, so `function/print.lox` observes `<native fn>` and built-ins call into the runtime helpers without arity mismatches.
 - Runtime debug logging that previously polluted stderr (`call_function`, global getter/setter traces) has been removed so regression fixtures see clean output.
 - Block-scoped function declarations allocate and reuse lexical storage, allowing self-recursive locals (`function/local_recursion.lox`) to succeed while keeping `function/local_mutual_recursion.lox` in the expected error state.

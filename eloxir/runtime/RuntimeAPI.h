@@ -4,8 +4,9 @@
 #include <cstdint>
 #include <string>
 #include <unordered_map>
-#include <vector>
 #include <llvm/ADT/DenseMap.h>
+
+#include "ObjShape.h"
 
 namespace eloxir {
 
@@ -18,8 +19,7 @@ enum class ObjType {
   UPVALUE,
   CLASS,
   INSTANCE,
-  BOUND_METHOD,
-  SHAPE
+  BOUND_METHOD
 };
 
 struct Obj {
@@ -77,8 +77,8 @@ struct ObjClass {
   ObjString *name;
   struct ObjClass *superclass;
   llvm::DenseMap<ObjString *, uint64_t> methods;
-  llvm::DenseMap<ObjString *, size_t> fieldSlots;
-  ObjShape *shape;
+  ObjShape *rootShape;
+  ObjShape *defaultShape;
 };
 
 struct ObjInstance {
@@ -86,7 +86,7 @@ struct ObjInstance {
   ObjClass *klass;
   ObjShape *shape;
   uint64_t *fieldValues;
-  uint8_t *fieldPresence;
+  uint8_t *fieldInitialized;
   size_t fieldCapacity;
   ObjInstance *nextFree;
 };
@@ -96,45 +96,6 @@ struct ObjBoundMethod {
   uint64_t receiver;
   uint64_t method;
 };
-
-inline constexpr uint32_t PROPERTY_CACHE_MAX_SIZE = 4;
-
-struct PropertyCacheEntry {
-  ObjShape *shape;
-  uint32_t slot;
-};
-
-struct PropertyCache {
-  uint32_t size;
-  PropertyCacheEntry entries[PROPERTY_CACHE_MAX_SIZE];
-};
-
-enum class CallInlineCacheKind : int32_t {
-  EMPTY = 0,
-  FUNCTION = 1,
-  CLOSURE = 2,
-  NATIVE = 3,
-  BOUND_METHOD = 4,
-  CLASS = 5
-};
-
-struct CallInlineCache {
-  uint64_t callee_bits;   // Last callee value observed at this site
-  uint64_t guard0_bits;   // Kind specific guard (method/initializer bits)
-  uint64_t guard1_bits;   // Additional guard (expected class/shape pointer)
-  void *target_ptr;       // Specialized entry point for the cached callee
-  int32_t expected_arity; // Number of user arguments expected (or < 0 to skip)
-  int32_t kind;           // eloxir::CallInlineCacheKind discriminator
-  int32_t flags;          // Optional flags for specialised fast paths
-  int32_t padding;
-};
-
-inline constexpr int CALL_CACHE_FLAG_METHOD_IS_CLOSURE = 1 << 0;
-inline constexpr int CALL_CACHE_FLAG_METHOD_IS_FUNCTION = 1 << 1;
-inline constexpr int CALL_CACHE_FLAG_METHOD_IS_NATIVE = 1 << 2;
-inline constexpr int CALL_CACHE_FLAG_CLASS_HAS_INITIALIZER = 1 << 3;
-
-struct CacheStats;
 
 } // namespace eloxir
 
@@ -153,6 +114,7 @@ uint64_t elx_debug_string_address(
 void elx_free_object(uint64_t obj_bits);
 uint64_t elx_concatenate_strings(uint64_t a_bits, uint64_t b_bits);
 int elx_strings_equal(uint64_t a_bits, uint64_t b_bits);
+int elx_strings_equal_interned(uint64_t a_bits, uint64_t b_bits);
 int elx_value_is_string(uint64_t value_bits);
 
 // Function functions

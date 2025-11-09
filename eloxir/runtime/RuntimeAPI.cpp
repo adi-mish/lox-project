@@ -1,6 +1,5 @@
 #include "RuntimeAPI.h"
 #include <algorithm>
-#include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -11,65 +10,6 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
-
-namespace eloxir {
-
-struct CacheStats {
-  uint64_t property_get_hits = 0;
-  uint64_t property_get_misses = 0;
-  uint64_t property_get_shape_transitions = 0;
-  uint64_t property_set_hits = 0;
-  uint64_t property_set_misses = 0;
-  uint64_t property_set_shape_transitions = 0;
-  uint64_t call_hits = 0;
-  uint64_t call_misses = 0;
-  uint64_t call_shape_transitions = 0;
-};
-
-struct CacheStatsCollector {
-  std::atomic<uint64_t> property_get_hits{0};
-  std::atomic<uint64_t> property_get_misses{0};
-  std::atomic<uint64_t> property_get_shape_transitions{0};
-  std::atomic<uint64_t> property_set_hits{0};
-  std::atomic<uint64_t> property_set_misses{0};
-  std::atomic<uint64_t> property_set_shape_transitions{0};
-  std::atomic<uint64_t> call_hits{0};
-  std::atomic<uint64_t> call_misses{0};
-  std::atomic<uint64_t> call_shape_transitions{0};
-
-  void reset() {
-    property_get_hits.store(0, std::memory_order_relaxed);
-    property_get_misses.store(0, std::memory_order_relaxed);
-    property_get_shape_transitions.store(0, std::memory_order_relaxed);
-    property_set_hits.store(0, std::memory_order_relaxed);
-    property_set_misses.store(0, std::memory_order_relaxed);
-    property_set_shape_transitions.store(0, std::memory_order_relaxed);
-    call_hits.store(0, std::memory_order_relaxed);
-    call_misses.store(0, std::memory_order_relaxed);
-    call_shape_transitions.store(0, std::memory_order_relaxed);
-  }
-
-  CacheStats snapshot() const {
-    CacheStats stats;
-    stats.property_get_hits = property_get_hits.load(std::memory_order_relaxed);
-    stats.property_get_misses =
-        property_get_misses.load(std::memory_order_relaxed);
-    stats.property_get_shape_transitions =
-        property_get_shape_transitions.load(std::memory_order_relaxed);
-    stats.property_set_hits = property_set_hits.load(std::memory_order_relaxed);
-    stats.property_set_misses =
-        property_set_misses.load(std::memory_order_relaxed);
-    stats.property_set_shape_transitions =
-        property_set_shape_transitions.load(std::memory_order_relaxed);
-    stats.call_hits = call_hits.load(std::memory_order_relaxed);
-    stats.call_misses = call_misses.load(std::memory_order_relaxed);
-    stats.call_shape_transitions =
-        call_shape_transitions.load(std::memory_order_relaxed);
-    return stats;
-  }
-};
-
-} // namespace eloxir
 
 using namespace eloxir;
 
@@ -98,9 +38,10 @@ static const CacheStats kEmptyCacheStats{};
 static bool runtime_error_flag = false;
 static std::string runtime_error_message;
 
+namespace {
 struct FieldBuffer {
   uint64_t *values;
-  uint8_t *presence;
+  uint8_t *initialized;
 };
 
 static std::unordered_map<size_t, std::vector<FieldBuffer>> field_buffer_pool;
@@ -112,22 +53,22 @@ static FieldBuffer acquireFieldBuffer(size_t slotCount) {
   }
 
   auto &bucket = field_buffer_pool[slotCount];
-  FieldBuffer buffer;
+  FieldBuffer buffer{nullptr, nullptr};
   if (!bucket.empty()) {
     buffer = bucket.back();
     bucket.pop_back();
   } else {
     buffer.values = new uint64_t[slotCount];
-    buffer.presence = new uint8_t[slotCount];
+    buffer.initialized = new uint8_t[slotCount];
   }
 
   std::fill_n(buffer.values, slotCount, Value::nil().getBits());
-  std::memset(buffer.presence, 0, slotCount * sizeof(uint8_t));
+  std::memset(buffer.initialized, 0, slotCount * sizeof(uint8_t));
   return buffer;
 }
 
 static void releaseFieldBuffer(size_t slotCount, FieldBuffer buffer) {
-  if (slotCount == 0 || !buffer.values || !buffer.presence) {
+  if (slotCount == 0 || !buffer.values || !buffer.initialized) {
     return;
   }
 
@@ -142,9 +83,9 @@ static void ensureInstanceCapacity(ObjInstance *instance, size_t required,
   if (required == 0) {
     if (instance->fieldValues) {
       releaseFieldBuffer(instance->fieldCapacity,
-                         {instance->fieldValues, instance->fieldPresence});
+                         {instance->fieldValues, instance->fieldInitialized});
       instance->fieldValues = nullptr;
-      instance->fieldPresence = nullptr;
+      instance->fieldInitialized = nullptr;
       instance->fieldCapacity = 0;
     }
     return;
@@ -154,36 +95,35 @@ static void ensureInstanceCapacity(ObjInstance *instance, size_t required,
     return;
 
   FieldBuffer buffer = acquireFieldBuffer(required);
-  if (preserveExisting && instance->fieldValues && instance->fieldPresence) {
+  if (preserveExisting && instance->fieldValues && instance->fieldInitialized) {
     std::memcpy(buffer.values, instance->fieldValues,
                 instance->fieldCapacity * sizeof(uint64_t));
-    std::memcpy(buffer.presence, instance->fieldPresence,
+    std::memcpy(buffer.initialized, instance->fieldInitialized,
                 instance->fieldCapacity * sizeof(uint8_t));
   }
 
-  if (instance->fieldValues || instance->fieldPresence) {
+  if (instance->fieldValues || instance->fieldInitialized) {
     releaseFieldBuffer(instance->fieldCapacity,
-                       {instance->fieldValues, instance->fieldPresence});
+                       {instance->fieldValues, instance->fieldInitialized});
   }
 
   instance->fieldValues = buffer.values;
-  instance->fieldPresence = buffer.presence;
+  instance->fieldInitialized = buffer.initialized;
   instance->fieldCapacity = required;
 }
 
-static void resetInstanceFields(ObjInstance *instance, size_t slotCount) {
+static void resetInstanceFields(ObjInstance *instance, ObjShape *shape) {
   if (!instance)
     return;
 
-  if (slotCount == 0) {
-    ensureInstanceCapacity(instance, 0, false);
-    return;
-  }
-
+  size_t slotCount = shape ? shape->slotCount : 0;
   ensureInstanceCapacity(instance, slotCount, false);
   size_t capacity = instance->fieldCapacity;
-  std::fill_n(instance->fieldValues, capacity, Value::nil().getBits());
-  std::memset(instance->fieldPresence, 0, capacity * sizeof(uint8_t));
+  if (capacity > 0) {
+    std::fill_n(instance->fieldValues, capacity, Value::nil().getBits());
+    std::memset(instance->fieldInitialized, 0, capacity * sizeof(uint8_t));
+  }
+  instance->shape = shape;
 }
 
 static ObjInstance *acquireInstanceObject() {
@@ -194,7 +134,7 @@ static ObjInstance *acquireInstanceObject() {
   } else {
     instance = new ObjInstance();
     instance->fieldValues = nullptr;
-    instance->fieldPresence = nullptr;
+    instance->fieldInitialized = nullptr;
     instance->fieldCapacity = 0;
     instance->nextFree = nullptr;
   }
@@ -210,11 +150,11 @@ static void releaseInstanceObject(ObjInstance *instance) {
   if (!instance)
     return;
 
-  if (instance->fieldValues || instance->fieldPresence) {
+  if (instance->fieldValues || instance->fieldInitialized) {
     releaseFieldBuffer(instance->fieldCapacity,
-                       {instance->fieldValues, instance->fieldPresence});
+                       {instance->fieldValues, instance->fieldInitialized});
     instance->fieldValues = nullptr;
-    instance->fieldPresence = nullptr;
+    instance->fieldInitialized = nullptr;
     instance->fieldCapacity = 0;
   }
 
@@ -917,7 +857,12 @@ static ObjString *extractStringKey(uint64_t string_bits, std::string *out) {
 static void destroyObject(Obj *obj) {
   switch (obj->type) {
   case ObjType::CLASS:
-    delete reinterpret_cast<ObjClass *>(obj);
+    if (auto *klass = reinterpret_cast<ObjClass *>(obj)) {
+      shapeDestroyTree(klass->rootShape);
+      klass->rootShape = nullptr;
+      klass->defaultShape = nullptr;
+      delete klass;
+    }
     break;
   case ObjType::INSTANCE:
     releaseInstanceObject(reinterpret_cast<ObjInstance *>(obj));
@@ -1202,6 +1147,23 @@ int elx_strings_equal(uint64_t a_bits, uint64_t b_bits) {
     return 0;
 
   return std::memcmp(str_a->chars, str_b->chars, str_a->length) == 0 ? 1 : 0;
+}
+
+int elx_strings_equal_interned(uint64_t a_bits, uint64_t b_bits) {
+  Value a = Value::fromBits(a_bits);
+  Value b = Value::fromBits(b_bits);
+
+  ObjString *str_a = getStringObject(a);
+  ObjString *str_b = getStringObject(b);
+  if (!str_a || !str_b) {
+    return elx_strings_equal(a_bits, b_bits);
+  }
+
+  if (str_a == str_b) {
+    return 1;
+  }
+
+  return elx_strings_equal(a_bits, b_bits);
 }
 
 int elx_value_is_string(uint64_t value_bits) {
@@ -2467,7 +2429,8 @@ uint64_t elx_allocate_class(uint64_t name_bits, uint64_t superclass_bits) {
   klass->name = name_str;
   klass->superclass = superclass;
   klass->methods.clear();
-  klass->shape = createShape(nullptr, nullptr);
+  klass->rootShape = createRootShape();
+  klass->defaultShape = klass->rootShape;
 
   allocated_objects.insert(klass);
   return Value::object(klass).getBits();
@@ -2510,8 +2473,8 @@ uint64_t elx_instantiate_class(uint64_t class_bits) {
 
   ObjInstance *instance = acquireInstanceObject();
   instance->klass = klass;
-  size_t slotCount = klass ? klass->fieldSlots.size() : 0;
-  resetInstanceFields(instance, slotCount);
+  ObjShape *shape = klass ? klass->defaultShape : nullptr;
+  resetInstanceFields(instance, shape);
 
   allocated_objects.insert(instance);
   return Value::object(instance).getBits();
@@ -2548,15 +2511,12 @@ uint64_t elx_get_instance_field(uint64_t instance_bits, uint64_t name_bits) {
     return Value::nil().getBits();
   }
 
-  ObjClass *klass = instance->klass;
-  if (klass) {
-    auto slotIt = klass->fieldSlots.find(field_key);
-    if (slotIt != klass->fieldSlots.end()) {
-      size_t slot = slotIt->second;
-      if (instance->fieldValues && instance->fieldPresence &&
-          slot < instance->fieldCapacity && instance->fieldPresence[slot]) {
-        return instance->fieldValues[slot];
-      }
+  ObjShape *shape = instance->shape;
+  size_t slot = 0;
+  if (shape && shapeTryGetSlot(shape, field_key, &slot)) {
+    if (instance->fieldValues && instance->fieldInitialized &&
+        slot < instance->fieldCapacity && instance->fieldInitialized[slot]) {
+      return instance->fieldValues[slot];
     }
   }
 
@@ -2580,29 +2540,30 @@ uint64_t elx_set_instance_field(uint64_t instance_bits, uint64_t name_bits,
     return Value::nil().getBits();
   }
 
-  ObjClass *klass = instance->klass;
-  size_t slot = 0;
   ObjShape *shape = instance->shape;
+  if (!shape && instance->klass) {
+    shape = instance->klass->defaultShape;
+    instance->shape = shape;
+  }
+
+  size_t slot = 0;
   if (!shapeTryGetSlot(shape, field_key, &slot)) {
-    ObjShape *classShape = klass ? klass->shape : nullptr;
-    if (classShape && shapeTryGetSlot(classShape, field_key, &slot)) {
-      ensureInstanceShape(instance, classShape);
-    } else {
-      ObjShape *baseShape = classShape ? classShape : shape;
-      ObjShape *nextShape = shapeEnsureField(baseShape, field_key);
-      if (klass)
-        klass->shape = nextShape;
-      ensureInstanceShape(instance, nextShape);
+    ObjShape *next = shapeEnsureTransition(shape, field_key);
+    if (instance->klass && instance->klass->defaultShape == shape) {
+      instance->klass->defaultShape = next;
     }
+    shape = next;
+    instance->shape = shape;
+    slot = shape->slotCount - 1;
   }
 
   if (slot >= instance->fieldCapacity) {
-    ensureInstanceCapacity(instance, slot + 1, true);
+    ensureInstanceCapacity(instance, shape ? shape->slotCount : slot + 1, true);
   }
 
-  if (instance->fieldValues && instance->fieldPresence) {
+  if (instance->fieldValues && instance->fieldInitialized) {
     instance->fieldValues[slot] = value_bits;
-    instance->fieldPresence[slot] = 1;
+    instance->fieldInitialized[slot] = 1;
   }
   return value_bits;
 }
@@ -2623,87 +2584,14 @@ int elx_try_get_instance_field(uint64_t instance_bits, uint64_t name_bits,
     return -1;
   }
 
-  ObjClass *klass = instance->klass;
+  ObjShape *shape = instance->shape;
   size_t slot = 0;
-  bool found = shapeTryGetSlot(instance->shape, field_key, &slot);
-  if (!found && klass) {
-    ObjShape *classShape = klass->shape;
-    found = shapeTryGetSlot(classShape, field_key, &slot);
-  }
-  if (found && instance->fieldValues && instance->fieldPresence &&
-      slot < instance->fieldCapacity && instance->fieldPresence[slot]) {
-    if (out_value)
-      *out_value = instance->fieldValues[slot];
-    return 1;
-  }
-
-  return 0;
-}
-
-ObjShape *elx_instance_shape_ptr(uint64_t instance_bits) {
-  Value instance_val = Value::fromBits(instance_bits);
-  ObjInstance *instance = getInstance(instance_val);
-  if (!instance)
-    return nullptr;
-  return instance->shape;
-}
-
-uint64_t *elx_instance_field_values_ptr(uint64_t instance_bits) {
-  Value instance_val = Value::fromBits(instance_bits);
-  ObjInstance *instance = getInstance(instance_val);
-  if (!instance || !instance->fieldValues)
-    return nullptr;
-  return instance->fieldValues;
-}
-
-uint8_t *elx_instance_field_presence_ptr(uint64_t instance_bits) {
-  Value instance_val = Value::fromBits(instance_bits);
-  ObjInstance *instance = getInstance(instance_val);
-  if (!instance || !instance->fieldPresence)
-    return nullptr;
-  return instance->fieldPresence;
-}
-
-uint64_t elx_get_property_slow(uint64_t instance_bits, uint64_t name_bits,
-                               PropertyCache *cache, uint32_t capacity) {
-#if defined(ELOXIR_ENABLE_CACHE_STATS)
-  elx_cache_stats_record_property_miss(0);
-#endif
-  Value instance_val = Value::fromBits(instance_bits);
-  ObjInstance *instance = getInstance(instance_val);
-  if (!instance) {
-    elx_runtime_error("Only instances have properties.");
-    return Value::nil().getBits();
-  }
-
-  std::string field_name;
-  ObjString *field_key = extractStringKey(name_bits, &field_name);
-  if (!field_key) {
-    elx_runtime_error("Property name must be a string.");
-    return Value::nil().getBits();
-  }
-
-  size_t slot = 0;
-  bool found = shapeTryGetSlot(instance->shape, field_key, &slot);
-  if (found && instance->fieldValues && instance->fieldPresence &&
-      slot < instance->fieldCapacity && instance->fieldPresence[slot]) {
-    uint64_t result = instance->fieldValues[slot];
-    propertyCacheUpdate(cache, instance->shape, slot, capacity, false);
-    return result;
-  }
-
-  ObjClass *klass = instance->klass;
-  if (klass) {
-    auto slotIt = klass->fieldSlots.find(field_key);
-    if (slotIt != klass->fieldSlots.end()) {
-      size_t slotIndex = slotIt->second;
-      if (instance->fieldValues && instance->fieldPresence &&
-          slotIndex < instance->fieldCapacity &&
-          instance->fieldPresence[slotIndex]) {
-        uint64_t result = instance->fieldValues[slotIndex];
-        propertyCacheUpdate(cache, instance->shape, slotIndex, capacity, false);
-        return result;
-      }
+  if (shape && shapeTryGetSlot(shape, field_key, &slot)) {
+    if (instance->fieldValues && instance->fieldInitialized &&
+        slot < instance->fieldCapacity && instance->fieldInitialized[slot]) {
+      if (out_value)
+        *out_value = instance->fieldValues[slot];
+      return 1;
     }
 
     auto methodIt = klass->methods.find(field_key);
