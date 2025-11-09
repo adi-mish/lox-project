@@ -62,6 +62,16 @@ struct ObjClosure {
   int upvalue_count;
 };
 
+struct ObjShape {
+  Obj obj;
+  ObjShape *parent;
+  std::vector<ObjString *> fieldOrder;
+  llvm::DenseMap<ObjString *, size_t> slotCache;
+  llvm::DenseMap<ObjString *, ObjShape *> transitions;
+
+  size_t fieldCount() const { return fieldOrder.size(); }
+};
+
 struct ObjClass {
   Obj obj;
   ObjString *name;
@@ -113,9 +123,49 @@ uint64_t elx_allocate_function(const char *name, int arity,
 uint64_t elx_call_function(uint64_t func_bits, uint64_t *args, int arg_count);
 uint64_t elx_call_value(uint64_t callee_bits, uint64_t *args, int arg_count);
 int elx_is_function(uint64_t value_bits);
+int elx_is_native(uint64_t value_bits);
+int elx_is_class(uint64_t value_bits);
 uint64_t elx_allocate_native(const char *name, int arity,
                              eloxir::NativeFn function);
 uint64_t elx_call_native(uint64_t native_bits, uint64_t *args, int arg_count);
+uint64_t elx_call_function_fast(uint64_t func_bits, uint64_t *args,
+                                int arg_count, void *function_ptr,
+                                int expected_arity);
+uint64_t elx_call_closure_fast(uint64_t closure_bits, uint64_t *args,
+                               int arg_count, void *function_ptr,
+                               int expected_arity);
+uint64_t elx_call_native_fast(uint64_t native_bits, uint64_t *args,
+                              int arg_count, void *function_ptr,
+                              int expected_arity);
+uint64_t elx_call_bound_method_fast(uint64_t bound_bits, uint64_t *args,
+                                    int arg_count, uint64_t method_bits,
+                                    void *function_ptr, int expected_arity,
+                                    uint64_t expected_class_ptr,
+                                    int flags);
+uint64_t elx_call_class_fast(uint64_t class_bits, uint64_t *args,
+                             int arg_count, uint64_t initializer_bits,
+                             void *function_ptr, int expected_arity,
+                             int flags);
+int elx_is_bound_method(uint64_t value_bits);
+int elx_bound_method_matches(uint64_t callee_bits, uint64_t method_bits,
+                             uint64_t expected_class_ptr);
+void elx_call_cache_invalidate(eloxir::CallInlineCache *cache);
+void elx_call_cache_update(eloxir::CallInlineCache *cache,
+                           uint64_t callee_bits);
+
+int elx_cache_stats_enabled();
+void elx_cache_stats_reset();
+eloxir::CacheStats elx_cache_stats_snapshot();
+void elx_cache_stats_dump();
+
+#if defined(ELOXIR_ENABLE_CACHE_STATS)
+void elx_cache_stats_record_property_hit(int is_set);
+void elx_cache_stats_record_property_miss(int is_set);
+void elx_cache_stats_record_property_shape_transition(int is_set);
+void elx_cache_stats_record_call_hit(int kind);
+void elx_cache_stats_record_call_miss();
+void elx_cache_stats_record_call_transition(int previous_kind, int new_kind);
+#endif
 
 // Closure and upvalue functions
 uint64_t elx_allocate_upvalue(uint64_t *slot);
@@ -144,6 +194,16 @@ uint64_t elx_set_instance_field(uint64_t instance_bits, uint64_t name_bits,
 int elx_try_get_instance_field(uint64_t instance_bits, uint64_t name_bits,
                                uint64_t *out_value);
 uint64_t elx_bind_method(uint64_t instance_bits, uint64_t method_bits);
+uint64_t elx_get_property_slow(uint64_t instance_bits, uint64_t name_bits,
+                               eloxir::PropertyCache *cache,
+                               uint32_t capacity);
+uint64_t elx_set_property_slow(uint64_t instance_bits, uint64_t name_bits,
+                               uint64_t value_bits,
+                               eloxir::PropertyCache *cache,
+                               uint32_t capacity);
+eloxir::ObjShape *elx_instance_shape_ptr(uint64_t instance_bits);
+uint64_t *elx_instance_field_values_ptr(uint64_t instance_bits);
+uint8_t *elx_instance_field_presence_ptr(uint64_t instance_bits);
 
 // Memory management
 void elx_cleanup_all_objects(); // Clean up all tracked objects
