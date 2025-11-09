@@ -21,6 +21,11 @@ set(
 )
 set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS ${ALLOWED_BUILD_TYPES})
 
+option(ELOXIR_ENABLE_CACHE_STATS "Enable runtime cache instrumentation" ON)
+if (ELOXIR_ENABLE_CACHE_STATS)
+  add_compile_definitions(ELOXIR_ENABLE_CACHE_STATS)
+endif()
+
 # 1) Enforce generator per platform
 if (CMAKE_HOST_UNIX AND NOT CMAKE_GENERATOR STREQUAL "Unix Makefiles")
   message(FATAL_ERROR

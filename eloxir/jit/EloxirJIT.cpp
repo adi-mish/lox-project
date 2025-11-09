@@ -128,6 +128,48 @@ llvm::Expected<std::unique_ptr<EloxirJIT>> EloxirJIT::Create() {
   runtimeSymbols[mangle("elx_is_closure")] = llvm::orc::ExecutorSymbolDef(
       llvm::orc::ExecutorAddr::fromPtr(&elx_is_closure),
       llvm::JITSymbolFlags::Exported);
+  runtimeSymbols[mangle("elx_is_native")] = llvm::orc::ExecutorSymbolDef(
+      llvm::orc::ExecutorAddr::fromPtr(&elx_is_native),
+      llvm::JITSymbolFlags::Exported);
+  runtimeSymbols[mangle("elx_is_class")] = llvm::orc::ExecutorSymbolDef(
+      llvm::orc::ExecutorAddr::fromPtr(&elx_is_class),
+      llvm::JITSymbolFlags::Exported);
+  runtimeSymbols[mangle("elx_is_bound_method")] =
+      llvm::orc::ExecutorSymbolDef(
+          llvm::orc::ExecutorAddr::fromPtr(&elx_is_bound_method),
+          llvm::JITSymbolFlags::Exported);
+  runtimeSymbols[mangle("elx_bound_method_matches")] =
+      llvm::orc::ExecutorSymbolDef(
+          llvm::orc::ExecutorAddr::fromPtr(&elx_bound_method_matches),
+          llvm::JITSymbolFlags::Exported);
+  runtimeSymbols[mangle("elx_call_function_fast")] =
+      llvm::orc::ExecutorSymbolDef(
+          llvm::orc::ExecutorAddr::fromPtr(&elx_call_function_fast),
+          llvm::JITSymbolFlags::Exported);
+  runtimeSymbols[mangle("elx_call_closure_fast")] =
+      llvm::orc::ExecutorSymbolDef(
+          llvm::orc::ExecutorAddr::fromPtr(&elx_call_closure_fast),
+          llvm::JITSymbolFlags::Exported);
+  runtimeSymbols[mangle("elx_call_native_fast")] =
+      llvm::orc::ExecutorSymbolDef(
+          llvm::orc::ExecutorAddr::fromPtr(&elx_call_native_fast),
+          llvm::JITSymbolFlags::Exported);
+  runtimeSymbols[mangle("elx_call_bound_method_fast")] =
+      llvm::orc::ExecutorSymbolDef(
+          llvm::orc::ExecutorAddr::fromPtr(&elx_call_bound_method_fast),
+          llvm::JITSymbolFlags::Exported);
+  runtimeSymbols[mangle("elx_call_class_fast")] =
+      llvm::orc::ExecutorSymbolDef(
+          llvm::orc::ExecutorAddr::fromPtr(&elx_call_class_fast),
+          llvm::JITSymbolFlags::Exported);
+  runtimeSymbols[mangle("elx_call_cache_update")] =
+      llvm::orc::ExecutorSymbolDef(
+          llvm::orc::ExecutorAddr::fromPtr(&elx_call_cache_update),
+          llvm::JITSymbolFlags::Exported);
+  runtimeSymbols[mangle("elx_call_cache_invalidate")] =
+      llvm::orc::ExecutorSymbolDef(
+          llvm::orc::ExecutorAddr::fromPtr(&elx_call_cache_invalidate),
+          llvm::JITSymbolFlags::Exported);
 
   // Global built-ins functions
   runtimeSymbols[mangle("elx_get_global_builtin")] =
