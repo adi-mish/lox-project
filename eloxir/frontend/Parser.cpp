@@ -57,10 +57,15 @@ std::unique_ptr<Stmt> Parser::declaration() {
 std::unique_ptr<Stmt> Parser::classDeclaration() {
   Token name = consume(TokenType::IDENTIFIER, "Expected class name.");
 
-  std::unique_ptr<Variable> superclass = nullptr;
+  std::unique_ptr<Expr> superclass = nullptr;
   if (match(TokenType::LESS)) {
-    consume(TokenType::IDENTIFIER, "Expected superclass name.");
-    superclass = std::make_unique<Variable>(previous());
+    if (match(TokenType::NIL)) {
+      superclass = std::make_unique<Literal>(std::monostate{});
+    } else {
+      Token superclassName =
+          consume(TokenType::IDENTIFIER, "Expected superclass name.");
+      superclass = std::make_unique<Variable>(superclassName);
+    }
   }
 
   consume(TokenType::LEFT_BRACE, "Expected '{' before class body.");

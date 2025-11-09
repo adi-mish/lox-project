@@ -1,10 +1,12 @@
 #pragma once
 #include "Value.h"
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <unordered_map>
 #include <llvm/ADT/DenseMap.h>
-#include <vector>
+
+#include "ObjShape.h"
 
 namespace eloxir {
 
@@ -17,8 +19,7 @@ enum class ObjType {
   UPVALUE,
   CLASS,
   INSTANCE,
-  BOUND_METHOD,
-  NATIVE
+  BOUND_METHOD
 };
 
 struct Obj {
@@ -38,12 +39,13 @@ struct ObjFunction {
   void *llvm_function; // pointer to compiled LLVM function
 };
 
-using NativeFn = uint64_t (*)(int arg_count, const uint64_t *args);
+using NativeFn = uint64_t (*)(uint64_t *args, int arg_count);
 
 struct ObjNative {
   Obj obj;
   NativeFn function;
   const char *name; // Optional; may be null or empty.
+  int arity;
 };
 
 struct ObjUpvalue {
@@ -65,29 +67,24 @@ struct ObjClass {
   ObjString *name;
   struct ObjClass *superclass;
   llvm::DenseMap<ObjString *, uint64_t> methods;
-  llvm::DenseMap<ObjString *, size_t> fieldSlots;
+  ObjShape *rootShape;
+  ObjShape *defaultShape;
 };
 
 struct ObjInstance {
   Obj obj;
   ObjClass *klass;
-  std::vector<uint64_t> fieldValues;
-  std::vector<uint8_t> fieldPresence;
+  ObjShape *shape;
+  uint64_t *fieldValues;
+  uint8_t *fieldInitialized;
+  size_t fieldCapacity;
+  ObjInstance *nextFree;
 };
 
 struct ObjBoundMethod {
   Obj obj;
   uint64_t receiver;
   uint64_t method;
-};
-
-using NativeFn = uint64_t (*)(uint64_t *args, int arg_count);
-
-struct ObjNative {
-  Obj obj;
-  NativeFn function;
-  const char *name;
-  int arity;
 };
 
 } // namespace eloxir
@@ -107,12 +104,12 @@ uint64_t elx_debug_string_address(
 void elx_free_object(uint64_t obj_bits);
 uint64_t elx_concatenate_strings(uint64_t a_bits, uint64_t b_bits);
 int elx_strings_equal(uint64_t a_bits, uint64_t b_bits);
+int elx_strings_equal_interned(uint64_t a_bits, uint64_t b_bits);
 int elx_value_is_string(uint64_t value_bits);
 
 // Function functions
 uint64_t elx_allocate_function(const char *name, int arity,
                                void *llvm_function);
-uint64_t elx_allocate_native(const char *name, eloxir::NativeFn function);
 uint64_t elx_call_function(uint64_t func_bits, uint64_t *args, int arg_count);
 uint64_t elx_call_value(uint64_t callee_bits, uint64_t *args, int arg_count);
 int elx_is_function(uint64_t value_bits);

@@ -48,6 +48,7 @@ CodeGenVisitor::CodeGenVisitor(llvm::Module &m)
   llvm::FunctionType *strEqualTy = llvm::FunctionType::get(
       llvm::Type::getInt32Ty(ctx), {llvmValueTy(), llvmValueTy()}, false);
   mod.getOrInsertFunction("elx_strings_equal", strEqualTy);
+  mod.getOrInsertFunction("elx_strings_equal_interned", strEqualTy);
 
   llvm::FunctionType *isStringFnTy = llvm::FunctionType::get(
       llvm::Type::getInt32Ty(ctx), {llvmValueTy()}, false);
@@ -449,6 +450,10 @@ llvm::Value *CodeGenVisitor::stringConst(const std::string &str,
 
 // Helper function for proper equality comparison following Lox semantics
 llvm::Value *CodeGenVisitor::valuesEqual(llvm::Value *L, llvm::Value *R) {
+  if (L == R) {
+    return builder.getTrue();
+  }
+
   auto tagL = tagOf(L);
   auto tagR = tagOf(R);
 
@@ -503,15 +508,30 @@ llvm::Value *CodeGenVisitor::valuesEqual(llvm::Value *L, llvm::Value *R) {
   builder.CreateCondBr(bothStrings, stringsBB, objPtrBB);
 
   builder.SetInsertPoint(stringsBB);
+  auto stringsFastBB = llvm::BasicBlock::Create(ctx, "eq.str.fast", fn);
+  auto stringsSlowBB = llvm::BasicBlock::Create(ctx, "eq.str.slow", fn);
+  auto samePtr = builder.CreateICmpEQ(L, R, "eq.str.sameptr");
+  builder.CreateCondBr(samePtr, stringsFastBB, stringsSlowBB);
+
+  builder.SetInsertPoint(stringsFastBB);
+  builder.CreateBr(contBB);
+  auto stringsFastResBB = builder.GetInsertBlock();
+
+  builder.SetInsertPoint(stringsSlowBB);
   llvm::Value *stringEqualBool = builder.getFalse();
-  if (auto strEqualFn = mod.getFunction("elx_strings_equal")) {
+  if (auto strEqualFn = mod.getFunction("elx_strings_equal_interned")) {
     auto strEqual = builder.CreateCall(strEqualFn, {L, R}, "streq");
     stringEqualBool = builder.CreateICmpNE(
         strEqual, llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0),
         "streqbool");
+  } else if (auto fallbackFn = mod.getFunction("elx_strings_equal")) {
+    auto strEqual = builder.CreateCall(fallbackFn, {L, R}, "streq.legacy");
+    stringEqualBool = builder.CreateICmpNE(
+        strEqual, llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0),
+        "streqbool.legacy");
   }
   builder.CreateBr(contBB);
-  auto stringsResBB = builder.GetInsertBlock();
+  auto stringsSlowResBB = builder.GetInsertBlock();
 
   builder.SetInsertPoint(objPtrBB);
   auto objEqualBool = builder.CreateICmpEQ(L, R, "objeq");
@@ -525,10 +545,11 @@ llvm::Value *CodeGenVisitor::valuesEqual(llvm::Value *L, llvm::Value *R) {
 
   // Merge results
   builder.SetInsertPoint(contBB);
-  auto phi = builder.CreatePHI(builder.getInt1Ty(), 5, "eq.res");
+  auto phi = builder.CreatePHI(builder.getInt1Ty(), 6, "eq.res");
   phi->addIncoming(builder.getFalse(), diffTypeBB);
   phi->addIncoming(numEqual, isNumBB);
-  phi->addIncoming(stringEqualBool, stringsResBB);
+  phi->addIncoming(builder.getTrue(), stringsFastResBB);
+  phi->addIncoming(stringEqualBool, stringsSlowResBB);
   phi->addIncoming(objEqualBool, objPtrResBB);
   phi->addIncoming(bitsEqual, isBoolOrNilBB);
 
@@ -804,6 +825,7 @@ void CodeGenVisitor::visitUnaryExpr(Unary *e) {
 
 void CodeGenVisitor::visitVariableExpr(Variable *e) {
   const std::string &varName = e->name.getLexeme();
+  bool captured = false;
 
   // Favour lexical bindings that are currently in scope before consulting any
   // captured upvalues so that shadowing behaves like the reference
@@ -2674,6 +2696,37 @@ bool CodeGenVisitor::removeLocalSlot(llvm::Value *slot) {
   }
 
   return captured;
+}
+
+void CodeGenVisitor::enterLoop() { loopInstructionCounts.push_back(0); }
+
+void CodeGenVisitor::exitLoop() {
+  if (!loopInstructionCounts.empty()) {
+    loopInstructionCounts.pop_back();
+  }
+}
+
+void CodeGenVisitor::addLoopInstructions(std::size_t count) {
+  if (loopInstructionCounts.empty()) {
+    return;
+  }
+
+  std::size_t current = loopInstructionCounts.back();
+  std::size_t total = saturatingLoopAdd(current, count);
+  loopInstructionCounts.back() = total;
+  if (total > MAX_LOOP_BODY_INSTRUCTIONS) {
+    throw CompileError("Loop body too large.");
+  }
+}
+
+CodeGenVisitor::LoopInstructionScopeReset::LoopInstructionScopeReset(
+    CodeGenVisitor &visitor)
+    : visitor(visitor), depth(visitor.loopInstructionCounts.size()) {}
+
+CodeGenVisitor::LoopInstructionScopeReset::~LoopInstructionScopeReset() {
+  while (visitor.loopInstructionCounts.size() > depth) {
+    visitor.loopInstructionCounts.pop_back();
+  }
 }
 
 void CodeGenVisitor::checkRuntimeError(llvm::Value *returnValue) {
