@@ -8,6 +8,8 @@
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/Function.h>
 #include <llvm/IR/Instructions.h>
+#include <llvm/IR/GlobalVariable.h>
+#include <llvm/Support/Alignment.h>
 #include <llvm/IR/Type.h>
 #include <llvm/IR/Verifier.h>
 #include <stdexcept>
@@ -613,6 +615,28 @@ llvm::Value *CodeGenVisitor::stringConst(const std::string &str,
       builder.CreateCall(internFn, {strConstant, lengthConst}, "strobj");
 
   return strObj;
+}
+
+CodeGenVisitor::PropertyCacheEntry &
+CodeGenVisitor::ensurePropertyCache(const Expr *expr) {
+  auto it = propertyCaches.find(expr);
+  if (it != propertyCaches.end()) {
+    return it->second;
+  }
+
+  std::string baseName = "elx.prop.cache." + std::to_string(propertyCacheCounter++);
+  auto initial = llvm::ConstantInt::get(llvmValueTy(), 0);
+  auto *shapeBits = new llvm::GlobalVariable(
+      mod, llvmValueTy(), false, llvm::GlobalValue::PrivateLinkage, initial,
+      baseName + ".shape");
+  auto *slotIndex = new llvm::GlobalVariable(
+      mod, llvmValueTy(), false, llvm::GlobalValue::PrivateLinkage, initial,
+      baseName + ".slot");
+  shapeBits->setAlignment(llvm::Align(alignof(void *)));
+  slotIndex->setAlignment(llvm::Align(sizeof(uint64_t)));
+  auto [insertedIt, _] =
+      propertyCaches.emplace(expr, PropertyCacheEntry{shapeBits, slotIndex});
+  return insertedIt->second;
 }
 
 // Helper function for proper equality comparison following Lox semantics
@@ -2715,24 +2739,31 @@ void CodeGenVisitor::visitReturnStmt(Return *s) {
   addLoopInstructions(1);
 }
 
-void CodeGenVisitor::emitLegacyGetExpr(Get *e, llvm::Value *objectValue,
-                                       llvm::Value *nameValue) {
-  auto tryGetFn = mod.getFunction("elx_try_get_instance_field");
-  if (!tryGetFn) {
-    value = nilConst();
-    return;
-  }
+void CodeGenVisitor::visitGetExpr(Get *e) {
+  e->object->accept(this);
+  llvm::Value *objectValue = value;
 
-  if (!nameValue) {
-    nameValue = stringConst(e->name.getLexeme(), true);
-  }
-
+  auto nameValue = stringConst(e->name.getLexeme(), true);
   llvm::Function *fn = builder.GetInsertBlock()->getParent();
   auto outPtr = createStackAlloca(fn, llvmValueTy(), "get_field_out");
   builder.CreateStore(nilConst(), outPtr);
 
-  auto status = builder.CreateCall(tryGetFn, {objectValue, nameValue, outPtr},
-                                   "get_field_status");
+  llvm::Value *status = nullptr;
+  if (auto tryGetCachedFn =
+          mod.getFunction("elx_try_get_instance_field_cached")) {
+    auto &cache = ensurePropertyCache(e);
+    status = builder.CreateCall(tryGetCachedFn,
+                                {objectValue, nameValue, cache.shapeBits,
+                                 cache.slotIndex, outPtr},
+                                "get_field_status");
+  } else if (auto tryGetFn = mod.getFunction("elx_try_get_instance_field")) {
+    status = builder.CreateCall(tryGetFn,
+                                {objectValue, nameValue, outPtr},
+                                "get_field_status");
+  } else {
+    value = nilConst();
+    return;
+  }
 
   auto errorBB = llvm::BasicBlock::Create(ctx, "get.error", fn);
   auto dispatchBB = llvm::BasicBlock::Create(ctx, "get.dispatch", fn);
@@ -2836,15 +2867,32 @@ void CodeGenVisitor::emitLegacyGetExpr(Get *e, llvm::Value *objectValue,
 
 void CodeGenVisitor::emitLegacySetExpr(Set *e, llvm::Value *objectValue) {
   auto hasErrorFn = mod.getFunction("elx_has_runtime_error");
-  auto setFieldFn = mod.getFunction("elx_set_instance_field");
+  llvm::Function *setFieldFn = nullptr;
+  CodeGenVisitor::PropertyCacheEntry *cacheEntry = nullptr;
+  if (auto cachedFn = mod.getFunction("elx_set_instance_field_cached")) {
+    setFieldFn = cachedFn;
+    cacheEntry = &ensurePropertyCache(e);
+  } else {
+    setFieldFn = mod.getFunction("elx_set_instance_field");
+  }
+
   if (!setFieldFn || !hasErrorFn) {
     e->value->accept(this);
     llvm::Value *assignedValue = value;
     if (setFieldFn) {
       auto nameValue = stringConst(e->name.getLexeme(), true);
-      value = builder.CreateCall(setFieldFn,
-                                 {objectValue, nameValue, assignedValue},
-                                 "set_field");
+      llvm::Value *callResult = nullptr;
+      if (cacheEntry) {
+        callResult = builder.CreateCall(
+            setFieldFn,
+            {objectValue, nameValue, assignedValue, cacheEntry->shapeBits,
+             cacheEntry->slotIndex},
+            "set_field");
+      } else {
+        callResult = builder.CreateCall(
+            setFieldFn, {objectValue, nameValue, assignedValue}, "set_field");
+      }
+      value = callResult;
       checkRuntimeError(value);
     } else {
       value = assignedValue;
@@ -2868,8 +2916,17 @@ void CodeGenVisitor::emitLegacySetExpr(Set *e, llvm::Value *objectValue) {
   e->value->accept(this);
   llvm::Value *assignedValue = value;
   auto nameValue = stringConst(e->name.getLexeme(), true);
-  llvm::Value *setResult = builder.CreateCall(
-      setFieldFn, {objectValue, nameValue, assignedValue}, "set_field");
+  llvm::Value *setResult = nullptr;
+  if (cacheEntry) {
+    setResult = builder.CreateCall(
+        setFieldFn,
+        {objectValue, nameValue, assignedValue, cacheEntry->shapeBits,
+         cacheEntry->slotIndex},
+        "set_field");
+  } else {
+    setResult = builder.CreateCall(
+        setFieldFn, {objectValue, nameValue, assignedValue}, "set_field");
+  }
   checkRuntimeError(setResult);
   llvm::Value *successValue = value;
   builder.CreateBr(contBB);

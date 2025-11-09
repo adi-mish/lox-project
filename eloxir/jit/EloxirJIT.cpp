@@ -256,43 +256,17 @@ llvm::Expected<std::unique_ptr<EloxirJIT>> EloxirJIT::Create() {
       llvm::orc::ExecutorSymbolDef(
           llvm::orc::ExecutorAddr::fromPtr(&elx_try_get_instance_field),
           llvm::JITSymbolFlags::Exported);
+  runtimeSymbols[mangle("elx_try_get_instance_field_cached")] =
+      llvm::orc::ExecutorSymbolDef(
+          llvm::orc::ExecutorAddr::fromPtr(&elx_try_get_instance_field_cached),
+          llvm::JITSymbolFlags::Exported);
   runtimeSymbols[mangle("elx_set_instance_field")] =
       llvm::orc::ExecutorSymbolDef(
           llvm::orc::ExecutorAddr::fromPtr(&elx_set_instance_field),
           llvm::JITSymbolFlags::Exported);
-  runtimeSymbols[mangle("elx_get_property_slow")] =
+  runtimeSymbols[mangle("elx_set_instance_field_cached")] =
       llvm::orc::ExecutorSymbolDef(
-          llvm::orc::ExecutorAddr::fromPtr(&elx_get_property_slow),
-          llvm::JITSymbolFlags::Exported);
-  runtimeSymbols[mangle("elx_set_property_slow")] =
-      llvm::orc::ExecutorSymbolDef(
-          llvm::orc::ExecutorAddr::fromPtr(&elx_set_property_slow),
-          llvm::JITSymbolFlags::Exported);
-#ifdef ELOXIR_ENABLE_CACHE_STATS
-  runtimeSymbols[mangle("elx_cache_stats_record_property_hit")] =
-      llvm::orc::ExecutorSymbolDef(
-          llvm::orc::ExecutorAddr::fromPtr(&elx_cache_stats_record_property_hit),
-          llvm::JITSymbolFlags::Exported);
-  runtimeSymbols[mangle("elx_cache_stats_record_call_hit")] =
-      llvm::orc::ExecutorSymbolDef(
-          llvm::orc::ExecutorAddr::fromPtr(&elx_cache_stats_record_call_hit),
-          llvm::JITSymbolFlags::Exported);
-  runtimeSymbols[mangle("elx_cache_stats_record_call_miss")] =
-      llvm::orc::ExecutorSymbolDef(
-          llvm::orc::ExecutorAddr::fromPtr(&elx_cache_stats_record_call_miss),
-          llvm::JITSymbolFlags::Exported);
-#endif
-  runtimeSymbols[mangle("elx_instance_shape_ptr")] =
-      llvm::orc::ExecutorSymbolDef(
-          llvm::orc::ExecutorAddr::fromPtr(&elx_instance_shape_ptr),
-          llvm::JITSymbolFlags::Exported);
-  runtimeSymbols[mangle("elx_instance_field_values_ptr")] =
-      llvm::orc::ExecutorSymbolDef(
-          llvm::orc::ExecutorAddr::fromPtr(&elx_instance_field_values_ptr),
-          llvm::JITSymbolFlags::Exported);
-  runtimeSymbols[mangle("elx_instance_field_presence_ptr")] =
-      llvm::orc::ExecutorSymbolDef(
-          llvm::orc::ExecutorAddr::fromPtr(&elx_instance_field_presence_ptr),
+          llvm::orc::ExecutorAddr::fromPtr(&elx_set_instance_field_cached),
           llvm::JITSymbolFlags::Exported);
   runtimeSymbols[mangle("elx_bind_method")] = llvm::orc::ExecutorSymbolDef(
       llvm::orc::ExecutorAddr::fromPtr(&elx_bind_method),

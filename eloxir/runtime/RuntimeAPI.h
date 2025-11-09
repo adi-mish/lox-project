@@ -193,6 +193,16 @@ uint64_t elx_set_instance_field(uint64_t instance_bits, uint64_t name_bits,
                                 uint64_t value_bits);
 int elx_try_get_instance_field(uint64_t instance_bits, uint64_t name_bits,
                                uint64_t *out_value);
+int elx_try_get_instance_field_cached(uint64_t instance_bits,
+                                      uint64_t name_bits,
+                                      uint64_t *cached_shape_bits,
+                                      uint64_t *cached_slot,
+                                      uint64_t *out_value);
+uint64_t elx_set_instance_field_cached(uint64_t instance_bits,
+                                       uint64_t name_bits,
+                                       uint64_t value_bits,
+                                       uint64_t *cached_shape_bits,
+                                       uint64_t *cached_slot);
 uint64_t elx_bind_method(uint64_t instance_bits, uint64_t method_bits);
 uint64_t elx_get_property_slow(uint64_t instance_bits, uint64_t name_bits,
                                eloxir::PropertyCache *cache,
