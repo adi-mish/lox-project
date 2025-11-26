@@ -5,7 +5,8 @@
 - Latest compile succeeded via `cmake --build eloxir/build --target eloxir`.
 
 ## Test Matrix
-- `pytest eloxir/tests -q` — **pass** (9 regression cases for runtime and compiler edge conditions).
+- `pytest eloxir/tests -q` — **pass** (15 regression cases for runtime and compiler edge conditions).
+- `python eloxir/tools/run_official_tests.py --filter limit/stack_overflow.lox` — **pass** (recursion now surfaces a managed runtime error instead of segfaulting).
 - `python eloxir/tools/run_official_tests.py --filter benchmark/*` — **fails** (4 passed / 7 failed / 11 total). Seven long-running benchmark fixtures still time out; see below.
 
 ## Outstanding Issues
@@ -28,3 +29,4 @@
 - Loop lowering now enforces the Crafting Interpreters 65 535-instruction ceiling and surfaces `CompileError("Loop body too large.")`, satisfying both the official limit test and the accompanying regression coverage.
 - Regression coverage for the resolved issues lives under `eloxir/tests/regression/` and is exercised by the smoke-test `pytest` target.
 - Instance allocation now goes through a free-list allocator that reuses both `ObjInstance` objects and their field buffers, trimming repeated heap growth during tight loops and enabling the passing benchmarks above.
+- Slow-path function calls now respect the call-depth guard, so runaway recursion reports “Stack overflow.” instead of crashing the process.

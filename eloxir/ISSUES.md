@@ -24,18 +24,3 @@ print clock() - start;
 - Hot loops in these programs repeatedly allocate classes, invoke methods, and traverse object graphs, but the compiled call slow paths (`elx_call_function`/`elx_call_value`) execute without any specialised inlining or caching for repeated receivers. Every call funnels through the generic dispatch machinery, keeping per-call overhead high enough to swamp the benchmark bodies at 5s.【F:eloxir/runtime/RuntimeAPI.cpp†L1261-L1304】
 - Property reads/writes and native calls are also dispatched through generic runtime helpers, so the JIT spends more time marshalling arguments and performing tag checks than executing the benchmark logic. Until the JIT emits specialised stubs for monomorphic call sites and cached field accesses, these tight loops cannot meet the suite’s timing expectations.
 
-## Stack overflow handling
-`limit/stack_overflow.lox` should report a runtime error, but the process segfaults because recursive calls bypass any depth guard.【16ced0†L9-L24】
-
-**Minimal reproducer:**
-```lox
-fun foo() {
-  var a1; var a2; // ... var a16;
-  foo(); // expect runtime error: Stack overflow.
-}
-foo();
-```
-(from `test/limit/stack_overflow.lox`).【F:test/limit/stack_overflow.lox†L1-L21】
-
-**Root cause analysis:**
-- The slow-path entry `elx_call_function` directly invokes the compiled function pointer without checking or incrementing a call-depth counter. Unbounded recursion therefore grows the C++ stack until it crashes instead of surfacing a managed `Stack overflow.` runtime error.【F:eloxir/runtime/RuntimeAPI.cpp†L1261-L1304】

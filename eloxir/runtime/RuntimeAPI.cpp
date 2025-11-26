@@ -1285,6 +1285,12 @@ uint64_t elx_call_function(uint64_t func_bits, uint64_t *args, int arg_count) {
     return Value::nil().getBits();
   }
 
+  CallDepthGuard depth_guard;
+  if (!depth_guard.entered()) {
+    elx_runtime_error("Stack overflow.");
+    return Value::nil().getBits();
+  }
+
   void *function_ptr = func->llvm_function;
 
   try {
