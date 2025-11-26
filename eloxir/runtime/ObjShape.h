@@ -17,6 +17,8 @@ struct ObjShape {
   llvm::DenseMap<ObjString *, ObjShape *> transitions;
 
   ObjShape(ObjShape *parent, ObjString *field);
+
+  size_t fieldCount() const { return slotCount; }
 };
 
 ObjShape *createRootShape();

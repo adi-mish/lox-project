@@ -177,15 +177,10 @@ std::unique_ptr<Stmt> Parser::forStatement() {
   // avoids altering control-flow or variable capture behaviour.
 
   if (increment != nullptr) {
-    auto incrementStmt = std::make_unique<Expression>(std::move(increment));
-    if (auto blockBody = dynamic_cast<Block *>(body.get())) {
-      blockBody->statements.push_back(std::move(incrementStmt));
-    } else {
-      std::vector<std::unique_ptr<Stmt>> statements;
-      statements.push_back(std::move(body));
-      statements.push_back(std::move(incrementStmt));
-      body = std::make_unique<Block>(std::move(statements));
-    }
+    std::vector<std::unique_ptr<Stmt>> statements;
+    statements.push_back(std::move(body));
+    statements.push_back(std::make_unique<Expression>(std::move(increment)));
+    body = std::make_unique<Block>(std::move(statements));
   }
 
   if (condition == nullptr) {

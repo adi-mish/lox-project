@@ -2739,11 +2739,8 @@ void CodeGenVisitor::visitReturnStmt(Return *s) {
   addLoopInstructions(1);
 }
 
-void CodeGenVisitor::visitGetExpr(Get *e) {
-  e->object->accept(this);
-  llvm::Value *objectValue = value;
-
-  auto nameValue = stringConst(e->name.getLexeme(), true);
+void CodeGenVisitor::emitLegacyGetExpr(Get *e, llvm::Value *objectValue,
+                                      llvm::Value *nameValue) {
   llvm::Function *fn = builder.GetInsertBlock()->getParent();
   auto outPtr = createStackAlloca(fn, llvmValueTy(), "get_field_out");
   builder.CreateStore(nilConst(), outPtr);
