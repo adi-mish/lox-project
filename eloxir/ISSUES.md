@@ -24,20 +24,6 @@ print clock() - start;
 - Hot loops in these programs repeatedly allocate classes, invoke methods, and traverse object graphs, but the compiled call slow paths (`elx_call_function`/`elx_call_value`) execute without any specialised inlining or caching for repeated receivers. Every call funnels through the generic dispatch machinery, keeping per-call overhead high enough to swamp the benchmark bodies at 5s.【F:eloxir/runtime/RuntimeAPI.cpp†L1261-L1304】
 - Property reads/writes and native calls are also dispatched through generic runtime helpers, so the JIT spends more time marshalling arguments and performing tag checks than executing the benchmark logic. Until the JIT emits specialised stubs for monomorphic call sites and cached field accesses, these tight loops cannot meet the suite’s timing expectations.
 
-## Native function printing mismatch
-`function/print.lox` expects native functions to render as `<native fn>`, but `clock` prints its symbol name (`<native fn clock>`), causing an output diff.【e58f63†L9-L24】 The printer emits the native’s stored name when present.
-
-**Minimal reproducer:**
-```lox
-fun foo() {}
-print foo; // expect: <fn foo>
-print clock; // expect: <native fn>
-```
-(from `test/function/print.lox`).【F:test/function/print.lox†L1-L4】
-
-**Root cause analysis:**
-- In the runtime’s object printer, the native branch checks for a non-empty name and includes it in the formatted string, diverging from the spec’s anonymous native formatting.【F:eloxir/runtime/RuntimeAPI.cpp†L972-L979】
-
 ## Stack overflow handling
 `limit/stack_overflow.lox` should report a runtime error, but the process segfaults because recursive calls bypass any depth guard.【16ced0†L9-L24】
 

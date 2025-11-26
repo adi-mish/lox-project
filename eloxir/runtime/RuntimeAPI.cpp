@@ -970,12 +970,9 @@ uint64_t elx_print(uint64_t bits) {
       break;
     }
     case ObjType::NATIVE: {
-      ObjNative *native = static_cast<ObjNative *>(obj_ptr);
-      if (native && native->name && native->name[0] != '\0') {
-        std::cout << "<native fn " << native->name << ">";
-      } else {
-        std::cout << "<native fn>";
-      }
+      // Per the Lox specification, native functions print as "<native fn>"
+      // regardless of any internal name they may carry.
+      std::cout << "<native fn>";
       break;
     }
     case ObjType::CLOSURE: {
