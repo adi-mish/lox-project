@@ -104,6 +104,12 @@ class RuntimeRegressionTests(unittest.TestCase):
         self.assertEqual(result.returncode, 65)
         self.assertIn("Loop body too large.", result.stderr)
 
+    def test_stack_overflow_surfaces_runtime_error(self) -> None:
+        result = self._run_fixture("stack_overflow.lox")
+        self.assertEqual(result.returncode, 70)
+        self.assertIn("Stack overflow.", result.stderr)
+        self.assertEqual(result.stdout.strip(), "")
+
 
 if __name__ == "__main__":
     unittest.main()
