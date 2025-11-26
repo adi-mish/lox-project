@@ -63,6 +63,14 @@ class RuntimeRegressionTests(unittest.TestCase):
         self.assertEqual(actual_lines, expected_lines)
         self.assertEqual(result.stderr.strip(), "")
 
+    def test_native_functions_print_without_names(self) -> None:
+        result = self._run_fixture("print_native.lox")
+        self.assertEqual(result.returncode, 0)
+        expected_lines = ["<native fn>", "<native fn>"]
+        actual_lines = [line.strip() for line in result.stdout.splitlines() if line]
+        self.assertEqual(actual_lines, expected_lines)
+        self.assertEqual(result.stderr.strip(), "")
+
     def test_plus_with_non_string_objects_raises_type_error(self) -> None:
         result = self._run_fixture("add_non_string_objects.lox")
         self.assertEqual(result.returncode, 70)
