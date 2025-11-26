@@ -27,6 +27,37 @@ static std::unordered_map<std::string, uint64_t> global_interned_strings;
 static std::unordered_map<std::string, uint64_t> global_variables;
 static std::unordered_map<std::string, uint64_t> global_functions;
 
+#if defined(ELOXIR_ENABLE_CACHE_STATS)
+void CacheStatsCollector::reset() {
+  property_get_hits.store(0, std::memory_order_relaxed);
+  property_get_misses.store(0, std::memory_order_relaxed);
+  property_get_shape_transitions.store(0, std::memory_order_relaxed);
+  property_set_hits.store(0, std::memory_order_relaxed);
+  property_set_misses.store(0, std::memory_order_relaxed);
+  property_set_shape_transitions.store(0, std::memory_order_relaxed);
+  call_hits.store(0, std::memory_order_relaxed);
+  call_misses.store(0, std::memory_order_relaxed);
+  call_shape_transitions.store(0, std::memory_order_relaxed);
+}
+
+CacheStats CacheStatsCollector::snapshot() const {
+  CacheStats stats;
+  stats.property_get_hits = property_get_hits.load(std::memory_order_relaxed);
+  stats.property_get_misses = property_get_misses.load(std::memory_order_relaxed);
+  stats.property_get_shape_transitions =
+      property_get_shape_transitions.load(std::memory_order_relaxed);
+  stats.property_set_hits = property_set_hits.load(std::memory_order_relaxed);
+  stats.property_set_misses = property_set_misses.load(std::memory_order_relaxed);
+  stats.property_set_shape_transitions =
+      property_set_shape_transitions.load(std::memory_order_relaxed);
+  stats.call_hits = call_hits.load(std::memory_order_relaxed);
+  stats.call_misses = call_misses.load(std::memory_order_relaxed);
+  stats.call_shape_transitions =
+      call_shape_transitions.load(std::memory_order_relaxed);
+  return stats;
+}
+#endif
+
 namespace {
 
 #if defined(ELOXIR_ENABLE_CACHE_STATS)
@@ -37,8 +68,6 @@ static const CacheStats kEmptyCacheStats{};
 // Runtime error state
 static bool runtime_error_flag = false;
 static std::string runtime_error_message;
-
-namespace {
 struct FieldBuffer {
   uint64_t *values;
   uint8_t *initialized;
@@ -531,22 +560,7 @@ static uint64_t invoke_closure_pointer(void *function_ptr, uint64_t *args,
 }
 
 static ObjShape *createShape(ObjShape *parent, ObjString *newField) {
-  auto *shape = new ObjShape();
-  shape->obj.type = ObjType::SHAPE;
-  shape->parent = parent;
-  if (parent) {
-    shape->fieldOrder = parent->fieldOrder;
-    shape->slotCache = parent->slotCache;
-  }
-
-  if (newField) {
-    size_t slot = shape->fieldOrder.size();
-    shape->fieldOrder.push_back(newField);
-    shape->slotCache[newField] = slot;
-  }
-
-  allocated_objects.insert(shape);
-  return shape;
+  return new ObjShape(parent, newField);
 }
 
 static bool shapeTryGetSlot(ObjShape *shape, ObjString *field, size_t *slotOut) {
@@ -586,7 +600,7 @@ static void ensureInstanceShape(ObjInstance *instance, ObjShape *shape) {
     return;
 
   instance->shape = shape;
-  size_t slotCount = shape ? shape->fieldCount() : 0;
+  size_t slotCount = shape ? shape->slotCount : 0;
   ensureInstanceCapacity(instance, slotCount, true);
 }
 
@@ -909,9 +923,6 @@ static void destroyObject(Obj *obj) {
     break;
   case ObjType::NATIVE:
     delete reinterpret_cast<ObjNative *>(obj);
-    break;
-  case ObjType::SHAPE:
-    delete reinterpret_cast<ObjShape *>(obj);
     break;
   default:
     free(obj);
@@ -2593,6 +2604,52 @@ int elx_try_get_instance_field(uint64_t instance_bits, uint64_t name_bits,
                                            nullptr, out_value);
 }
 
+uint64_t elx_get_property_slow(uint64_t instance_bits, uint64_t name_bits,
+                               PropertyCache *cache, uint32_t capacity) {
+#if defined(ELOXIR_ENABLE_CACHE_STATS)
+  elx_cache_stats_record_property_miss(0);
+#endif
+
+  Value instance_val = Value::fromBits(instance_bits);
+  ObjInstance *instance = getInstance(instance_val);
+  if (!instance) {
+    elx_runtime_error("Only instances have properties.");
+    return Value::nil().getBits();
+  }
+
+  std::string field_name;
+  ObjString *field_key = extractStringKey(name_bits, &field_name);
+  if (!field_key) {
+    elx_runtime_error("Property name must be a string.");
+    return Value::nil().getBits();
+  }
+
+  ObjShape *shape = ensureInstanceShape(instance);
+  uint64_t value_bits = Value::nil().getBits();
+  if (tryReadInstanceField(instance, shape, field_key, nullptr, nullptr,
+                           &value_bits)) {
+    size_t slot = 0;
+    if (shapeTryGetSlot(shape, field_key, &slot)) {
+      propertyCacheUpdate(cache, shape, slot, capacity, false);
+    }
+    return value_bits;
+  }
+
+  uint64_t method_bits = Value::nil().getBits();
+  if (instance->klass) {
+    method_bits = findMethodOnClass(instance->klass, field_key);
+  }
+
+  if (method_bits != Value::nil().getBits()) {
+    return elx_bind_method(instance_bits, method_bits);
+  }
+
+  std::string message = "Undefined property '" + field_name + "'.";
+  elx_runtime_error_silent(message.c_str());
+  elx_emit_runtime_error();
+  return Value::nil().getBits();
+}
+
 static bool ensureSlotForWrite(ObjInstance *instance, ObjString *field_key,
                                uint64_t *cached_shape_bits,
                                uint64_t *cached_slot, size_t *out_slot) {
@@ -2723,6 +2780,24 @@ uint64_t elx_set_instance_field_cached(uint64_t instance_bits,
   instance->fieldValues[slot] = value_bits;
   instance->fieldInitialized[slot] = 1;
   return value_bits;
+}
+
+eloxir::ObjShape *elx_instance_shape_ptr(uint64_t instance_bits) {
+  Value instance_val = Value::fromBits(instance_bits);
+  ObjInstance *instance = getInstance(instance_val);
+  return instance ? instance->shape : nullptr;
+}
+
+uint64_t *elx_instance_field_values_ptr(uint64_t instance_bits) {
+  Value instance_val = Value::fromBits(instance_bits);
+  ObjInstance *instance = getInstance(instance_val);
+  return instance ? instance->fieldValues : nullptr;
+}
+
+uint8_t *elx_instance_field_presence_ptr(uint64_t instance_bits) {
+  Value instance_val = Value::fromBits(instance_bits);
+  ObjInstance *instance = getInstance(instance_val);
+  return instance ? instance->fieldInitialized : nullptr;
 }
 
 uint64_t elx_bind_method(uint64_t instance_bits, uint64_t method_bits) {

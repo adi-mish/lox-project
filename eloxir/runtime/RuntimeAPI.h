@@ -1,5 +1,6 @@
 #pragma once
 #include "Value.h"
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -62,16 +63,6 @@ struct ObjClosure {
   int upvalue_count;
 };
 
-struct ObjShape {
-  Obj obj;
-  ObjShape *parent;
-  std::vector<ObjString *> fieldOrder;
-  llvm::DenseMap<ObjString *, size_t> slotCache;
-  llvm::DenseMap<ObjString *, ObjShape *> transitions;
-
-  size_t fieldCount() const { return fieldOrder.size(); }
-};
-
 struct ObjClass {
   Obj obj;
   ObjString *name;
@@ -95,6 +86,72 @@ struct ObjBoundMethod {
   Obj obj;
   uint64_t receiver;
   uint64_t method;
+};
+
+// Inline caches for property access
+constexpr unsigned PROPERTY_CACHE_MAX_SIZE = 8;
+
+struct PropertyCacheEntry {
+  ObjShape *shape;
+  uint32_t slot;
+};
+
+struct PropertyCache {
+  uint32_t size;
+  PropertyCacheEntry entries[PROPERTY_CACHE_MAX_SIZE];
+};
+
+enum class CallInlineCacheKind : int32_t {
+  EMPTY = 0,
+  FUNCTION = 1,
+  CLOSURE = 2,
+  NATIVE = 3,
+  BOUND_METHOD = 4,
+  CLASS = 5,
+};
+
+constexpr int CALL_CACHE_FLAG_METHOD_IS_CLOSURE = 1 << 0;
+constexpr int CALL_CACHE_FLAG_METHOD_IS_FUNCTION = 1 << 1;
+constexpr int CALL_CACHE_FLAG_METHOD_IS_NATIVE = 1 << 2;
+constexpr int CALL_CACHE_FLAG_CLASS_HAS_INITIALIZER = 1 << 3;
+
+struct CallInlineCache {
+  uint64_t callee_bits;
+  uint64_t guard0_bits;
+  uint64_t guard1_bits;
+  void *target_ptr;
+  int32_t expected_arity;
+  int32_t kind;
+  int32_t flags;
+  int32_t padding;
+};
+
+// Cache instrumentation
+struct CacheStats {
+  uint64_t property_get_hits = 0;
+  uint64_t property_get_misses = 0;
+  uint64_t property_get_shape_transitions = 0;
+  uint64_t property_set_hits = 0;
+  uint64_t property_set_misses = 0;
+  uint64_t property_set_shape_transitions = 0;
+  uint64_t call_hits = 0;
+  uint64_t call_misses = 0;
+  uint64_t call_shape_transitions = 0;
+};
+
+class CacheStatsCollector {
+public:
+  std::atomic<uint64_t> property_get_hits{0};
+  std::atomic<uint64_t> property_get_misses{0};
+  std::atomic<uint64_t> property_get_shape_transitions{0};
+  std::atomic<uint64_t> property_set_hits{0};
+  std::atomic<uint64_t> property_set_misses{0};
+  std::atomic<uint64_t> property_set_shape_transitions{0};
+  std::atomic<uint64_t> call_hits{0};
+  std::atomic<uint64_t> call_misses{0};
+  std::atomic<uint64_t> call_shape_transitions{0};
+  void reset();
+  CacheStats snapshot() const;
 };
 
 } // namespace eloxir
