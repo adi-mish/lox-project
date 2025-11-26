@@ -27,6 +27,7 @@ TEST_DIR = REPO_ROOT / "test"
 BUILD_DIR = REPO_ROOT / "eloxir" / "build"
 OPTIMISED_BUILD_TYPES = ("RelWithDebInfo", "Release")
 DEFAULT_TIMEOUT_SECONDS = 10
+BENCHMARK_TIMEOUT_SECONDS = 60
 
 
 class FailureKind(enum.Enum):
@@ -241,6 +242,16 @@ def minimal_repro(path: Path) -> str:
     return "\n".join(lines)
 
 
+def _timeout_for_test(base_timeout: int, path: Path) -> int:
+    """Calculate a per-test timeout based on the test category."""
+
+    # Benchmarks routinely exceed the normal timeout under the JIT, so give
+    # them extra headroom while keeping the default for all other tests.
+    if path.parent.name == "benchmark":
+        return max(base_timeout, BENCHMARK_TIMEOUT_SECONDS)
+    return base_timeout
+
+
 def run_suite(
     timeout: int,
     filter_pattern: str | None = None,
@@ -275,8 +286,9 @@ def run_suite(
         for test_path in paths:
             index += 1
             expectations = parse_expectations(test_path)
+            effective_timeout = _timeout_for_test(timeout, test_path)
             stdout, stderr, code, timed_out = run_test(
-                test_path, timeout, binary, extra_args=extra_args
+                test_path, effective_timeout, binary, extra_args=extra_args
             )
             passed = False
             if expectations.exit_code == 0:

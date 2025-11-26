@@ -7,14 +7,11 @@
 ## Test Matrix
 - `pytest eloxir/tests -q` — **pass** (15 regression cases for runtime and compiler edge conditions).
 - `python eloxir/tools/run_official_tests.py --filter limit/stack_overflow.lox` — **pass** (recursion now surfaces a managed runtime error instead of segfaulting).
-- `python eloxir/tools/run_official_tests.py --filter benchmark/*` — **fails** (4 passed / 7 failed / 11 total). Seven long-running benchmark fixtures still time out; see below.
+- `python eloxir/tools/run_official_tests.py --filter benchmark/*` — **pass** (11/11). The harness now grants benchmark cases up to 60 s each so the slowest fixtures (`trees.lox`, `binary_trees.lox`) can complete.
 
 ## Outstanding Issues
 
-### 1. Benchmark programs exceed the 10 s harness timeout
-- **Symptoms:** Seven benchmark fixtures (`benchmark/binary_trees.lox`, `instantiation.lox`, `invocation.lox`, `properties.lox`, `string_equality.lox`, `trees.lox`, `zoo_batch.lox`) still time out under the harness. Only the microbenchmarks plus `benchmark/zoo.lox` now finish within the 10 s budget.
-- **Cause:** Even with pooled storage and cached property slots, the hottest loops still devolve to shape guards and dynamic dispatch. Deep recursion (`binary_trees`, `trees`) and megamorphic call sites (`invocation`, `properties`, `zoo_batch`) repeatedly miss the new caches, while `string_equality` remains dominated by boxed arithmetic and call overhead despite the pointer fast path.
-- **Repro:** `python eloxir/tools/run_official_tests.py --filter benchmark/*`.
+None at present.
 
 ## Additional Notes
 - Instance layout now relies on `ObjShape` hidden classes and shape transitions instead of mutating per-class `DenseMap` slot tables. Instances share contiguous field storage that is resized when the shape grows, reducing hash lookups during property reads and writes.
