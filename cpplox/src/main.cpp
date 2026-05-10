@@ -12,36 +12,38 @@
 namespace {
 
 class VmSession {
- public:
+public:
   VmSession() { initVM(); }
   ~VmSession() { freeVM(); }
 
-  VmSession(const VmSession&) = delete;
-  VmSession& operator=(const VmSession&) = delete;
+  VmSession(const VmSession &) = delete;
+  VmSession &operator=(const VmSession &) = delete;
 };
 
 std::string readFile(std::string_view path) {
   std::ifstream file(std::string(path), std::ios::binary);
   if (!file) {
-    throw std::runtime_error("Could not open file \"" + std::string(path) + "\".");
+    throw std::runtime_error("Could not open file \"" + std::string(path) +
+                             "\".");
   }
 
-  return std::string(
-      std::istreambuf_iterator<char>(file),
-      std::istreambuf_iterator<char>());
+  return std::string(std::istreambuf_iterator<char>(file),
+                     std::istreambuf_iterator<char>());
 }
 
-int runSource(const std::string& source) {
+int runSource(const std::string &source) {
   InterpretResult result = interpret(source.c_str());
-  if (result == INTERPRET_COMPILE_ERROR) return 65;
-  if (result == INTERPRET_RUNTIME_ERROR) return 70;
+  if (result == INTERPRET_COMPILE_ERROR)
+    return 65;
+  if (result == INTERPRET_RUNTIME_ERROR)
+    return 70;
   return 0;
 }
 
 int runFile(std::string_view path) {
   try {
     return runSource(readFile(path));
-  } catch (const std::runtime_error& error) {
+  } catch (const std::runtime_error &error) {
     std::cerr << error.what() << '\n';
     return 74;
   }
@@ -61,46 +63,86 @@ void repl() {
 
 std::string_view tokenTypeName(TokenType type) {
   switch (type) {
-    case TOKEN_LEFT_PAREN: return "LEFT_PAREN";
-    case TOKEN_RIGHT_PAREN: return "RIGHT_PAREN";
-    case TOKEN_LEFT_BRACE: return "LEFT_BRACE";
-    case TOKEN_RIGHT_BRACE: return "RIGHT_BRACE";
-    case TOKEN_COMMA: return "COMMA";
-    case TOKEN_DOT: return "DOT";
-    case TOKEN_MINUS: return "MINUS";
-    case TOKEN_PLUS: return "PLUS";
-    case TOKEN_SEMICOLON: return "SEMICOLON";
-    case TOKEN_SLASH: return "SLASH";
-    case TOKEN_STAR: return "STAR";
-    case TOKEN_BANG: return "BANG";
-    case TOKEN_BANG_EQUAL: return "BANG_EQUAL";
-    case TOKEN_EQUAL: return "EQUAL";
-    case TOKEN_EQUAL_EQUAL: return "EQUAL_EQUAL";
-    case TOKEN_GREATER: return "GREATER";
-    case TOKEN_GREATER_EQUAL: return "GREATER_EQUAL";
-    case TOKEN_LESS: return "LESS";
-    case TOKEN_LESS_EQUAL: return "LESS_EQUAL";
-    case TOKEN_IDENTIFIER: return "IDENTIFIER";
-    case TOKEN_STRING: return "STRING";
-    case TOKEN_NUMBER: return "NUMBER";
-    case TOKEN_AND: return "AND";
-    case TOKEN_CLASS: return "CLASS";
-    case TOKEN_ELSE: return "ELSE";
-    case TOKEN_FALSE: return "FALSE";
-    case TOKEN_FOR: return "FOR";
-    case TOKEN_FUN: return "FUN";
-    case TOKEN_IF: return "IF";
-    case TOKEN_NIL: return "NIL";
-    case TOKEN_OR: return "OR";
-    case TOKEN_PRINT: return "PRINT";
-    case TOKEN_RETURN: return "RETURN";
-    case TOKEN_SUPER: return "SUPER";
-    case TOKEN_THIS: return "THIS";
-    case TOKEN_TRUE: return "TRUE";
-    case TOKEN_VAR: return "VAR";
-    case TOKEN_WHILE: return "WHILE";
-    case TOKEN_ERROR: return "ERROR";
-    case TOKEN_EOF: return "EOF";
+  case TOKEN_LEFT_PAREN:
+    return "LEFT_PAREN";
+  case TOKEN_RIGHT_PAREN:
+    return "RIGHT_PAREN";
+  case TOKEN_LEFT_BRACE:
+    return "LEFT_BRACE";
+  case TOKEN_RIGHT_BRACE:
+    return "RIGHT_BRACE";
+  case TOKEN_COMMA:
+    return "COMMA";
+  case TOKEN_DOT:
+    return "DOT";
+  case TOKEN_MINUS:
+    return "MINUS";
+  case TOKEN_PLUS:
+    return "PLUS";
+  case TOKEN_SEMICOLON:
+    return "SEMICOLON";
+  case TOKEN_SLASH:
+    return "SLASH";
+  case TOKEN_STAR:
+    return "STAR";
+  case TOKEN_BANG:
+    return "BANG";
+  case TOKEN_BANG_EQUAL:
+    return "BANG_EQUAL";
+  case TOKEN_EQUAL:
+    return "EQUAL";
+  case TOKEN_EQUAL_EQUAL:
+    return "EQUAL_EQUAL";
+  case TOKEN_GREATER:
+    return "GREATER";
+  case TOKEN_GREATER_EQUAL:
+    return "GREATER_EQUAL";
+  case TOKEN_LESS:
+    return "LESS";
+  case TOKEN_LESS_EQUAL:
+    return "LESS_EQUAL";
+  case TOKEN_IDENTIFIER:
+    return "IDENTIFIER";
+  case TOKEN_STRING:
+    return "STRING";
+  case TOKEN_NUMBER:
+    return "NUMBER";
+  case TOKEN_AND:
+    return "AND";
+  case TOKEN_CLASS:
+    return "CLASS";
+  case TOKEN_ELSE:
+    return "ELSE";
+  case TOKEN_FALSE:
+    return "FALSE";
+  case TOKEN_FOR:
+    return "FOR";
+  case TOKEN_FUN:
+    return "FUN";
+  case TOKEN_IF:
+    return "IF";
+  case TOKEN_NIL:
+    return "NIL";
+  case TOKEN_OR:
+    return "OR";
+  case TOKEN_PRINT:
+    return "PRINT";
+  case TOKEN_RETURN:
+    return "RETURN";
+  case TOKEN_SUPER:
+    return "SUPER";
+  case TOKEN_THIS:
+    return "THIS";
+  case TOKEN_TRUE:
+    return "TRUE";
+  case TOKEN_VAR:
+    return "VAR";
+  case TOKEN_WHILE:
+    return "WHILE";
+  case TOKEN_ERROR:
+    return "ERROR";
+  case TOKEN_EOF:
+    return "EOF";
   }
   return "UNKNOWN";
 }
@@ -109,9 +151,7 @@ std::string_view lexeme(Token token) {
   return {token.start, static_cast<std::size_t>(token.length)};
 }
 
-void writeLexeme(Token token) {
-  std::cout.write(token.start, token.length);
-}
+void writeLexeme(Token token) { std::cout.write(token.start, token.length); }
 
 void printScanToken(Token token) {
   if (token.type == TOKEN_EOF) {
@@ -123,28 +163,28 @@ void printScanToken(Token token) {
   writeLexeme(token);
 
   switch (token.type) {
-    case TOKEN_NUMBER:
+  case TOKEN_NUMBER:
+    std::cout << ' ';
+    writeLexeme(token);
+    if (lexeme(token).find('.') == std::string_view::npos) {
+      std::cout << ".0";
+    }
+    std::cout << '\n';
+    break;
+  case TOKEN_STRING:
+    if (token.length > 2) {
       std::cout << ' ';
-      writeLexeme(token);
-      if (lexeme(token).find('.') == std::string_view::npos) {
-        std::cout << ".0";
-      }
-      std::cout << '\n';
-      break;
-    case TOKEN_STRING:
-      if (token.length > 2) {
-        std::cout << ' ';
-        std::cout.write(token.start + 1, token.length - 2);
-      }
-      std::cout << '\n';
-      break;
-    default:
-      std::cout << " null\n";
-      break;
+      std::cout.write(token.start + 1, token.length - 2);
+    }
+    std::cout << '\n';
+    break;
+  default:
+    std::cout << " null\n";
+    break;
   }
 }
 
-int scanSource(const std::string& source) {
+int scanSource(const std::string &source) {
   initScanner(source.c_str());
   bool hadError = false;
 
@@ -159,7 +199,8 @@ int scanSource(const std::string& source) {
     }
 
     printScanToken(token);
-    if (token.type == TOKEN_EOF) break;
+    if (token.type == TOKEN_EOF)
+      break;
   }
 
   return hadError ? 65 : 0;
@@ -168,19 +209,19 @@ int scanSource(const std::string& source) {
 int scanFile(std::string_view path) {
   try {
     return scanSource(readFile(path));
-  } catch (const std::runtime_error& error) {
+  } catch (const std::runtime_error &error) {
     std::cerr << error.what() << '\n';
     return 74;
   }
 }
 
-}  // namespace
+} // namespace
 
-int main(int argc, const char* argv[]) {
+int main(int argc, const char *argv[]) {
   VmSession vm;
   bool scan = false;
   bool stats = false;
-  const char* path = nullptr;
+  const char *path = nullptr;
 
   for (int i = 1; i < argc; i++) {
     std::string_view arg(argv[i]);
