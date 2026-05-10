@@ -4,6 +4,8 @@
 #include "common.h"
 #include "object.h"
 
+namespace cpplox {
+
 #define ALLOCATE(type, count)                                                  \
   (type *)reallocate(NULL, 0, sizeof(type) * (count))
 
@@ -23,5 +25,7 @@ void markObject(Obj *object);
 void markValue(Value value);
 void collectGarbage();
 void freeObjects();
+
+} // namespace cpplox
 
 #endif

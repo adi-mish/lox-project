@@ -6,6 +6,8 @@
 
 #include "common.h"
 
+namespace cpplox {
+
 typedef struct Obj Obj;
 typedef struct ObjString ObjString;
 
@@ -120,5 +122,7 @@ void initValueArray(ValueArray *array);
 void writeValueArray(ValueArray *array, Value value);
 void freeValueArray(ValueArray *array);
 void printValue(Value value);
+
+} // namespace cpplox
 
 #endif

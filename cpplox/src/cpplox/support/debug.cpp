@@ -4,6 +4,8 @@
 #include "object.h"
 #include "value.h"
 
+namespace cpplox {
+
 void disassembleChunk(Chunk *chunk, const char *name) {
   printf("== %s ==\n", name);
 
@@ -201,3 +203,5 @@ int disassembleInstruction(Chunk *chunk, int offset) {
     return offset + 1;
   }
 }
+
+} // namespace cpplox

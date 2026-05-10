@@ -3,6 +3,8 @@
 #include "chunk.h"
 #include "vm.h"
 
+namespace cpplox {
+
 static InlineCache emptyInlineCache() {
   InlineCache cache;
   cache.kind = CACHE_EMPTY;
@@ -57,3 +59,5 @@ void writeChunk(Chunk *chunk, uint8_t byte, int line) {
 int addConstant(Chunk *chunk, Value value) {
   return chunk->addConstant(value);
 }
+
+} // namespace cpplox

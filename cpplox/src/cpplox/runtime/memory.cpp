@@ -9,6 +9,8 @@
 #include <stdio.h>
 #endif
 
+namespace cpplox {
+
 #define GC_HEAP_GROW_FACTOR 2
 
 void *reallocate(void *pointer, size_t oldSize, size_t newSize) {
@@ -256,3 +258,5 @@ void freeObjects() {
 
   free(vm.grayStack);
 }
+
+} // namespace cpplox

@@ -1,6 +1,8 @@
 #ifndef clox_scanner_h
 #define clox_scanner_h
 
+namespace cpplox {
+
 typedef enum {
 
   TOKEN_LEFT_PAREN,
@@ -87,5 +89,7 @@ private:
   const char *current_ = "";
   int line_ = 1;
 };
+
+} // namespace cpplox
 
 #endif

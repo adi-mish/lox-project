@@ -5,6 +5,8 @@
 #include "object.h"
 #include "value.h"
 
+namespace cpplox {
+
 void initValueArray(ValueArray *array) {
   array->clear();
 }
@@ -47,3 +49,5 @@ void printValue(Value value) {
   }
 #endif
 }
+
+} // namespace cpplox

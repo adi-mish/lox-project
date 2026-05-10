@@ -6,6 +6,8 @@
 #include "table.h"
 #include "value.h"
 
+namespace cpplox {
+
 #define OBJ_TYPE(value) (AS_OBJ(value)->type)
 
 #define IS_BOUND_METHOD(value) isObjType(value, OBJ_BOUND_METHOD)
@@ -113,5 +115,7 @@ void printObject(Value value);
 static inline bool isObjType(Value value, ObjType type) {
   return IS_OBJ(value) && AS_OBJ(value)->type == type;
 }
+
+} // namespace cpplox
 
 #endif

@@ -6,6 +6,8 @@
 #include "table.h"
 #include "value.h"
 
+namespace cpplox {
+
 #define TABLE_MAX_LOAD 0.75
 
 void initTable(Table *table) {
@@ -169,3 +171,5 @@ void markTable(Table *table) {
     markValue(entry->value);
   }
 }
+
+} // namespace cpplox

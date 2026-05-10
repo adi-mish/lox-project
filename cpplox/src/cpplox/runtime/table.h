@@ -4,6 +4,8 @@
 #include "common.h"
 #include "value.h"
 
+namespace cpplox {
+
 typedef struct Entry {
   ObjString *key;
   Value value;
@@ -29,5 +31,7 @@ ObjString *tableFindString(Table *table, const char *chars, int length,
 
 void tableRemoveWhite(Table *table);
 void markTable(Table *table);
+
+} // namespace cpplox
 
 #endif

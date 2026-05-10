@@ -13,6 +13,8 @@
 #include "debug.h"
 #endif
 
+namespace cpplox {
+
 typedef struct {
   Token current;
   Token previous;
@@ -1079,3 +1081,5 @@ void markCompilerRoots() {
     compiler = compiler->enclosing;
   }
 }
+
+} // namespace cpplox

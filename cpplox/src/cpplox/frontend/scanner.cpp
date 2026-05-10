@@ -2,6 +2,8 @@
 
 #include "scanner.h"
 
+namespace cpplox {
+
 void Scanner::reset(const char *source) {
   start_ = source;
   current_ = source;
@@ -227,3 +229,5 @@ Token Scanner::scanToken() {
 
   return errorToken("Unexpected character.");
 }
+
+} // namespace cpplox

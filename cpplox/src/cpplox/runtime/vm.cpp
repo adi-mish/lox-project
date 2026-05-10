@@ -13,6 +13,8 @@
 #include "object.h"
 #include "vm.h"
 
+namespace cpplox {
+
 VM vm;
 
 #ifdef CPPLOX_ENABLE_VM_STATS
@@ -1069,3 +1071,5 @@ InterpretResult interpret(const char *source) {
 
   return run();
 }
+
+} // namespace cpplox

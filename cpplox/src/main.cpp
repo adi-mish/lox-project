@@ -9,6 +9,8 @@
 #include "scanner.h"
 #include "vm.h"
 
+using namespace cpplox;
+
 namespace {
 
 class VmSession {

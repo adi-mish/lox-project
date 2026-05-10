@@ -7,6 +7,8 @@
 #include "value.h"
 #include "vm.h"
 
+namespace cpplox {
+
 #define ALLOCATE_OBJ(type, objectType)                                         \
   (type *)allocateObject(sizeof(type), objectType)
 
@@ -158,3 +160,5 @@ void printObject(Value value) {
     break;
   }
 }
+
+} // namespace cpplox

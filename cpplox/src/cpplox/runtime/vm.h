@@ -5,6 +5,8 @@
 #include "table.h"
 #include "value.h"
 
+namespace cpplox {
+
 #define FRAMES_MAX 64
 #define STACK_MAX (FRAMES_MAX * UINT8_COUNT)
 
@@ -72,5 +74,7 @@ void setVMStatsEnabled(bool enabled);
 void resetVMStats();
 void printVMStats();
 #endif
+
+} // namespace cpplox
 
 #endif
