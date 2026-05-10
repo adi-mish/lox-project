@@ -2585,12 +2585,6 @@ int elx_prepare_property_call_cached(uint64_t instance_bits, uint64_t name_bits,
     return -1;
   }
 
-  ObjString *field_key = extractStringKey(name_bits, nullptr);
-  if (!field_key) {
-    elx_runtime_error("Property name must be a string.");
-    return -1;
-  }
-
   ObjShape *shape = ensureInstanceShape(instance);
   if (cache && instance->klass &&
       cache->kind == static_cast<int32_t>(CallInlineCacheKind::BOUND_METHOD) &&
@@ -2601,6 +2595,12 @@ int elx_prepare_property_call_cached(uint64_t instance_bits, uint64_t name_bits,
       *out_target = cache->guard0_bits;
     }
     return PROPERTY_CALL_METHOD;
+  }
+
+  ObjString *field_key = extractStringKey(name_bits, nullptr);
+  if (!field_key) {
+    elx_runtime_error("Property name must be a string.");
+    return -1;
   }
 
   bool hasFieldSlot = shapeTryGetSlot(shape, field_key, nullptr);
