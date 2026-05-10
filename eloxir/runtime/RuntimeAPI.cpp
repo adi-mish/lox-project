@@ -578,6 +578,24 @@ static void propertyCacheUpdate(PropertyCache *cache, ObjShape *shape,
 #endif
 }
 
+static bool propertyCacheLookup(PropertyCache *cache, ObjShape *shape,
+                                uint32_t capacity, size_t *out_slot) {
+  if (!cache || !shape || capacity == 0)
+    return false;
+
+  capacity = std::min<uint32_t>(capacity, PROPERTY_CACHE_MAX_SIZE);
+  uint32_t currentSize = std::min<uint32_t>(cache->size, capacity);
+  for (uint32_t i = 0; i < currentSize; ++i) {
+    const PropertyCacheEntry &entry = cache->entries[i];
+    if (entry.shape == shape) {
+      if (out_slot)
+        *out_slot = entry.slot;
+      return true;
+    }
+  }
+  return false;
+}
+
 static const char *getString(Value v) {
   if (!v.isObj())
     return nullptr;
@@ -2722,10 +2740,6 @@ int elx_try_get_instance_field(uint64_t instance_bits, uint64_t name_bits,
 
 uint64_t elx_get_property_slow(uint64_t instance_bits, uint64_t name_bits,
                                PropertyCache *cache, uint32_t capacity) {
-#if defined(ELOXIR_ENABLE_CACHE_STATS)
-  elx_cache_stats_record_property_miss(0);
-#endif
-
   Value instance_val = Value::fromBits(instance_bits);
   ObjInstance *instance = getInstance(instance_val);
   if (!instance) {
@@ -2740,6 +2754,20 @@ uint64_t elx_get_property_slow(uint64_t instance_bits, uint64_t name_bits,
   }
 
   ObjShape *shape = ensureInstanceShape(instance);
+  size_t cachedSlot = 0;
+  if (propertyCacheLookup(cache, shape, capacity, &cachedSlot) &&
+      instance->fieldValues && instance->fieldInitialized &&
+      cachedSlot < instance->fieldCapacity &&
+      instance->fieldInitialized[cachedSlot]) {
+#if defined(ELOXIR_ENABLE_CACHE_STATS)
+    elx_cache_stats_record_property_hit(0);
+#endif
+    return instance->fieldValues[cachedSlot];
+  }
+
+#if defined(ELOXIR_ENABLE_CACHE_STATS)
+  elx_cache_stats_record_property_miss(0);
+#endif
   uint64_t value_bits = Value::nil().getBits();
   if (tryReadInstanceField(instance, shape, field_key, nullptr, nullptr,
                            &value_bits)) {
@@ -2844,17 +2872,32 @@ int elx_try_get_instance_field_cached(uint64_t instance_bits,
 uint64_t elx_set_property_slow(uint64_t instance_bits, uint64_t name_bits,
                                uint64_t value_bits, PropertyCache *cache,
                                uint32_t capacity) {
+  Value instance_val = Value::fromBits(instance_bits);
+  ObjInstance *instance = getInstance(instance_val);
+  if (!instance) {
+    elx_runtime_error("Only instances have fields.");
+    return Value::nil().getBits();
+  }
+
+  ObjShape *shape = ensureInstanceShape(instance);
+  size_t cachedSlot = 0;
+  if (propertyCacheLookup(cache, shape, capacity, &cachedSlot) &&
+      instance->fieldValues && instance->fieldInitialized &&
+      cachedSlot < instance->fieldCapacity) {
+    instance->fieldValues[cachedSlot] = value_bits;
+    instance->fieldInitialized[cachedSlot] = 1;
+#if defined(ELOXIR_ENABLE_CACHE_STATS)
+    elx_cache_stats_record_property_hit(1);
+#endif
+    return value_bits;
+  }
+
 #if defined(ELOXIR_ENABLE_CACHE_STATS)
   elx_cache_stats_record_property_miss(1);
 #endif
   uint64_t result =
       elx_set_instance_field(instance_bits, name_bits, value_bits);
   if (elx_has_runtime_error())
-    return result;
-
-  Value instance_val = Value::fromBits(instance_bits);
-  ObjInstance *instance = getInstance(instance_val);
-  if (!instance)
     return result;
 
   ObjString *field_key = extractStringKey(name_bits, nullptr);

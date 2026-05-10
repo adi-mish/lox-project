@@ -1,6 +1,7 @@
 #include "LoxIRCodeGen.h"
 
 #include "BuiltinsIR.h"
+#include "../runtime/RuntimeAPI.h"
 #include "../runtime/Value.h"
 
 #include <cstdint>
@@ -85,6 +86,10 @@ private:
     return llvm::PointerType::get(valueTy(), 0);
   }
 
+  llvm::PointerType *propertyCachePtrTy() {
+    return llvm::PointerType::get(getOrCreatePropertyCacheIRType(ctx_), 0);
+  }
+
   llvm::PointerType *callCachePtrTy() {
     return llvm::PointerType::get(getOrCreateCallInlineCacheIRType(ctx_), 0);
   }
@@ -142,6 +147,17 @@ private:
   llvm::Value *createCallCache(const Instruction &instruction) {
     auto *cacheTy = getOrCreateCallInlineCacheIRType(ctx_);
     std::string name = "elx.call.cache";
+    if (instruction.result) {
+      name += "." + std::to_string(instruction.result->id);
+    }
+    return new llvm::GlobalVariable(
+        module_, cacheTy, false, llvm::GlobalValue::PrivateLinkage,
+        llvm::Constant::getNullValue(cacheTy), name);
+  }
+
+  llvm::Value *createPropertyCache(const Instruction &instruction) {
+    auto *cacheTy = getOrCreatePropertyCacheIRType(ctx_);
+    std::string name = "elx.property.cache";
     if (instruction.result) {
       name += "." + std::to_string(instruction.result->id);
     }
@@ -837,10 +853,12 @@ private:
       return unsupported(instruction, "missing elx_get_property_slow");
     }
     auto *name = emitInternedName(instruction.symbol, "property.name");
-    auto *cache = llvm::ConstantPointerNull::get(
-        llvm::PointerType::get(getOrCreatePropertyCacheIRType(ctx_), 0));
+    auto *cache = createPropertyCache(instruction);
     auto *result = builder_.CreateCall(
-        get, {lookup(instruction.operands[0]), name, cache, constantI32(0)},
+        get,
+        {lookup(instruction.operands[0]), name,
+         builder_.CreatePointerCast(cache, propertyCachePtrTy()),
+         constantI32(static_cast<int>(eloxir::PROPERTY_CACHE_MAX_SIZE))},
         "property");
     guardRuntimeError();
     bind(instruction, result, instruction.resultType);
@@ -856,12 +874,12 @@ private:
       return unsupported(instruction, "missing elx_set_property_slow");
     }
     auto *name = emitInternedName(instruction.symbol, "property.name");
-    auto *cache = llvm::ConstantPointerNull::get(
-        llvm::PointerType::get(getOrCreatePropertyCacheIRType(ctx_), 0));
+    auto *cache = createPropertyCache(instruction);
     auto *result = builder_.CreateCall(
         set,
         {lookup(instruction.operands[0]), name, lookup(instruction.operands[1]),
-         cache, constantI32(0)},
+         builder_.CreatePointerCast(cache, propertyCachePtrTy()),
+         constantI32(static_cast<int>(eloxir::PROPERTY_CACHE_MAX_SIZE))},
         "set.property");
     guardRuntimeError();
     bind(instruction, result, instruction.resultType);
