@@ -125,17 +125,18 @@ Supported commands:
 
 The runner parses the official inline expectations, executes each `.lox` file
 in a fresh process, checks exit codes, stdout, and expected error fragments,
-and gives benchmark tests a longer timeout. `jlox` and `clox` use canonical
-Crafting Interpreters diagnostics, so stderr fragments are checked for them.
-`eloxir` currently reports equivalent parse/runtime categories with different
-wording, so the orchestrator checks its stdout and exit status while leaving
-exact diagnostic text as an implementation-specific surface.
+and gives benchmark tests a longer timeout. `jlox`, `loxpp`, and `clox` use
+canonical Crafting Interpreters diagnostics, so stderr fragments are checked
+for them. `eloxir` currently reports equivalent parse/runtime categories with
+different wording, so the orchestrator checks its stdout and exit status while
+leaving exact diagnostic text as an implementation-specific surface.
 
 Common workflows:
 
 ```bash
-# Check local prerequisites and known artifact paths.
+# Check selected local prerequisites and known artifact paths.
 ./lox.py doctor
+./lox.py doctor --require-built
 
 # Build only one implementation.
 ./lox.py build clox
@@ -200,6 +201,8 @@ cmake --build loxpp/build
 ```
 
 The Release build uses C++23 with `-O3 -march=native -DNDEBUG` on GCC/Clang.
+Because it preserves the `jlox` tree-walking architecture, it should be treated
+as a readable C++ semantic baseline rather than the fastest implementation.
 
 Run directly:
 
@@ -280,8 +283,10 @@ Expected official-suite skips: expression AST-printer chapter tests, because
 
 ## eloxir
 
-`eloxir` is a C++17 implementation backed by LLVM ORC JIT. It has its own
-CMake project under `eloxir/`.
+`eloxir` is a C++17 implementation backed by LLVM ORC JIT. It lowers the
+resolved AST through the staged LoxIR pipeline, runs LoxIR cleanup passes, emits
+LLVM IR, and then uses the LLVM optimization pipeline before ORC execution. It
+has its own CMake project under `eloxir/`.
 
 Build directly:
 
@@ -311,7 +316,7 @@ ELOXIR_TRACE_LLVM_MODULES=1 ELOXIR_TIME_PASSES=1 ./eloxir/build/eloxir path/to/s
 ELOXIR_TRACE_OPT=1 \
   ELOXIR_POST_OPT_PIPELINE='globalopt,function(instcombine,simplifycfg),globaldce' \
   ./eloxir/build/eloxir path/to/script.lox
-ELOXIR_USE_LOXIR_BACKEND=1 ELOXIR_TRACE_PASSES=1 ./eloxir/build/eloxir path/to/script.lox
+ELOXIR_TRACE_PASSES=1 ./eloxir/build/eloxir path/to/script.lox
 ELOXIR_AGGRESSIVE_CLEANUP=1 ./eloxir/build/eloxir path/to/script.lox
 ```
 
@@ -326,9 +331,8 @@ Useful knobs:
 - `ELOXIR_TIME_PASSES=1` prints LLVM pass timing; add
   `ELOXIR_TIME_PASSES_PER_RUN=1` for per-run timing.
 - `ELOXIR_PRINT_LOXIR=1`, `ELOXIR_DUMP_LOXIR=/tmp/loxir`, and
-  `ELOXIR_TRACE_PASSES=1` inspect the staged LoxIR pipeline.
-- `ELOXIR_USE_LOXIR_BACKEND=1` enables the staged LoxIR-to-LLVM backend for the
-  supported subset and falls back to the legacy backend outside that subset.
+  `ELOXIR_TRACE_PASSES=1` inspect the staged LoxIR pipeline. The dump directory
+  must already exist.
 - `ELOXIR_PRE_CLEANUP_PIPELINE` appends an LLVM pass pipeline after default
   `-O3` and before optional eloxir cleanup passes.
 - `ELOXIR_AGGRESSIVE_CLEANUP=1` adds an experimental post-O3 cleanup pipeline
@@ -338,15 +342,15 @@ Useful knobs:
 
 ## Current Verification
 
-Recent verification from the root orchestrator:
+Latest local verification from the root orchestrator on 2026-05-10:
 
 ```text
 $ ./lox.py test jlox loxpp clox cpplox eloxir --skip-build --timeout 600
-jlox: 259 passed, 0 failed, 6 skipped, 265 total
-loxpp: 259 passed, 0 failed, 6 skipped, 265 total
-clox: 263 passed, 0 failed, 2 skipped, 265 total
-cpplox: 263 passed, 0 failed, 2 skipped, 265 total
-eloxir: 265 passed, 0 failed, 0 skipped, 265 total
+jlox: 259 passed, 0 failed, 6 skipped, 265 total (72.519s)
+loxpp: 259 passed, 0 failed, 6 skipped, 265 total (507.469s)
+clox: 263 passed, 0 failed, 2 skipped, 265 total (22.001s)
+cpplox: 263 passed, 0 failed, 2 skipped, 265 total (17.372s)
+eloxir: 265 passed, 0 failed, 0 skipped, 265 total (21.327s)
 ```
 
 The skips are implementation-surface differences described above, not known
@@ -357,9 +361,9 @@ Recent bytecode/JIT benchmark comparison:
 
 ```text
 $ ./lox.py bench clox cpplox eloxir --skip-build --timings 33 --timeout 60
-clox: 11 passed, 0 failed, 0 skipped, 11 total (18.972s)
-cpplox: 11 passed, 0 failed, 0 skipped, 11 total (14.915s)
-eloxir: 11 passed, 0 failed, 0 skipped, 11 total (13.382s)
+clox: 11 passed, 0 failed, 0 skipped, 11 total (20.703s)
+cpplox: 11 passed, 0 failed, 0 skipped, 11 total (16.567s)
+eloxir: 11 passed, 0 failed, 0 skipped, 11 total (17.289s)
 ```
 
 ## Acknowledgements

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 from .models import Implementation, SuiteReport, TestResult
@@ -250,6 +251,9 @@ def cmd_bench(args: argparse.Namespace) -> int:
 
 def cmd_doctor(args: argparse.Namespace) -> int:
     failed = False
+    impls = selected_implementations(args.impls)
+    selected_names = {impl.name for impl in impls}
+
     print(f"repo: {REPO_ROOT}")
     print(f"tests: {'ok' if TEST_DIR.is_dir() else 'missing'} ({TEST_DIR})")
     if not TEST_DIR.is_dir():
@@ -258,16 +262,40 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         count = len(list(TEST_DIR.rglob("*.lox")))
         print(f"test files: {count}")
 
-    for tool in ("cmake", "java", "javac"):
+    print(f"python: {sys.executable}")
+    uv = which("uv")
+    print(f"uv: {uv or 'optional missing'}")
+
+    def require_tool(tool: str) -> None:
+        nonlocal failed
         found = which(tool)
         print(f"{tool}: {found or 'missing'}")
         failed = failed or found is None
 
-    gradlew = REPO_ROOT / "jlox" / "gradlew"
-    print(f"jlox gradlew: {'ok' if gradlew.exists() else 'missing'}")
-    failed = failed or not gradlew.exists()
+    def require_one(label: str, tools: tuple[str, ...]) -> None:
+        nonlocal failed
+        for tool in tools:
+            found = which(tool)
+            if found:
+                print(f"{label}: {tool} ({found})")
+                return
+        print(f"{label}: missing (tried: {', '.join(tools)})")
+        failed = True
 
-    for impl in selected_implementations(args.impls):
+    if selected_names & {"loxpp", "clox", "cpplox", "eloxir"}:
+        require_tool("cmake")
+    if "clox" in selected_names:
+        require_one("c compiler", ("cc", "gcc", "clang"))
+    if selected_names & {"loxpp", "cpplox", "eloxir"}:
+        require_one("c++ compiler", ("c++", "g++", "clang++"))
+    if "jlox" in selected_names:
+        require_tool("java")
+        require_tool("javac")
+        gradlew = REPO_ROOT / "jlox" / "gradlew"
+        print(f"jlox gradlew: {'ok' if gradlew.exists() else 'missing'}")
+        failed = failed or not gradlew.exists()
+
+    for impl in impls:
         print(f"\n{impl.name}:")
         for candidate in impl.executable_candidates:
             status = "ok" if candidate.exists() else "missing"
