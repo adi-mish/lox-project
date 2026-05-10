@@ -76,7 +76,7 @@ static void markInlineCaches(Vm &vm, Chunk *chunk) {
     InlineCache *cache = &chunk->inlineCache(i);
     if ((cache->kind == CACHE_FIELD || cache->kind == CACHE_METHOD) &&
         cache->ownerClass != nullptr) {
-      markObject(vm, &cache->ownerClass->obj);
+      markObject(vm, cache->ownerClass);
     }
     if (cache->kind == CACHE_METHOD) {
       markValue(vm, cache->value);
@@ -92,37 +92,37 @@ static void blackenObject(Vm &vm, Obj *object) {
 
   switch (object->type) {
   case OBJ_BOUND_METHOD: {
-    ObjBoundMethod *bound = (ObjBoundMethod *)object;
+    ObjBoundMethod *bound = static_cast<ObjBoundMethod *>(object);
     markValue(vm, bound->receiver);
-    markObject(vm, (Obj *)bound->method);
+    markObject(vm, bound->method);
     break;
   }
   case OBJ_CLASS: {
-    ObjClass *klass = (ObjClass *)object;
-    markObject(vm, (Obj *)klass->name);
+    ObjClass *klass = static_cast<ObjClass *>(object);
+    markObject(vm, klass->name);
     klass->methods.mark(vm);
-    markObject(vm, (Obj *)klass->initializer);
+    markObject(vm, klass->initializer);
     klass->fieldSlots.mark(vm);
     break;
   }
   case OBJ_CLOSURE: {
-    ObjClosure *closure = (ObjClosure *)object;
-    markObject(vm, (Obj *)closure->function);
+    ObjClosure *closure = static_cast<ObjClosure *>(object);
+    markObject(vm, closure->function);
     for (int i = 0; i < closure->upvalues.size(); i++) {
-      markObject(vm, (Obj *)closure->upvalues[i]);
+      markObject(vm, closure->upvalues[i]);
     }
     break;
   }
   case OBJ_FUNCTION: {
-    ObjFunction *function = (ObjFunction *)object;
-    markObject(vm, (Obj *)function->name);
+    ObjFunction *function = static_cast<ObjFunction *>(object);
+    markObject(vm, function->name);
     markArray(vm, function->chunk.constants());
     markInlineCaches(vm, &function->chunk);
     break;
   }
   case OBJ_INSTANCE: {
-    ObjInstance *instance = (ObjInstance *)object;
-    markObject(vm, (Obj *)instance->klass);
+    ObjInstance *instance = static_cast<ObjInstance *>(object);
+    markObject(vm, instance->klass);
     for (int i = 0; i < instance->fields.capacity(); i++) {
       Value value = instance->fields.data()[i];
       if (!isUninitialized(value)) {
@@ -132,7 +132,7 @@ static void blackenObject(Vm &vm, Obj *object) {
     break;
   }
   case OBJ_UPVALUE:
-    markValue(vm, ((ObjUpvalue *)object)->closed);
+    markValue(vm, static_cast<ObjUpvalue *>(object)->closed);
     break;
   case OBJ_NATIVE:
   case OBJ_STRING:
@@ -152,39 +152,39 @@ static void freeObject(Vm &vm, Obj *object) {
 
   switch (object->type) {
   case OBJ_BOUND_METHOD:
-    destroyObject(vm, reinterpret_cast<ObjBoundMethod *>(object));
+    destroyObject(vm, static_cast<ObjBoundMethod *>(object));
     break;
   case OBJ_CLASS: {
-    ObjClass *klass = (ObjClass *)object;
+    ObjClass *klass = static_cast<ObjClass *>(object);
     destroyObject(vm, klass);
     break;
   }
   case OBJ_CLOSURE: {
-    ObjClosure *closure = (ObjClosure *)object;
+    ObjClosure *closure = static_cast<ObjClosure *>(object);
     destroyObject(vm, closure);
     break;
   }
   case OBJ_FUNCTION: {
-    ObjFunction *function = (ObjFunction *)object;
+    ObjFunction *function = static_cast<ObjFunction *>(object);
     destroyObject(vm, function);
     break;
   }
   case OBJ_INSTANCE: {
-    ObjInstance *instance = (ObjInstance *)object;
+    ObjInstance *instance = static_cast<ObjInstance *>(object);
     destroyObject(vm, instance);
     break;
   }
   case OBJ_NATIVE:
-    destroyObject(vm, reinterpret_cast<ObjNative *>(object));
+    destroyObject(vm, static_cast<ObjNative *>(object));
     break;
   case OBJ_STRING: {
-    ObjString *string = (ObjString *)object;
+    ObjString *string = static_cast<ObjString *>(object);
     freeArray(vm, string->chars, string->length + 1);
     destroyObject(vm, string);
     break;
   }
   case OBJ_UPVALUE:
-    destroyObject(vm, reinterpret_cast<ObjUpvalue *>(object));
+    destroyObject(vm, static_cast<ObjUpvalue *>(object));
     break;
   }
 }
@@ -194,17 +194,17 @@ static void markRoots(Vm &vm) {
   }
 
   for (int i = 0; i < vm.frameCount; i++) {
-    markObject(vm, (Obj *)vm.frames[i].closure);
+    markObject(vm, vm.frames[i].closure);
   }
 
   for (ObjUpvalue *upvalue = vm.openUpvalues; upvalue != nullptr;
        upvalue = upvalue->next) {
-    markObject(vm, (Obj *)upvalue);
+    markObject(vm, upvalue);
   }
 
   vm.globals.mark(vm);
   vm.markCompilerRoots();
-  markObject(vm, (Obj *)vm.initString);
+  markObject(vm, vm.initString);
 }
 static void traceReferences(Vm &vm) {
   auto &grayStack = vm.heap.grayStack();

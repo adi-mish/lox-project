@@ -81,7 +81,7 @@ inline Value nilValue() { return Value::nil(); }
 inline Value uninitializedValue() { return Value::uninitialized(); }
 inline Value objectValue(Obj *object) { return Value::object(object); }
 template <typename Object> inline Value objectValue(Object *object) {
-  return Value::object(&object->obj);
+  return Value::object(static_cast<Obj *>(object));
 }
 
 static inline double valueToNum(Value value) {

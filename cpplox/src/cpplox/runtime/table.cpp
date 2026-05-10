@@ -153,14 +153,14 @@ ObjString *Table::findString(const char *chars, int length,
 void Table::removeWhite() {
   for (Entry &oldEntry : entries_) {
     Entry *entry = &oldEntry;
-    if (entry->key != nullptr && !entry->key->obj.isMarked) {
+    if (entry->key != nullptr && !entry->key->isMarked) {
       remove(entry->key);
     }
   }
 }
 void Table::mark(Vm &vm) const {
   for (const Entry &entry : entries_) {
-    markObject(vm, reinterpret_cast<Obj *>(entry.key));
+    markObject(vm, entry.key);
     markValue(vm, entry.value);
   }
 }

@@ -41,8 +41,7 @@ struct Obj {
   Obj *next;
 };
 
-struct ObjFunction {
-  Obj obj;
+struct ObjFunction : Obj {
   int arity;
   int upvalueCount;
   Chunk chunk;
@@ -51,19 +50,16 @@ struct ObjFunction {
 
 using NativeFn = Value (*)(int argCount, Value *args);
 
-struct ObjNative {
-  Obj obj;
+struct ObjNative : Obj {
   NativeFn function;
 };
 
-struct ObjString {
-  Obj obj;
+struct ObjString : Obj {
   int length;
   char *chars;
   uint32_t hash;
 };
-struct ObjUpvalue {
-  Obj obj;
+struct ObjUpvalue : Obj {
   Value *location;
   Value closed;
   ObjUpvalue *next;
@@ -87,14 +83,12 @@ private:
   int count_ = 0;
 };
 
-struct ObjClosure {
-  Obj obj;
+struct ObjClosure : Obj {
   ObjFunction *function;
   UpvalueStorage upvalues;
 };
 
-struct ObjClass {
-  Obj obj;
+struct ObjClass : Obj {
   ObjString *name;
   Table methods;
   ObjClosure *initializer;
@@ -125,14 +119,12 @@ private:
   int capacity_ = 0;
 };
 
-struct ObjInstance {
-  Obj obj;
+struct ObjInstance : Obj {
   ObjClass *klass;
   FieldStorage fields;
 };
 
-struct ObjBoundMethod {
-  Obj obj;
+struct ObjBoundMethod : Obj {
   Value receiver;
   ObjClosure *method;
 };
@@ -156,25 +148,25 @@ inline bool isNative(Value value) { return isObjType(value, OBJ_NATIVE); }
 inline bool isString(Value value) { return isObjType(value, OBJ_STRING); }
 
 inline ObjBoundMethod *asBoundMethod(Value value) {
-  return reinterpret_cast<ObjBoundMethod *>(asObj(value));
+  return static_cast<ObjBoundMethod *>(asObj(value));
 }
 inline ObjClass *asClass(Value value) {
-  return reinterpret_cast<ObjClass *>(asObj(value));
+  return static_cast<ObjClass *>(asObj(value));
 }
 inline ObjClosure *asClosure(Value value) {
-  return reinterpret_cast<ObjClosure *>(asObj(value));
+  return static_cast<ObjClosure *>(asObj(value));
 }
 inline ObjFunction *asFunction(Value value) {
-  return reinterpret_cast<ObjFunction *>(asObj(value));
+  return static_cast<ObjFunction *>(asObj(value));
 }
 inline ObjInstance *asInstance(Value value) {
-  return reinterpret_cast<ObjInstance *>(asObj(value));
+  return static_cast<ObjInstance *>(asObj(value));
 }
 inline NativeFn asNative(Value value) {
-  return reinterpret_cast<ObjNative *>(asObj(value))->function;
+  return static_cast<ObjNative *>(asObj(value))->function;
 }
 inline ObjString *asString(Value value) {
-  return reinterpret_cast<ObjString *>(asObj(value));
+  return static_cast<ObjString *>(asObj(value));
 }
 inline char *asCString(Value value) { return asString(value)->chars; }
 

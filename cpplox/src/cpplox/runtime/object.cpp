@@ -67,7 +67,7 @@ template <typename Object>
 static Object *allocateObject(Vm &vm, ObjectKind type) {
   void *storage = allocate<Object>(vm);
   Object *object = new (storage) Object();
-  Obj *header = &object->obj;
+  Obj *header = static_cast<Obj *>(object);
   header->type = type;
   header->isMarked = false;
 

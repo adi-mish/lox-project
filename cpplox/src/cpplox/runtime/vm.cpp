@@ -314,7 +314,7 @@ void Vm::popCompilerRoot() { compilerRoots.pop_back(); }
 
 void Vm::markCompilerRoots() {
   for (ObjFunction *function : compilerRoots) {
-    markObject(*this, reinterpret_cast<Obj *>(function));
+    markObject(*this, function);
   }
 }
 
