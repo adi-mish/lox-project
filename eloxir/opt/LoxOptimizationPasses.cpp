@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -614,6 +615,126 @@ public:
   }
 };
 
+void collectGlobalReferences(const LoxFunction &function,
+                             std::unordered_set<std::string> &symbols) {
+  for (const auto &block : function.blocks()) {
+    for (const auto &instruction : block.instructions()) {
+      if ((instruction.kind == InstructionKind::LoadGlobal ||
+           instruction.kind == InstructionKind::StoreGlobal) &&
+          !instruction.symbol.empty()) {
+        symbols.insert(instruction.symbol);
+      }
+    }
+  }
+}
+
+std::string demotedGlobalSymbol(const std::string &name) {
+  std::ostringstream out;
+  out << "$global$";
+  for (unsigned char ch : name) {
+    if ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+        (ch >= '0' && ch <= '9') || ch == '_') {
+      out << static_cast<char>(ch);
+    } else {
+      out << '_';
+    }
+  }
+  return out.str();
+}
+
+class GlobalDemotionPass final : public LoxPass {
+public:
+  std::string name() const override { return "global-demotion"; }
+
+  bool run(LoxModule &module) override {
+    if (module.name() != "file_module" || module.functions().empty()) {
+      return false;
+    }
+
+    LoxFunction &main = module.functions().front();
+    std::unordered_set<std::string> escapingGlobals;
+    bool first = true;
+    for (const auto &function : module.functions()) {
+      if (first) {
+        first = false;
+        continue;
+      }
+      collectGlobalReferences(function, escapingGlobals);
+    }
+
+    std::unordered_set<std::string> candidates;
+    for (const auto &block : main.blocks()) {
+      for (const auto &instruction : block.instructions()) {
+        if (instruction.kind == InstructionKind::StoreGlobal &&
+            instruction.declaresSymbol && !instruction.symbol.empty() &&
+            escapingGlobals.find(instruction.symbol) == escapingGlobals.end()) {
+          candidates.insert(instruction.symbol);
+        }
+      }
+    }
+
+    if (candidates.empty()) {
+      return false;
+    }
+
+    auto definiteGlobals = computeDefiniteGlobals(main);
+    std::unordered_set<std::string> unsafe;
+    for (const auto &block : main.blocks()) {
+      auto declared = definiteGlobals[block.id().id];
+      for (const auto &instruction : block.instructions()) {
+        const bool globalAccess =
+            instruction.kind == InstructionKind::LoadGlobal ||
+            instruction.kind == InstructionKind::StoreGlobal;
+        if (!globalAccess || instruction.symbol.empty() ||
+            candidates.find(instruction.symbol) == candidates.end()) {
+          continue;
+        }
+
+        if (instruction.kind == InstructionKind::StoreGlobal &&
+            instruction.declaresSymbol) {
+          declared.insert(instruction.symbol);
+          continue;
+        }
+
+        if (declared.find(instruction.symbol) == declared.end()) {
+          unsafe.insert(instruction.symbol);
+        }
+      }
+    }
+    for (const auto &symbol : unsafe) {
+      candidates.erase(symbol);
+    }
+    if (candidates.empty()) {
+      return false;
+    }
+
+    std::unordered_map<std::string, std::string> localNames;
+    for (const auto &symbol : candidates) {
+      localNames.emplace(symbol, demotedGlobalSymbol(symbol));
+    }
+
+    bool changed = false;
+    for (auto &block : main.blocks()) {
+      for (auto &instruction : block.instructions()) {
+        auto it = localNames.find(instruction.symbol);
+        if (it == localNames.end()) {
+          continue;
+        }
+        if (instruction.kind == InstructionKind::LoadGlobal) {
+          instruction.kind = InstructionKind::LoadLocal;
+          instruction.symbol = it->second;
+          changed = true;
+        } else if (instruction.kind == InstructionKind::StoreGlobal) {
+          instruction.kind = InstructionKind::StoreLocal;
+          instruction.symbol = it->second;
+          changed = true;
+        }
+      }
+    }
+    return changed;
+  }
+};
+
 class DeadCodeEliminationPass final : public LoxPass {
 public:
   std::string name() const override { return "dead-code-elimination"; }
@@ -681,6 +802,7 @@ std::unique_ptr<LoxPass> createDeadCodeEliminationPass() {
 
 LoxPassManager createDefaultLoxPassPipeline() {
   LoxPassManager manager;
+  manager.add(std::make_unique<GlobalDemotionPass>());
   manager.add(createTypePropagationPass());
   manager.add(createConstantFoldingPass());
   manager.add(createTypePropagationPass());

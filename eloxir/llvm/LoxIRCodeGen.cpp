@@ -126,6 +126,28 @@ private:
     return builder_.CreateNot(builder_.CreateOr(isNil, isFalse), "truthy");
   }
 
+  llvm::Value *truthy(ValueId id) {
+    LoxType type = typeOf(id);
+    switch (type) {
+    case LoxType::Nil:
+      return builder_.getFalse();
+    case LoxType::Bool:
+      return builder_.CreateICmpNE(lookup(id), constantValue(boolBits(false)),
+                                   "truthy.bool");
+    case LoxType::Number:
+    case LoxType::String:
+    case LoxType::Object:
+    case LoxType::Function:
+    case LoxType::Closure:
+    case LoxType::Class:
+    case LoxType::Instance:
+      return builder_.getTrue();
+    case LoxType::Unknown:
+      return truthy(lookup(id));
+    }
+    return truthy(lookup(id));
+  }
+
   llvm::Function *runtime(const char *name) {
     return module_.getFunction(name);
   }
@@ -1084,7 +1106,8 @@ private:
     auto *operand = lookup(instruction.operands[0]);
     switch (instruction.unaryOp) {
     case UnaryOp::Not:
-      bind(instruction, boolValue(builder_.CreateNot(truthy(operand), "not")),
+      bind(instruction,
+           boolValue(builder_.CreateNot(truthy(instruction.operands[0]), "not")),
            LoxType::Bool);
       return std::nullopt;
     case UnaryOp::Negate:
@@ -1110,8 +1133,12 @@ private:
     if (auto failure = requireOperands(instruction, 1)) {
       return failure;
     }
-    bind(instruction, boolValue(truthy(lookup(instruction.operands[0]))),
-         LoxType::Bool);
+    ValueId operand = instruction.operands[0];
+    if (typeOf(operand) == LoxType::Bool) {
+      bind(instruction, lookup(operand), LoxType::Bool);
+      return std::nullopt;
+    }
+    bind(instruction, boolValue(truthy(operand)), LoxType::Bool);
     return std::nullopt;
   }
 
@@ -1145,7 +1172,7 @@ private:
         blocks_.find(instruction.falseTarget.id) == blocks_.end()) {
       return unsupported(instruction, "invalid branch target");
     }
-    builder_.CreateCondBr(truthy(lookup(instruction.operands[0])),
+    builder_.CreateCondBr(truthy(instruction.operands[0]),
                           blocks_.at(instruction.target.id),
                           blocks_.at(instruction.falseTarget.id));
     return std::nullopt;
