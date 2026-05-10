@@ -3589,6 +3589,11 @@ void CodeGenVisitor::visitClassStmt(Class *s) {
   methodTable.reserve(s->methods.size());
 
   for (auto &method : s->methods) {
+    const std::string methodName = method->name.getLexeme();
+    if (codeGenPlan && codeGenPlan->canOmitMethodObject(className, methodName)) {
+      continue;
+    }
+
     MethodContext methodCtx = (method->name.getLexeme() == "init")
                                   ? MethodContext::INITIALIZER
                                   : MethodContext::METHOD;
@@ -3615,7 +3620,7 @@ void CodeGenVisitor::visitClassStmt(Class *s) {
 
     method_context_override = previousOverride;
     function_map_key_override = previousKeyOverride;
-    methodTable.emplace_back(method->name.getLexeme(), methodValue);
+    methodTable.emplace_back(methodName, methodValue);
   }
 
   auto classNameValue = stringConst(className, true);

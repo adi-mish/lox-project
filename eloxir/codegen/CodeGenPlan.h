@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace eloxir {
@@ -23,7 +24,9 @@ struct PlannedClass {
   int initializerArity = 0;
   bool trivialInitializer = false;
   bool hasSuperclass = false;
+  bool linearInitializer = false;
   std::unordered_map<std::string, PlannedMethod> methods;
+  std::unordered_set<std::string> omittableMethods;
 };
 
 struct PlannedReceiver {
@@ -40,6 +43,8 @@ public:
   const PlannedReceiver *findStableReceiver(const std::string &name) const;
   const PlannedMethod *findStableReceiverMethod(
       const std::string &receiverName, const std::string &methodName) const;
+  bool canOmitMethodObject(const std::string &className,
+                           const std::string &methodName) const;
 
 private:
   std::unordered_map<std::string, PlannedClass> stableClasses;

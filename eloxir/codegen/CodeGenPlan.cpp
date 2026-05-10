@@ -208,6 +208,137 @@ const Call *asClassInitializerCall(const Expr *expr, std::string &className) {
   return call;
 }
 
+struct EscapeFacts {
+  std::unordered_set<std::string> escapingReceivers;
+  std::unordered_set<std::string> escapingClasses;
+  std::unordered_set<std::string> dynamicMethodNames;
+};
+
+bool isOptimizedReceiverCall(const Call *call, const CodeGenPlan &plan) {
+  if (!call || !call->arguments.empty()) {
+    return false;
+  }
+
+  const auto *get = dynamic_cast<const Get *>(call->callee.get());
+  if (!get) {
+    return false;
+  }
+
+  const auto *receiver = dynamic_cast<const Variable *>(get->object.get());
+  if (!receiver) {
+    return false;
+  }
+
+  const PlannedMethod *method = plan.findStableReceiverMethod(
+      receiver->name.getLexeme(), get->name.getLexeme());
+  return method && method->arity == 0;
+}
+
+void visitExprEscapes(const Expr *expr, const CodeGenPlan &plan,
+                      EscapeFacts &facts);
+
+void visitStmtEscapes(const Stmt *stmt, const CodeGenPlan &plan,
+                      EscapeFacts &facts) {
+  if (!stmt) {
+    return;
+  }
+
+  if (const auto *var = dynamic_cast<const Var *>(stmt)) {
+    const PlannedReceiver *receiver =
+        plan.findStableReceiver(var->name.getLexeme());
+    std::string className;
+    const Call *initCall =
+        asClassInitializerCall(var->initializer.get(), className);
+    if (receiver && initCall && receiver->className == className) {
+      for (const auto &arg : initCall->arguments) {
+        visitExprEscapes(arg.get(), plan, facts);
+      }
+      return;
+    }
+    visitExprEscapes(var->initializer.get(), plan, facts);
+  } else if (const auto *expression = dynamic_cast<const Expression *>(stmt)) {
+    visitExprEscapes(expression->expression.get(), plan, facts);
+  } else if (const auto *print = dynamic_cast<const Print *>(stmt)) {
+    visitExprEscapes(print->expression.get(), plan, facts);
+  } else if (const auto *block = dynamic_cast<const Block *>(stmt)) {
+    for (const auto &child : block->statements) {
+      visitStmtEscapes(child.get(), plan, facts);
+    }
+  } else if (const auto *ifStmt = dynamic_cast<const If *>(stmt)) {
+    visitExprEscapes(ifStmt->condition.get(), plan, facts);
+    visitStmtEscapes(ifStmt->thenBranch.get(), plan, facts);
+    visitStmtEscapes(ifStmt->elseBranch.get(), plan, facts);
+  } else if (const auto *whileStmt = dynamic_cast<const While *>(stmt)) {
+    visitExprEscapes(whileStmt->condition.get(), plan, facts);
+    visitStmtEscapes(whileStmt->body.get(), plan, facts);
+  } else if (const auto *function = dynamic_cast<const Function *>(stmt)) {
+    if (function->body) {
+      visitStmtEscapes(function->body.get(), plan, facts);
+    }
+  } else if (const auto *returnStmt = dynamic_cast<const Return *>(stmt)) {
+    visitExprEscapes(returnStmt->value.get(), plan, facts);
+  } else if (const auto *klass = dynamic_cast<const Class *>(stmt)) {
+    visitExprEscapes(klass->superclass.get(), plan, facts);
+    for (const auto &method : klass->methods) {
+      visitStmtEscapes(method.get(), plan, facts);
+    }
+  }
+}
+
+void visitExprEscapes(const Expr *expr, const CodeGenPlan &plan,
+                      EscapeFacts &facts) {
+  if (!expr) {
+    return;
+  }
+
+  if (const auto *call = dynamic_cast<const Call *>(expr)) {
+    if (isOptimizedReceiverCall(call, plan)) {
+      for (const auto &arg : call->arguments) {
+        visitExprEscapes(arg.get(), plan, facts);
+      }
+      return;
+    }
+
+    visitExprEscapes(call->callee.get(), plan, facts);
+    for (const auto &arg : call->arguments) {
+      visitExprEscapes(arg.get(), plan, facts);
+    }
+  } else if (const auto *get = dynamic_cast<const Get *>(expr)) {
+    if (const auto *receiver =
+            dynamic_cast<const Variable *>(get->object.get())) {
+      if (plan.findStableReceiver(receiver->name.getLexeme())) {
+        facts.escapingReceivers.insert(receiver->name.getLexeme());
+      }
+    }
+    facts.dynamicMethodNames.insert(get->name.getLexeme());
+    visitExprEscapes(get->object.get(), plan, facts);
+  } else if (const auto *set = dynamic_cast<const Set *>(expr)) {
+    facts.dynamicMethodNames.insert(set->name.getLexeme());
+    visitExprEscapes(set->object.get(), plan, facts);
+    visitExprEscapes(set->value.get(), plan, facts);
+  } else if (const auto *variable = dynamic_cast<const Variable *>(expr)) {
+    const std::string &name = variable->name.getLexeme();
+    if (plan.findStableReceiver(name)) {
+      facts.escapingReceivers.insert(name);
+    }
+    if (plan.findStableClass(name)) {
+      facts.escapingClasses.insert(name);
+    }
+  } else if (const auto *binary = dynamic_cast<const Binary *>(expr)) {
+    visitExprEscapes(binary->left.get(), plan, facts);
+    visitExprEscapes(binary->right.get(), plan, facts);
+  } else if (const auto *grouping = dynamic_cast<const Grouping *>(expr)) {
+    visitExprEscapes(grouping->expression.get(), plan, facts);
+  } else if (const auto *unary = dynamic_cast<const Unary *>(expr)) {
+    visitExprEscapes(unary->right.get(), plan, facts);
+  } else if (const auto *assign = dynamic_cast<const Assign *>(expr)) {
+    visitExprEscapes(assign->value.get(), plan, facts);
+  } else if (const auto *logical = dynamic_cast<const Logical *>(expr)) {
+    visitExprEscapes(logical->left.get(), plan, facts);
+    visitExprEscapes(logical->right.get(), plan, facts);
+  }
+}
+
 } // namespace
 
 CodeGenPlan CodeGenPlan::analyze(
@@ -246,6 +377,7 @@ CodeGenPlan CodeGenPlan::analyze(
             collectInitializerFields(*method, initializerSlots);
         break;
       }
+      candidate.planned.linearInitializer = initializerSlotsStable;
 
       if (!candidate.planned.hasSuperclass) {
         for (const auto &method : klass->methods) {
@@ -308,6 +440,38 @@ CodeGenPlan CodeGenPlan::analyze(
     plan.stableReceivers.emplace(varName, PlannedReceiver{className});
   }
 
+  EscapeFacts escapes;
+  for (const auto &stmt : statements) {
+    visitStmtEscapes(stmt.get(), plan, escapes);
+  }
+
+  std::unordered_map<std::string, int> receiverCountByClass;
+  std::unordered_map<std::string, int> escapingReceiverCountByClass;
+  for (const auto &[receiverName, receiver] : plan.stableReceivers) {
+    ++receiverCountByClass[receiver.className];
+    if (escapes.escapingReceivers.find(receiverName) !=
+        escapes.escapingReceivers.end()) {
+      ++escapingReceiverCountByClass[receiver.className];
+    }
+  }
+
+  for (auto &[className, klass] : plan.stableClasses) {
+    if (klass.hasSuperclass || !klass.linearInitializer ||
+        receiverCountByClass[className] == 0 ||
+        escapingReceiverCountByClass[className] != 0 ||
+        escapes.escapingClasses.find(className) != escapes.escapingClasses.end()) {
+      continue;
+    }
+
+    for (const auto &[methodName, method] : klass.methods) {
+      if (method.arity == 0 &&
+          escapes.dynamicMethodNames.find(methodName) ==
+              escapes.dynamicMethodNames.end()) {
+        klass.omittableMethods.insert(methodName);
+      }
+    }
+  }
+
   return plan;
 }
 
@@ -346,6 +510,16 @@ const PlannedMethod *CodeGenPlan::findStableReceiverMethod(
 
   auto methodIt = klass->methods.find(methodName);
   return methodIt == klass->methods.end() ? nullptr : &methodIt->second;
+}
+
+bool CodeGenPlan::canOmitMethodObject(const std::string &className,
+                                      const std::string &methodName) const {
+  const PlannedClass *klass = findStableClass(className);
+  if (!klass) {
+    return false;
+  }
+  return klass->omittableMethods.find(methodName) !=
+         klass->omittableMethods.end();
 }
 
 } // namespace eloxir
