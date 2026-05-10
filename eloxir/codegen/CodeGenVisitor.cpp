@@ -1315,6 +1315,31 @@ bool CodeGenVisitor::emitPlannedClassCall(Call *e) {
   return true;
 }
 
+bool CodeGenVisitor::isDiscardablePlannedClassCall(const Expr *expr) const {
+  if (!codeGenPlan) {
+    return false;
+  }
+
+  const auto *call = dynamic_cast<const Call *>(expr);
+  if (!call || !call->arguments.empty()) {
+    return false;
+  }
+
+  const auto *calleeVar = dynamic_cast<const Variable *>(call->callee.get());
+  if (!calleeVar) {
+    return false;
+  }
+
+  const std::string &className = calleeVar->name.getLexeme();
+  const PlannedClass *planned =
+      codeGenPlan->findStableTrivialClass(className);
+  if (!planned || planned->initializerArity != 0) {
+    return false;
+  }
+
+  return stableClassSlots.find(className) != stableClassSlots.end();
+}
+
 void CodeGenVisitor::visitCallExpr(Call *e) {
   if (e->arguments.size() > static_cast<size_t>(MAX_PARAMETERS)) {
     throw CompileError("Can't have more than 255 arguments.");
@@ -1767,6 +1792,12 @@ void CodeGenVisitor::visitCallExpr(Call *e) {
 
 // --------- Stmt visitors -------------------------------------------------
 void CodeGenVisitor::visitExpressionStmt(Expression *s) {
+  if (isDiscardablePlannedClassCall(s->expression.get())) {
+    addLoopInstructions(2);
+    value = nilConst();
+    return;
+  }
+
   if (isDiscardablePureExpression(s->expression.get())) {
     for (std::size_t i = 0; i < countDiscardedConstants(s->expression.get());
          ++i) {

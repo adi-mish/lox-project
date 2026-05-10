@@ -218,6 +218,7 @@ private:
                                            const Expr *expr);
   llvm::GlobalVariable *getFunctionObjectSlot(const std::string &name);
   llvm::GlobalVariable *getStringConstantSlot(const std::string &value);
+  bool isDiscardablePlannedClassCall(const Expr *expr) const;
   bool emitPlannedClassCall(Call *e);
   void emitLegacyGetExpr(Get *e, llvm::Value *objectValue,
                          llvm::Value *nameValue);
