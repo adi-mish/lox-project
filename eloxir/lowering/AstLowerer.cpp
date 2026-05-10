@@ -236,6 +236,39 @@ public:
   }
 
   void visitCallExpr(Call *expr) override {
+    if (auto *get = dynamic_cast<Get *>(expr->callee.get())) {
+      get->object->accept(this);
+      ValueId receiver = value_;
+
+      ValueId target = makeValue();
+      ValueId kind = function_.makeValue();
+      Instruction prepare;
+      prepare.kind = InstructionKind::PreparePropertyCall;
+      prepare.source = sourceFromToken(get->name);
+      prepare.result = target;
+      prepare.auxResult = kind;
+      prepare.symbol = get->name.getLexeme();
+      prepare.operands = {receiver};
+      append(std::move(prepare));
+
+      std::vector<ValueId> args;
+      args.reserve(expr->arguments.size());
+      for (const auto &argument : expr->arguments) {
+        argument->accept(this);
+        args.push_back(value_);
+      }
+
+      Instruction call;
+      call.kind = InstructionKind::CallPreparedProperty;
+      call.source = sourceFromToken(expr->paren);
+      call.result = makeValue();
+      call.symbol = get->name.getLexeme();
+      call.operands = {receiver, kind, target};
+      call.arguments = std::move(args);
+      append(std::move(call));
+      return;
+    }
+
     expr->callee->accept(this);
     ValueId callee = value_;
 

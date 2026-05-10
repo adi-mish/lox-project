@@ -95,6 +95,8 @@ enum class InstructionKind {
   Print,
   DefineFunction,
   Call,
+  PreparePropertyCall,
+  CallPreparedProperty,
   GetProperty,
   SetProperty,
   DefineClass,
@@ -111,6 +113,7 @@ struct Instruction {
   InstructionKind kind = InstructionKind::Unreachable;
   SourceLocation source;
   std::optional<ValueId> result;
+  std::optional<ValueId> auxResult;
   LoxType resultType = LoxType::Unknown;
   std::vector<ValueId> operands;
   std::vector<ValueId> arguments;

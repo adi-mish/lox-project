@@ -47,7 +47,9 @@ void printInstruction(std::ostream &out, const Instruction &instruction) {
   case InstructionKind::DefineFunction:
   case InstructionKind::DefineClass:
   case InstructionKind::DefineMethod:
+  case InstructionKind::PreparePropertyCall:
   case InstructionKind::Call:
+  case InstructionKind::CallPreparedProperty:
     if (!instruction.symbol.empty()) {
       out << " @" << instruction.symbol;
     }
@@ -71,6 +73,11 @@ void printInstruction(std::ostream &out, const Instruction &instruction) {
       }
       printValue(out, instruction.arguments[i]);
     }
+    out << ')';
+  }
+  if (instruction.auxResult) {
+    out << " aux(";
+    printValue(out, *instruction.auxResult);
     out << ')';
   }
 

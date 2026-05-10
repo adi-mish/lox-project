@@ -42,6 +42,12 @@ void verifyInstruction(const LoxFunction &function, const BasicBlock &block,
                            " in function @" + function.name());
     }
   }
+  if (instruction.auxResult) {
+    if (definedValues.count(*instruction.auxResult) > 0) {
+      addError(result, "duplicate value " + valueName(*instruction.auxResult) +
+                           " in function @" + function.name());
+    }
+  }
 
   auto verifyOperand = [&](ValueId value) {
     if (!value.valid() || definedValues.count(value) == 0) {
@@ -60,6 +66,9 @@ void verifyInstruction(const LoxFunction &function, const BasicBlock &block,
 
   if (instruction.result) {
     definedValues.insert(*instruction.result);
+  }
+  if (instruction.auxResult) {
+    definedValues.insert(*instruction.auxResult);
   }
 
   if ((instruction.kind == InstructionKind::Jump ||

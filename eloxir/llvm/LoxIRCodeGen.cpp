@@ -85,6 +85,10 @@ private:
     return llvm::PointerType::get(valueTy(), 0);
   }
 
+  llvm::PointerType *callCachePtrTy() {
+    return llvm::PointerType::get(getOrCreateCallInlineCacheIRType(ctx_), 0);
+  }
+
   llvm::ConstantInt *constantValue(uint64_t bits) {
     return llvm::ConstantInt::get(valueTy(), bits);
   }
@@ -125,6 +129,25 @@ private:
     llvm::IRBuilder<> entryBuilder(
         &function_->getEntryBlock(), function_->getEntryBlock().begin());
     return entryBuilder.CreateAlloca(valueTy(), nullptr, name + ".slot");
+  }
+
+  llvm::Value *createStackArray(size_t count, const std::string &name) {
+    llvm::IRBuilder<> entryBuilder(
+        &function_->getEntryBlock(), function_->getEntryBlock().begin());
+    auto *arraySize =
+        llvm::ConstantInt::get(i32Ty(), static_cast<uint32_t>(count));
+    return entryBuilder.CreateAlloca(valueTy(), arraySize, name + ".storage");
+  }
+
+  llvm::Value *createCallCache(const Instruction &instruction) {
+    auto *cacheTy = getOrCreateCallInlineCacheIRType(ctx_);
+    std::string name = "elx.call.cache";
+    if (instruction.result) {
+      name += "." + std::to_string(instruction.result->id);
+    }
+    return new llvm::GlobalVariable(
+        module_, cacheTy, false, llvm::GlobalValue::PrivateLinkage,
+        llvm::Constant::getNullValue(cacheTy), name);
   }
 
   llvm::Value *createHeapSlot(llvm::Value *initial,
@@ -206,9 +229,7 @@ private:
       return nullValuePtr();
     }
 
-    auto *count =
-        llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), arguments.size());
-    auto *storage = builder_.CreateAlloca(valueTy(), count, name);
+    auto *storage = createStackArray(arguments.size(), name);
     for (size_t index = 0; index < arguments.size(); ++index) {
       auto *slot = builder_.CreateGEP(
           valueTy(), storage,
@@ -324,6 +345,12 @@ private:
     types_[instruction.result->id] = type;
   }
 
+  void bindValue(ValueId id, llvm::Value *value,
+                 LoxType type = LoxType::Unknown) {
+    values_[id.id] = value;
+    types_[id.id] = type;
+  }
+
   std::optional<std::string> unsupported(const Instruction &instruction,
                                          const char *reason) const {
     std::ostringstream out;
@@ -394,6 +421,10 @@ private:
       return emitReturn(instruction);
     case InstructionKind::Call:
       return emitCall(instruction);
+    case InstructionKind::PreparePropertyCall:
+      return emitPreparePropertyCall(instruction);
+    case InstructionKind::CallPreparedProperty:
+      return emitCallPreparedProperty(instruction);
     case InstructionKind::GetProperty:
       return emitGetProperty(instruction);
     case InstructionKind::SetProperty:
@@ -735,6 +766,63 @@ private:
     auto *result =
         builder_.CreateCall(call, {lookup(instruction.operands[0]), args, count},
                             "call");
+    guardRuntimeError();
+    bind(instruction, result, instruction.resultType);
+    return std::nullopt;
+  }
+
+  std::optional<std::string>
+  emitPreparePropertyCall(const Instruction &instruction) {
+    if (auto failure = requireOperands(instruction, 1)) {
+      return failure;
+    }
+    if (!instruction.auxResult) {
+      return unsupported(instruction, "missing prepared-call kind result");
+    }
+    auto *prepare = runtime("elx_prepare_property_call_cached");
+    if (!prepare) {
+      return unsupported(instruction,
+                         "missing elx_prepare_property_call_cached");
+    }
+    auto *name = emitInternedName(instruction.symbol, "property.call.name");
+    auto *targetSlot = createStackSlot("property.call.target");
+    builder_.CreateStore(nilValue(), targetSlot);
+    auto *cache = createCallCache(instruction);
+    auto *kind = builder_.CreateCall(
+        prepare,
+        {lookup(instruction.operands[0]), name,
+         builder_.CreatePointerCast(cache, callCachePtrTy()), targetSlot},
+        "property.call.kind");
+    guardRuntimeError();
+    auto *target =
+        builder_.CreateLoad(valueTy(), targetSlot, "property.call.target");
+    bind(instruction, target, instruction.resultType);
+    bindValue(*instruction.auxResult, kind);
+    return std::nullopt;
+  }
+
+  std::optional<std::string>
+  emitCallPreparedProperty(const Instruction &instruction) {
+    if (auto failure = requireOperands(instruction, 3)) {
+      return failure;
+    }
+    for (ValueId id : instruction.arguments) {
+      if (!lookup(id)) {
+        return unsupported(instruction, "argument was not defined");
+      }
+    }
+    auto *call = runtime("elx_call_prepared_property");
+    if (!call) {
+      return unsupported(instruction, "missing elx_call_prepared_property");
+    }
+    auto *args =
+        emitArgumentArray(instruction.arguments, "prepared.property.args");
+    auto *count = constantI32(static_cast<int>(instruction.arguments.size()));
+    auto *result = builder_.CreateCall(
+        call,
+        {lookup(instruction.operands[1]), lookup(instruction.operands[0]),
+         lookup(instruction.operands[2]), args, count},
+        "prepared.property.call");
     guardRuntimeError();
     bind(instruction, result, instruction.resultType);
     return std::nullopt;
