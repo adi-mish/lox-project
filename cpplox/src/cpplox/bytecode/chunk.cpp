@@ -1,7 +1,6 @@
 #include <new>
 
 #include "chunk.h"
-#include "vm.h"
 
 namespace cpplox {
 
@@ -45,10 +44,8 @@ int Chunk::addConstant(Value value) {
     }
   }
 
-  push(value);
   writeValueArray(&constants_, value);
   inlineCaches_.push_back(emptyInlineCache());
-  pop();
   return static_cast<int>(constants_.size()) - 1;
 }
 
