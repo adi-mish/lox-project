@@ -96,8 +96,40 @@ int disassembleInstruction(Chunk* chunk, int offset) {
 //> Local Variables disassemble-local
     case OP_GET_LOCAL:
       return byteInstruction("OP_GET_LOCAL", chunk, offset);
+    case OP_GET_LOCAL_0:
+      return simpleInstruction("OP_GET_LOCAL_0", offset);
+    case OP_GET_LOCAL_1:
+      return simpleInstruction("OP_GET_LOCAL_1", offset);
+    case OP_GET_LOCAL_2:
+      return simpleInstruction("OP_GET_LOCAL_2", offset);
+    case OP_GET_LOCAL_3:
+      return simpleInstruction("OP_GET_LOCAL_3", offset);
+    case OP_GET_LOCAL_4:
+      return simpleInstruction("OP_GET_LOCAL_4", offset);
+    case OP_GET_LOCAL_5:
+      return simpleInstruction("OP_GET_LOCAL_5", offset);
+    case OP_GET_LOCAL_6:
+      return simpleInstruction("OP_GET_LOCAL_6", offset);
+    case OP_GET_LOCAL_7:
+      return simpleInstruction("OP_GET_LOCAL_7", offset);
     case OP_SET_LOCAL:
       return byteInstruction("OP_SET_LOCAL", chunk, offset);
+    case OP_SET_LOCAL_0:
+      return simpleInstruction("OP_SET_LOCAL_0", offset);
+    case OP_SET_LOCAL_1:
+      return simpleInstruction("OP_SET_LOCAL_1", offset);
+    case OP_SET_LOCAL_2:
+      return simpleInstruction("OP_SET_LOCAL_2", offset);
+    case OP_SET_LOCAL_3:
+      return simpleInstruction("OP_SET_LOCAL_3", offset);
+    case OP_SET_LOCAL_4:
+      return simpleInstruction("OP_SET_LOCAL_4", offset);
+    case OP_SET_LOCAL_5:
+      return simpleInstruction("OP_SET_LOCAL_5", offset);
+    case OP_SET_LOCAL_6:
+      return simpleInstruction("OP_SET_LOCAL_6", offset);
+    case OP_SET_LOCAL_7:
+      return simpleInstruction("OP_SET_LOCAL_7", offset);
 //< Local Variables disassemble-local
 //> Global Variables disassemble-get-global
     case OP_GET_GLOBAL:

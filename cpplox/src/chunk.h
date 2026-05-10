@@ -23,9 +23,25 @@ typedef enum {
 //> Local Variables get-local-op
   OP_GET_LOCAL,
 //< Local Variables get-local-op
+  OP_GET_LOCAL_0,
+  OP_GET_LOCAL_1,
+  OP_GET_LOCAL_2,
+  OP_GET_LOCAL_3,
+  OP_GET_LOCAL_4,
+  OP_GET_LOCAL_5,
+  OP_GET_LOCAL_6,
+  OP_GET_LOCAL_7,
 //> Local Variables set-local-op
   OP_SET_LOCAL,
 //< Local Variables set-local-op
+  OP_SET_LOCAL_0,
+  OP_SET_LOCAL_1,
+  OP_SET_LOCAL_2,
+  OP_SET_LOCAL_3,
+  OP_SET_LOCAL_4,
+  OP_SET_LOCAL_5,
+  OP_SET_LOCAL_6,
+  OP_SET_LOCAL_7,
 //> Global Variables get-global-op
   OP_GET_GLOBAL,
 //< Global Variables get-global-op
@@ -98,8 +114,9 @@ typedef enum {
   OP_INHERIT,
 //< Superclasses inherit-op
 //> Methods and Initializers method-op
-  OP_METHOD
+  OP_METHOD,
 //< Methods and Initializers method-op
+  OP_COUNT
 } OpCode;
 //< op-enum
 //> chunk-struct

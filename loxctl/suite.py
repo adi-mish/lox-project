@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import fnmatch
 import subprocess
+import time
 from pathlib import Path
 
 from .expectations import normalize_output, parse_expectations
@@ -92,6 +93,7 @@ def run_one_test(
         return result
 
     try:
+        started = time.perf_counter()
         completed = subprocess.run(
             command_for_test(impl, executable, path),
             cwd=REPO_ROOT,
@@ -99,10 +101,12 @@ def run_one_test(
             text=True,
             timeout=timeout_for(path, timeout),
         )
+        result.duration_seconds = time.perf_counter() - started
         result.stdout = normalize_output(completed.stdout)
         result.stderr = normalize_output(completed.stderr)
         result.exit_code = completed.returncode
     except subprocess.TimeoutExpired as exc:
+        result.duration_seconds = timeout_for(path, timeout)
         result.stdout = normalize_output(exc.stdout)
         result.stderr = f"TIMEOUT: exceeded {timeout_for(path, timeout)} seconds"
         result.exit_code = -1
@@ -178,7 +182,8 @@ def run_test_paths(
     )
     print(
         f"{impl.name}: {report.passed_count} passed, {len(report.failures)} failed, "
-        f"{len(report.skipped)} skipped, {len(report.results)} total"
+        f"{len(report.skipped)} skipped, {len(report.results)} total "
+        f"({report.duration_seconds:.3f}s)"
     )
     for failure in report.failures:
         print_failure(failure)

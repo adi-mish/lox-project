@@ -10,6 +10,9 @@
 //> Calls and Functions vm-include-time
 #include <time.h>
 //< Calls and Functions vm-include-time
+#ifdef CPPLOX_ENABLE_VM_STATS
+#include <inttypes.h>
+#endif
 
 //< vm-include-stdio
 #include "common.h"
@@ -26,6 +29,112 @@
 #include "vm.h"
 
 VM vm; // [one]
+
+#ifdef CPPLOX_ENABLE_VM_STATS
+static const char* opcodeName(int opcode) {
+  switch (opcode) {
+    case OP_CONSTANT: return "OP_CONSTANT";
+    case OP_NIL: return "OP_NIL";
+    case OP_TRUE: return "OP_TRUE";
+    case OP_FALSE: return "OP_FALSE";
+    case OP_POP: return "OP_POP";
+    case OP_GET_LOCAL: return "OP_GET_LOCAL";
+    case OP_GET_LOCAL_0: return "OP_GET_LOCAL_0";
+    case OP_GET_LOCAL_1: return "OP_GET_LOCAL_1";
+    case OP_GET_LOCAL_2: return "OP_GET_LOCAL_2";
+    case OP_GET_LOCAL_3: return "OP_GET_LOCAL_3";
+    case OP_GET_LOCAL_4: return "OP_GET_LOCAL_4";
+    case OP_GET_LOCAL_5: return "OP_GET_LOCAL_5";
+    case OP_GET_LOCAL_6: return "OP_GET_LOCAL_6";
+    case OP_GET_LOCAL_7: return "OP_GET_LOCAL_7";
+    case OP_SET_LOCAL: return "OP_SET_LOCAL";
+    case OP_SET_LOCAL_0: return "OP_SET_LOCAL_0";
+    case OP_SET_LOCAL_1: return "OP_SET_LOCAL_1";
+    case OP_SET_LOCAL_2: return "OP_SET_LOCAL_2";
+    case OP_SET_LOCAL_3: return "OP_SET_LOCAL_3";
+    case OP_SET_LOCAL_4: return "OP_SET_LOCAL_4";
+    case OP_SET_LOCAL_5: return "OP_SET_LOCAL_5";
+    case OP_SET_LOCAL_6: return "OP_SET_LOCAL_6";
+    case OP_SET_LOCAL_7: return "OP_SET_LOCAL_7";
+    case OP_GET_GLOBAL: return "OP_GET_GLOBAL";
+    case OP_DEFINE_GLOBAL: return "OP_DEFINE_GLOBAL";
+    case OP_SET_GLOBAL: return "OP_SET_GLOBAL";
+    case OP_GET_UPVALUE: return "OP_GET_UPVALUE";
+    case OP_SET_UPVALUE: return "OP_SET_UPVALUE";
+    case OP_GET_PROPERTY: return "OP_GET_PROPERTY";
+    case OP_SET_PROPERTY: return "OP_SET_PROPERTY";
+    case OP_GET_SUPER: return "OP_GET_SUPER";
+    case OP_EQUAL: return "OP_EQUAL";
+    case OP_GREATER: return "OP_GREATER";
+    case OP_LESS: return "OP_LESS";
+    case OP_ADD: return "OP_ADD";
+    case OP_SUBTRACT: return "OP_SUBTRACT";
+    case OP_MULTIPLY: return "OP_MULTIPLY";
+    case OP_DIVIDE: return "OP_DIVIDE";
+    case OP_NOT: return "OP_NOT";
+    case OP_NEGATE: return "OP_NEGATE";
+    case OP_PRINT: return "OP_PRINT";
+    case OP_JUMP: return "OP_JUMP";
+    case OP_JUMP_IF_FALSE: return "OP_JUMP_IF_FALSE";
+    case OP_LOOP: return "OP_LOOP";
+    case OP_CALL: return "OP_CALL";
+    case OP_INVOKE: return "OP_INVOKE";
+    case OP_SUPER_INVOKE: return "OP_SUPER_INVOKE";
+    case OP_CLOSURE: return "OP_CLOSURE";
+    case OP_CLOSE_UPVALUE: return "OP_CLOSE_UPVALUE";
+    case OP_RETURN: return "OP_RETURN";
+    case OP_CLASS: return "OP_CLASS";
+    case OP_INHERIT: return "OP_INHERIT";
+    case OP_METHOD: return "OP_METHOD";
+  }
+  return "OP_UNKNOWN";
+}
+
+void setVMStatsEnabled(bool enabled) {
+  vm.statsEnabled = enabled;
+}
+
+void resetVMStats() {
+  bool enabled = vm.statsEnabled;
+  memset(vm.opcodeCounts, 0, sizeof(vm.opcodeCounts));
+  vm.instructionsExecuted = 0;
+  vm.maxStackDepth = 0;
+  vm.closureCalls = 0;
+  vm.nativeCalls = 0;
+  vm.classCalls = 0;
+  vm.boundMethodCalls = 0;
+  vm.invokes = 0;
+  vm.statsEnabled = enabled;
+}
+
+static void recordInstruction(uint8_t opcode) {
+  if (!vm.statsEnabled) return;
+  vm.instructionsExecuted++;
+  vm.opcodeCounts[opcode]++;
+  uint64_t depth = (uint64_t)(vm.stackTop - vm.stack);
+  if (depth > vm.maxStackDepth) vm.maxStackDepth = depth;
+}
+
+void printVMStats() {
+  fprintf(stderr, "cpplox VM stats:\n");
+  fprintf(stderr, "  instructions: %" PRIu64 "\n", vm.instructionsExecuted);
+  fprintf(stderr, "  max_stack_depth: %" PRIu64 "\n", vm.maxStackDepth);
+  fprintf(stderr, "  bytes_allocated: %zu\n", vm.bytesAllocated);
+  fprintf(stderr, "  closure_calls: %" PRIu64 "\n", vm.closureCalls);
+  fprintf(stderr, "  native_calls: %" PRIu64 "\n", vm.nativeCalls);
+  fprintf(stderr, "  class_calls: %" PRIu64 "\n", vm.classCalls);
+  fprintf(stderr, "  bound_method_calls: %" PRIu64 "\n", vm.boundMethodCalls);
+  fprintf(stderr, "  invokes: %" PRIu64 "\n", vm.invokes);
+  fprintf(stderr, "  opcodes:\n");
+  for (int i = 0; i < OP_COUNT; i++) {
+    if (vm.opcodeCounts[i] == 0) continue;
+    fprintf(stderr, "    %-20s %" PRIu64 "\n", opcodeName(i), vm.opcodeCounts[i]);
+  }
+}
+#else
+#define recordInstruction(opcode) ((void)0)
+#endif
+
 //> Calls and Functions clock-native
 static Value clockNative(int argCount, Value* args) {
   return NUMBER_VAL((double)clock() / CLOCKS_PER_SEC);
@@ -99,6 +208,10 @@ void initVM() {
 //> call-reset-stack
   resetStack();
 //< call-reset-stack
+#ifdef CPPLOX_ENABLE_VM_STATS
+  vm.statsEnabled = false;
+  resetVMStats();
+#endif
 //> Strings init-objects-root
   vm.objects = NULL;
 //< Strings init-objects-root
@@ -212,6 +325,9 @@ static bool callValue(Value callee, int argCount) {
 //> Methods and Initializers call-bound-method
       case OBJ_BOUND_METHOD: {
         ObjBoundMethod* bound = AS_BOUND_METHOD(callee);
+#ifdef CPPLOX_ENABLE_VM_STATS
+        if (vm.statsEnabled) vm.boundMethodCalls++;
+#endif
 //> store-receiver
         vm.stackTop[-argCount - 1] = bound->receiver;
 //< store-receiver
@@ -221,6 +337,9 @@ static bool callValue(Value callee, int argCount) {
 //> Classes and Instances call-class
       case OBJ_CLASS: {
         ObjClass* klass = AS_CLASS(callee);
+#ifdef CPPLOX_ENABLE_VM_STATS
+        if (vm.statsEnabled) vm.classCalls++;
+#endif
         vm.stackTop[-argCount - 1] = OBJ_VAL(newInstance(klass));
 //> Methods and Initializers call-init
         Value initializer;
@@ -240,6 +359,9 @@ static bool callValue(Value callee, int argCount) {
 //< Classes and Instances call-class
 //> Closures call-value-closure
       case OBJ_CLOSURE:
+#ifdef CPPLOX_ENABLE_VM_STATS
+        if (vm.statsEnabled) vm.closureCalls++;
+#endif
         return call(AS_CLOSURE(callee), argCount);
 //< Closures call-value-closure
 /* Calls and Functions call-value < Closures call-value-closure
@@ -249,6 +371,9 @@ static bool callValue(Value callee, int argCount) {
 //> call-native
       case OBJ_NATIVE: {
         NativeFn native = AS_NATIVE(callee);
+#ifdef CPPLOX_ENABLE_VM_STATS
+        if (vm.statsEnabled) vm.nativeCalls++;
+#endif
         Value result = native(argCount, vm.stackTop - argCount);
         vm.stackTop -= argCount + 1;
         push(result);
@@ -276,6 +401,9 @@ static bool invokeFromClass(ObjClass* klass, ObjString* name,
 //< Methods and Initializers invoke-from-class
 //> Methods and Initializers invoke
 static bool invoke(ObjString* name, int argCount) {
+#ifdef CPPLOX_ENABLE_VM_STATS
+  if (vm.statsEnabled) vm.invokes++;
+#endif
   Value receiver = peek(argCount);
 //> invoke-check-type
 
@@ -425,6 +553,12 @@ static InterpretResult run() {
 //> Global Variables read-string
 #define READ_STRING() AS_STRING(READ_CONSTANT())
 //< Global Variables read-string
+#define PUSH_VALUE(value) \
+    do { \
+      *vm.stackTop = (value); \
+      vm.stackTop++; \
+    } while (false)
+#define POP_VALUE() (*--vm.stackTop)
 /* A Virtual Machine binary-op < Types of Values binary-op
 #define BINARY_OP(op) \
     do { \
@@ -436,13 +570,14 @@ static InterpretResult run() {
 //> Types of Values binary-op
 #define BINARY_OP(valueType, op) \
     do { \
-      if (!IS_NUMBER(peek(0)) || !IS_NUMBER(peek(1))) { \
+      Value bValue = vm.stackTop[-1]; \
+      Value aValue = vm.stackTop[-2]; \
+      if (!IS_NUMBER(bValue) || !IS_NUMBER(aValue)) { \
         runtimeError("Operands must be numbers."); \
         return INTERPRET_RUNTIME_ERROR; \
       } \
-      double b = AS_NUMBER(pop()); \
-      double a = AS_NUMBER(pop()); \
-      push(valueType(a op b)); \
+      vm.stackTop[-2] = valueType(AS_NUMBER(aValue) op AS_NUMBER(bValue)); \
+      vm.stackTop--; \
     } while (false)
 //< Types of Values binary-op
 
@@ -473,8 +608,9 @@ static InterpretResult run() {
 #endif
 
 //< trace-execution
-    uint8_t instruction;
-    switch (instruction = READ_BYTE()) {
+    uint8_t instruction = READ_BYTE();
+    recordInstruction(instruction);
+    switch (instruction) {
 //> op-constant
       case OP_CONSTANT: {
         Value constant = READ_CONSTANT();
@@ -483,18 +619,18 @@ static InterpretResult run() {
         printf("\n");
 */
 //> push-constant
-        push(constant);
+        PUSH_VALUE(constant);
 //< push-constant
         break;
       }
 //< op-constant
 //> Types of Values interpret-literals
-      case OP_NIL: push(NIL_VAL); break;
-      case OP_TRUE: push(BOOL_VAL(true)); break;
-      case OP_FALSE: push(BOOL_VAL(false)); break;
+      case OP_NIL: PUSH_VALUE(NIL_VAL); break;
+      case OP_TRUE: PUSH_VALUE(BOOL_VAL(true)); break;
+      case OP_FALSE: PUSH_VALUE(BOOL_VAL(false)); break;
 //< Types of Values interpret-literals
 //> Global Variables interpret-pop
-      case OP_POP: pop(); break;
+      case OP_POP: vm.stackTop--; break;
 //< Global Variables interpret-pop
 //> Local Variables interpret-get-local
       case OP_GET_LOCAL: {
@@ -503,11 +639,19 @@ static InterpretResult run() {
         push(vm.stack[slot]); // [slot]
 */
 //> Calls and Functions push-local
-        push(frame->slots[slot]);
+        PUSH_VALUE(frame->slots[slot]);
 //< Calls and Functions push-local
         break;
       }
 //< Local Variables interpret-get-local
+      case OP_GET_LOCAL_0: PUSH_VALUE(frame->slots[0]); break;
+      case OP_GET_LOCAL_1: PUSH_VALUE(frame->slots[1]); break;
+      case OP_GET_LOCAL_2: PUSH_VALUE(frame->slots[2]); break;
+      case OP_GET_LOCAL_3: PUSH_VALUE(frame->slots[3]); break;
+      case OP_GET_LOCAL_4: PUSH_VALUE(frame->slots[4]); break;
+      case OP_GET_LOCAL_5: PUSH_VALUE(frame->slots[5]); break;
+      case OP_GET_LOCAL_6: PUSH_VALUE(frame->slots[6]); break;
+      case OP_GET_LOCAL_7: PUSH_VALUE(frame->slots[7]); break;
 //> Local Variables interpret-set-local
       case OP_SET_LOCAL: {
         uint8_t slot = READ_BYTE();
@@ -520,6 +664,14 @@ static InterpretResult run() {
         break;
       }
 //< Local Variables interpret-set-local
+      case OP_SET_LOCAL_0: frame->slots[0] = vm.stackTop[-1]; break;
+      case OP_SET_LOCAL_1: frame->slots[1] = vm.stackTop[-1]; break;
+      case OP_SET_LOCAL_2: frame->slots[2] = vm.stackTop[-1]; break;
+      case OP_SET_LOCAL_3: frame->slots[3] = vm.stackTop[-1]; break;
+      case OP_SET_LOCAL_4: frame->slots[4] = vm.stackTop[-1]; break;
+      case OP_SET_LOCAL_5: frame->slots[5] = vm.stackTop[-1]; break;
+      case OP_SET_LOCAL_6: frame->slots[6] = vm.stackTop[-1]; break;
+      case OP_SET_LOCAL_7: frame->slots[7] = vm.stackTop[-1]; break;
 //> Global Variables interpret-get-global
       case OP_GET_GLOBAL: {
         ObjString* name = READ_STRING();
@@ -528,22 +680,22 @@ static InterpretResult run() {
           runtimeError("Undefined variable '%s'.", name->chars);
           return INTERPRET_RUNTIME_ERROR;
         }
-        push(value);
+        PUSH_VALUE(value);
         break;
       }
 //< Global Variables interpret-get-global
 //> Global Variables interpret-define-global
       case OP_DEFINE_GLOBAL: {
         ObjString* name = READ_STRING();
-        tableSet(&vm.globals, name, peek(0));
-        pop();
+        tableSet(&vm.globals, name, vm.stackTop[-1]);
+        vm.stackTop--;
         break;
       }
 //< Global Variables interpret-define-global
 //> Global Variables interpret-set-global
       case OP_SET_GLOBAL: {
         ObjString* name = READ_STRING();
-        if (tableSet(&vm.globals, name, peek(0))) {
+        if (tableSet(&vm.globals, name, vm.stackTop[-1])) {
           tableDelete(&vm.globals, name); // [delete]
           runtimeError("Undefined variable '%s'.", name->chars);
           return INTERPRET_RUNTIME_ERROR;
@@ -554,14 +706,14 @@ static InterpretResult run() {
 //> Closures interpret-get-upvalue
       case OP_GET_UPVALUE: {
         uint8_t slot = READ_BYTE();
-        push(*frame->closure->upvalues[slot]->location);
+        PUSH_VALUE(*frame->closure->upvalues[slot]->location);
         break;
       }
 //< Closures interpret-get-upvalue
 //> Closures interpret-set-upvalue
       case OP_SET_UPVALUE: {
         uint8_t slot = READ_BYTE();
-        *frame->closure->upvalues[slot]->location = peek(0);
+        *frame->closure->upvalues[slot]->location = vm.stackTop[-1];
         break;
       }
 //< Closures interpret-set-upvalue
@@ -579,8 +731,7 @@ static InterpretResult run() {
 
         Value value;
         if (tableGet(&instance->fields, name, &value)) {
-          pop(); // Instance.
-          push(value);
+          vm.stackTop[-1] = value;
           break;
         }
 //> get-undefined
@@ -609,16 +760,16 @@ static InterpretResult run() {
 //< set-not-instance
         ObjInstance* instance = AS_INSTANCE(peek(1));
         tableSet(&instance->fields, READ_STRING(), peek(0));
-        Value value = pop();
-        pop();
-        push(value);
+        Value value = POP_VALUE();
+        POP_VALUE();
+        PUSH_VALUE(value);
         break;
       }
 //< Classes and Instances interpret-set-property
 //> Superclasses interpret-get-super
       case OP_GET_SUPER: {
         ObjString* name = READ_STRING();
-        ObjClass* superclass = AS_CLASS(pop());
+        ObjClass* superclass = AS_CLASS(POP_VALUE());
 
         if (!bindMethod(superclass, name)) {
           return INTERPRET_RUNTIME_ERROR;
@@ -628,9 +779,9 @@ static InterpretResult run() {
 //< Superclasses interpret-get-super
 //> Types of Values interpret-equal
       case OP_EQUAL: {
-        Value b = pop();
-        Value a = pop();
-        push(BOOL_VAL(valuesEqual(a, b)));
+        bool equal = valuesEqual(vm.stackTop[-2], vm.stackTop[-1]);
+        vm.stackTop[-2] = BOOL_VAL(equal);
+        vm.stackTop--;
         break;
       }
 //< Types of Values interpret-equal
@@ -652,12 +803,14 @@ static InterpretResult run() {
 */
 //> Strings add-strings
       case OP_ADD: {
-        if (IS_STRING(peek(0)) && IS_STRING(peek(1))) {
+        Value bValue = vm.stackTop[-1];
+        Value aValue = vm.stackTop[-2];
+        if (IS_STRING(bValue) && IS_STRING(aValue)) {
           concatenate();
-        } else if (IS_NUMBER(peek(0)) && IS_NUMBER(peek(1))) {
-          double b = AS_NUMBER(pop());
-          double a = AS_NUMBER(pop());
-          push(NUMBER_VAL(a + b));
+        } else if (IS_NUMBER(bValue) && IS_NUMBER(aValue)) {
+          vm.stackTop[-2] =
+              NUMBER_VAL(AS_NUMBER(aValue) + AS_NUMBER(bValue));
+          vm.stackTop--;
         } else {
           runtimeError(
               "Operands must be two numbers or two strings.");
@@ -673,21 +826,21 @@ static InterpretResult run() {
 //< Types of Values op-arithmetic
 //> Types of Values op-not
       case OP_NOT:
-        push(BOOL_VAL(isFalsey(pop())));
+        vm.stackTop[-1] = BOOL_VAL(isFalsey(vm.stackTop[-1]));
         break;
 //< Types of Values op-not
 //> Types of Values op-negate
       case OP_NEGATE:
-        if (!IS_NUMBER(peek(0))) {
+        if (!IS_NUMBER(vm.stackTop[-1])) {
           runtimeError("Operand must be a number.");
           return INTERPRET_RUNTIME_ERROR;
         }
-        push(NUMBER_VAL(-AS_NUMBER(pop())));
+        vm.stackTop[-1] = NUMBER_VAL(-AS_NUMBER(vm.stackTop[-1]));
         break;
 //< Types of Values op-negate
 //> Global Variables interpret-print
       case OP_PRINT: {
-        printValue(pop());
+        printValue(POP_VALUE());
         printf("\n");
         break;
       }
@@ -755,7 +908,7 @@ static InterpretResult run() {
       case OP_SUPER_INVOKE: {
         ObjString* method = READ_STRING();
         int argCount = READ_BYTE();
-        ObjClass* superclass = AS_CLASS(pop());
+        ObjClass* superclass = AS_CLASS(POP_VALUE());
         if (!invokeFromClass(superclass, method, argCount)) {
           return INTERPRET_RUNTIME_ERROR;
         }
@@ -767,7 +920,7 @@ static InterpretResult run() {
       case OP_CLOSURE: {
         ObjFunction* function = AS_FUNCTION(READ_CONSTANT());
         ObjClosure* closure = newClosure(function);
-        push(OBJ_VAL(closure));
+        PUSH_VALUE(OBJ_VAL(closure));
 //> interpret-capture-upvalues
         for (int i = 0; i < closure->upvalueCount; i++) {
           uint8_t isLocal = READ_BYTE();
@@ -786,7 +939,7 @@ static InterpretResult run() {
 //> Closures interpret-close-upvalue
       case OP_CLOSE_UPVALUE:
         closeUpvalues(vm.stackTop - 1);
-        pop();
+        vm.stackTop--;
         break;
 //< Closures interpret-close-upvalue
       case OP_RETURN: {
@@ -801,25 +954,25 @@ static InterpretResult run() {
         return INTERPRET_OK;
 */
 //> Calls and Functions interpret-return
-        Value result = pop();
+        Value result = POP_VALUE();
 //> Closures return-close-upvalues
         closeUpvalues(frame->slots);
 //< Closures return-close-upvalues
         vm.frameCount--;
         if (vm.frameCount == 0) {
-          pop();
+          POP_VALUE();
           return INTERPRET_OK;
         }
 
         vm.stackTop = frame->slots;
-        push(result);
+        PUSH_VALUE(result);
         frame = &vm.frames[vm.frameCount - 1];
         break;
 //< Calls and Functions interpret-return
       }
 //> Classes and Instances interpret-class
       case OP_CLASS:
-        push(OBJ_VAL(newClass(READ_STRING())));
+        PUSH_VALUE(OBJ_VAL(newClass(READ_STRING())));
         break;
 //< Classes and Instances interpret-class
 //> Superclasses interpret-inherit
@@ -835,7 +988,7 @@ static InterpretResult run() {
         ObjClass* subclass = AS_CLASS(peek(0));
         tableAddAll(&AS_CLASS(superclass)->methods,
                     &subclass->methods);
-        pop(); // Subclass.
+        vm.stackTop--;
         break;
       }
 //< Superclasses interpret-inherit
@@ -857,6 +1010,8 @@ static InterpretResult run() {
 //> Global Variables undef-read-string
 #undef READ_STRING
 //< Global Variables undef-read-string
+#undef PUSH_VALUE
+#undef POP_VALUE
 //> undef-binary-op
 #undef BINARY_OP
 //< undef-binary-op

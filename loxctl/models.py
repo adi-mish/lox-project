@@ -64,6 +64,7 @@ class TestResult:
     exit_code: int = 0
     passed: bool = False
     skipped: bool = False
+    duration_seconds: float = 0.0
     skip_reason: str | None = None
     failure_kind: FailureKind | None = None
 
@@ -82,3 +83,7 @@ class SuiteReport:
     @property
     def failed(self) -> bool:
         return bool(self.failures)
+
+    @property
+    def duration_seconds(self) -> float:
+        return sum(result.duration_seconds for result in self.results)

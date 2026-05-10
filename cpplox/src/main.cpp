@@ -1,87 +1,65 @@
-//> Chunks of Bytecode main-c
-//> Scanning on Demand main-includes
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+#include <cstdlib>
+#include <fstream>
+#include <iostream>
+#include <iterator>
+#include <stdexcept>
+#include <string>
+#include <string_view>
 
-//< Scanning on Demand main-includes
-#include "common.h"
-//> main-include-chunk
-#include "chunk.h"
-//< main-include-chunk
-//> main-include-debug
-#include "debug.h"
-//< main-include-debug
-//> main-include-scanner
 #include "scanner.h"
-//< main-include-scanner
-//> A Virtual Machine main-include-vm
 #include "vm.h"
-//< A Virtual Machine main-include-vm
-//> Scanning on Demand repl
 
-static void repl() {
-  char line[1024];
+namespace {
+
+class VmSession {
+ public:
+  VmSession() { initVM(); }
+  ~VmSession() { freeVM(); }
+
+  VmSession(const VmSession&) = delete;
+  VmSession& operator=(const VmSession&) = delete;
+};
+
+std::string readFile(std::string_view path) {
+  std::ifstream file(std::string(path), std::ios::binary);
+  if (!file) {
+    throw std::runtime_error("Could not open file \"" + std::string(path) + "\".");
+  }
+
+  return std::string(
+      std::istreambuf_iterator<char>(file),
+      std::istreambuf_iterator<char>());
+}
+
+int runSource(const std::string& source) {
+  InterpretResult result = interpret(source.c_str());
+  if (result == INTERPRET_COMPILE_ERROR) return 65;
+  if (result == INTERPRET_RUNTIME_ERROR) return 70;
+  return 0;
+}
+
+int runFile(std::string_view path) {
+  try {
+    return runSource(readFile(path));
+  } catch (const std::runtime_error& error) {
+    std::cerr << error.what() << '\n';
+    return 74;
+  }
+}
+
+void repl() {
+  std::string line;
   for (;;) {
-    printf("> ");
-
-    if (!fgets(line, sizeof(line), stdin)) {
-      printf("\n");
+    std::cout << "> ";
+    if (!std::getline(std::cin, line)) {
+      std::cout << '\n';
       break;
     }
-
-    interpret(line);
+    interpret(line.c_str());
   }
 }
-//< Scanning on Demand repl
-//> Scanning on Demand read-file
-static char* readFile(const char* path) {
-  FILE* file = fopen(path, "rb");
-//> no-file
-  if (file == NULL) {
-    fprintf(stderr, "Could not open file \"%s\".\n", path);
-    exit(74);
-  }
-//< no-file
 
-  fseek(file, 0L, SEEK_END);
-  size_t fileSize = ftell(file);
-  rewind(file);
-
-  char* buffer = (char*)malloc(fileSize + 1);
-//> no-buffer
-  if (buffer == NULL) {
-    fprintf(stderr, "Not enough memory to read \"%s\".\n", path);
-    exit(74);
-  }
-
-//< no-buffer
-  size_t bytesRead = fread(buffer, sizeof(char), fileSize, file);
-//> no-read
-  if (bytesRead < fileSize) {
-    fprintf(stderr, "Could not read file \"%s\".\n", path);
-    exit(74);
-  }
-
-//< no-read
-  buffer[bytesRead] = '\0';
-
-  fclose(file);
-  return buffer;
-}
-//< Scanning on Demand read-file
-//> Scanning on Demand run-file
-static void runFile(const char* path) {
-  char* source = readFile(path);
-  InterpretResult result = interpret(source);
-  free(source); // [owner]
-
-  if (result == INTERPRET_COMPILE_ERROR) exit(65);
-  if (result == INTERPRET_RUNTIME_ERROR) exit(70);
-}
-//< Scanning on Demand run-file
-
-static const char* tokenTypeName(TokenType type) {
+std::string_view tokenTypeName(TokenType type) {
   switch (type) {
     case TOKEN_LEFT_PAREN: return "LEFT_PAREN";
     case TOKEN_RIGHT_PAREN: return "RIGHT_PAREN";
@@ -127,50 +105,55 @@ static const char* tokenTypeName(TokenType type) {
   return "UNKNOWN";
 }
 
-static bool tokenContains(Token token, char needle) {
-  for (int i = 0; i < token.length; i++) {
-    if (token.start[i] == needle) return true;
-  }
-  return false;
+std::string_view lexeme(Token token) {
+  return {token.start, static_cast<std::size_t>(token.length)};
 }
 
-static void printScanToken(Token token) {
+void writeLexeme(Token token) {
+  std::cout.write(token.start, token.length);
+}
+
+void printScanToken(Token token) {
   if (token.type == TOKEN_EOF) {
-    printf("EOF null\n");
+    std::cout << "EOF null\n";
     return;
   }
 
-  printf("%s %.*s", tokenTypeName(token.type), token.length, token.start);
+  std::cout << tokenTypeName(token.type) << ' ';
+  writeLexeme(token);
+
   switch (token.type) {
     case TOKEN_NUMBER:
-      if (tokenContains(token, '.')) {
-        printf(" %.*s\n", token.length, token.start);
-      } else {
-        printf(" %.*s.0\n", token.length, token.start);
+      std::cout << ' ';
+      writeLexeme(token);
+      if (lexeme(token).find('.') == std::string_view::npos) {
+        std::cout << ".0";
       }
+      std::cout << '\n';
       break;
     case TOKEN_STRING:
       if (token.length > 2) {
-        printf(" %.*s\n", token.length - 2, token.start + 1);
-      } else {
-        printf("\n");
+        std::cout << ' ';
+        std::cout.write(token.start + 1, token.length - 2);
       }
+      std::cout << '\n';
       break;
     default:
-      printf(" null\n");
+      std::cout << " null\n";
       break;
   }
 }
 
-static int scanSource(const char* source) {
-  initScanner(source);
+int scanSource(const std::string& source) {
+  initScanner(source.c_str());
   bool hadError = false;
 
   for (;;) {
     Token token = scanToken();
     if (token.type == TOKEN_ERROR) {
-      fprintf(stderr, "[line %d] Error: %.*s\n",
-              token.line, token.length, token.start);
+      std::cerr << "[line " << token.line << "] Error: ";
+      std::cerr.write(token.start, token.length);
+      std::cerr << '\n';
       hadError = true;
       continue;
     }
@@ -182,87 +165,64 @@ static int scanSource(const char* source) {
   return hadError ? 65 : 0;
 }
 
-static int scanFile(const char* path) {
-  char* source = readFile(path);
-  int result = scanSource(source);
-  free(source);
-  return result;
+int scanFile(std::string_view path) {
+  try {
+    return scanSource(readFile(path));
+  } catch (const std::runtime_error& error) {
+    std::cerr << error.what() << '\n';
+    return 74;
+  }
 }
 
+}  // namespace
+
 int main(int argc, const char* argv[]) {
-//> A Virtual Machine main-init-vm
-  initVM();
+  VmSession vm;
+  bool scan = false;
+  bool stats = false;
+  const char* path = nullptr;
 
-//< A Virtual Machine main-init-vm
-/* Chunks of Bytecode main-chunk < Scanning on Demand args
-  Chunk chunk;
-  initChunk(&chunk);
-*/
-/* Chunks of Bytecode main-constant < Scanning on Demand args
-
-  int constant = addConstant(&chunk, 1.2);
-*/
-/* Chunks of Bytecode main-constant < Chunks of Bytecode main-chunk-line
-  writeChunk(&chunk, OP_CONSTANT);
-  writeChunk(&chunk, constant);
-
-*/
-/* Chunks of Bytecode main-chunk-line < Scanning on Demand args
-  writeChunk(&chunk, OP_CONSTANT, 123);
-  writeChunk(&chunk, constant, 123);
-*/
-/* A Virtual Machine main-chunk < Scanning on Demand args
-
-  constant = addConstant(&chunk, 3.4);
-  writeChunk(&chunk, OP_CONSTANT, 123);
-  writeChunk(&chunk, constant, 123);
-
-  writeChunk(&chunk, OP_ADD, 123);
-
-  constant = addConstant(&chunk, 5.6);
-  writeChunk(&chunk, OP_CONSTANT, 123);
-  writeChunk(&chunk, constant, 123);
-
-  writeChunk(&chunk, OP_DIVIDE, 123);
-*/
-/* A Virtual Machine main-negate < Scanning on Demand args
-  writeChunk(&chunk, OP_NEGATE, 123);
-*/
-/* Chunks of Bytecode main-chunk < Chunks of Bytecode main-chunk-line
-  writeChunk(&chunk, OP_RETURN);
-*/
-/* Chunks of Bytecode main-chunk-line < Scanning on Demand args
-
-  writeChunk(&chunk, OP_RETURN, 123);
-*/
-/* Chunks of Bytecode main-disassemble-chunk < Scanning on Demand args
-
-  disassembleChunk(&chunk, "test chunk");
-*/
-/* A Virtual Machine main-interpret < Scanning on Demand args
-  interpret(&chunk);
-*/
-//> Scanning on Demand args
-  if (argc == 1) {
-    repl();
-  } else if (argc == 3 && strcmp(argv[1], "--scan") == 0) {
-    int result = scanFile(argv[2]);
-    freeVM();
-    return result;
-  } else if (argc == 2) {
-    runFile(argv[1]);
-  } else {
-    fprintf(stderr, "Usage: clox [--scan] [path]\n");
-    exit(64);
+  for (int i = 1; i < argc; i++) {
+    std::string_view arg(argv[i]);
+    if (arg == "--scan") {
+      scan = true;
+    } else if (arg == "--stats") {
+      stats = true;
+    } else if (path == nullptr) {
+      path = argv[i];
+    } else {
+      std::cerr << "Usage: cpplox [--stats] [--scan] [path]\n";
+      return 64;
+    }
   }
 
-  freeVM();
-//< Scanning on Demand args
-/* A Virtual Machine main-free-vm < Scanning on Demand args
-  freeVM();
-*/
-/* Chunks of Bytecode main-chunk < Scanning on Demand args
-  freeChunk(&chunk);
-*/
-  return 0;
+#ifdef CPPLOX_ENABLE_VM_STATS
+  setVMStatsEnabled(stats);
+  resetVMStats();
+#else
+  if (stats) {
+    std::cerr << "cpplox was built without CPPLOX_ENABLE_VM_STATS.\n";
+    return 64;
+  }
+#endif
+
+  int exitCode = 0;
+  if (scan) {
+    if (path == nullptr) {
+      std::cerr << "Usage: cpplox [--stats] --scan [path]\n";
+      return 64;
+    }
+    exitCode = scanFile(path);
+  } else if (path == nullptr) {
+    repl();
+  } else {
+    exitCode = runFile(path);
+  }
+
+#ifdef CPPLOX_ENABLE_VM_STATS
+  if (stats) {
+    printVMStats();
+  }
+#endif
+  return exitCode;
 }

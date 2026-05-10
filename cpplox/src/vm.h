@@ -79,6 +79,17 @@ typedef struct {
   int grayCapacity;
   Obj** grayStack;
 //< Garbage Collection vm-gray-stack
+#ifdef CPPLOX_ENABLE_VM_STATS
+  bool statsEnabled;
+  uint64_t instructionsExecuted;
+  uint64_t opcodeCounts[OP_COUNT];
+  uint64_t maxStackDepth;
+  uint64_t closureCalls;
+  uint64_t nativeCalls;
+  uint64_t classCalls;
+  uint64_t boundMethodCalls;
+  uint64_t invokes;
+#endif
 } VM;
 
 //> interpret-result
@@ -105,5 +116,11 @@ InterpretResult interpret(const char* source);
 void push(Value value);
 Value pop();
 //< push-pop
+
+#ifdef CPPLOX_ENABLE_VM_STATS
+void setVMStatsEnabled(bool enabled);
+void resetVMStats();
+void printVMStats();
+#endif
 
 #endif

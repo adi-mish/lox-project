@@ -144,6 +144,22 @@ def _print_skips(reports: list[SuiteReport]) -> None:
         print(f"  {item.path.relative_to(REPO_ROOT)}: {item.skip_reason}")
 
 
+def _print_timings(reports: list[SuiteReport], limit: int) -> None:
+    if limit <= 0:
+        return
+    timed = [
+        (result.duration_seconds, report.implementation.name, result.path)
+        for report in reports
+        for result in report.results
+        if not result.skipped
+    ]
+    if not timed:
+        return
+    print(f"\nSlowest {min(limit, len(timed))} tests:")
+    for duration, impl_name, path in sorted(timed, reverse=True)[:limit]:
+        print(f"  {duration:8.3f}s  {impl_name:<8} {path.relative_to(REPO_ROOT)}")
+
+
 def cmd_test(args: argparse.Namespace) -> int:
     impls = selected_implementations(args.impls)
     if not args.skip_build:
@@ -161,6 +177,7 @@ def cmd_test(args: argparse.Namespace) -> int:
     ]
     if args.show_skips:
         _print_skips(reports)
+    _print_timings(reports, args.timings)
     return 1 if any(report.failed for report in reports) else 0
 
 
@@ -177,6 +194,7 @@ def cmd_smoke(args: argparse.Namespace) -> int:
     ]
     if args.show_skips:
         _print_skips(reports)
+    _print_timings(reports, args.timings)
     return 1 if any(report.failed for report in reports) else 0
 
 
@@ -202,6 +220,7 @@ def cmd_bench(args: argparse.Namespace) -> int:
     ]
     if args.show_skips:
         _print_skips(reports)
+    _print_timings(reports, args.timings)
     return 1 if any(report.failed for report in reports) else 0
 
 
@@ -252,4 +271,11 @@ def add_common_test_options(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--show-skips", action="store_true", help="Print skipped test names."
+    )
+    parser.add_argument(
+        "--timings",
+        type=int,
+        default=0,
+        metavar="N",
+        help="Print the slowest N executed tests.",
     )

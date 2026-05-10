@@ -754,14 +754,22 @@ static void namedVariable(Token name, bool canAssign) {
     emitBytes(OP_SET_GLOBAL, arg);
 */
 //> Local Variables emit-set
-    emitBytes(setOp, (uint8_t)arg);
+    if (setOp == OP_SET_LOCAL && arg >= 0 && arg <= 7) {
+      emitByte((uint8_t)(OP_SET_LOCAL_0 + arg));
+    } else {
+      emitBytes(setOp, (uint8_t)arg);
+    }
 //< Local Variables emit-set
   } else {
 /* Global Variables named-variable < Local Variables emit-get
     emitBytes(OP_GET_GLOBAL, arg);
 */
 //> Local Variables emit-get
-    emitBytes(getOp, (uint8_t)arg);
+    if (getOp == OP_GET_LOCAL && arg >= 0 && arg <= 7) {
+      emitByte((uint8_t)(OP_GET_LOCAL_0 + arg));
+    } else {
+      emitBytes(getOp, (uint8_t)arg);
+    }
 //< Local Variables emit-get
   }
 //< named-variable
