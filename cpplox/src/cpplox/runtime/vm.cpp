@@ -1,6 +1,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <iostream>
 #include <string_view>
 #include <ctime>
 #ifdef CPPLOX_ENABLE_VM_STATS
@@ -910,8 +911,8 @@ static InterpretResult run(Vm &vm) {
       vm.stackTop[-1] = numberValue(-asNumber(vm.stackTop[-1]));
       break;
     case OP_PRINT: {
-      printValue(popValue());
-      std::printf("\n");
+      printValue(std::cout, popValue());
+      std::cout << '\n';
       break;
     }
     case OP_JUMP: {

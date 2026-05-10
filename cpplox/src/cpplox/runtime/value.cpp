@@ -1,5 +1,6 @@
-#include <cstdio>
 #include <cstring>
+#include <iostream>
+#include <ostream>
 
 #include "memory.h"
 #include "object.h"
@@ -7,18 +8,20 @@
 
 namespace cpplox {
 
-void printValue(Value value) {
+void printValue(std::ostream &out, Value value) {
   if (isBool(value)) {
-    std::printf(asBool(value) ? "true" : "false");
+    out << (asBool(value) ? "true" : "false");
   } else if (isNil(value)) {
-    std::printf("nil");
+    out << "nil";
   } else if (isNumber(value)) {
-    std::printf("%g", asNumber(value));
+    out << asNumber(value);
   } else if (isObj(value)) {
-    printObject(value);
+    printObject(out, value);
   } else if (isUninitialized(value)) {
-    std::printf("<uninitialized>");
+    out << "<uninitialized>";
   }
 }
+
+void printValue(Value value) { printValue(std::cout, value); }
 
 } // namespace cpplox

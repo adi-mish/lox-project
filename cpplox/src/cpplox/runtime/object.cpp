@@ -1,7 +1,9 @@
 #include <cstdio>
 #include <cstring>
 
+#include <iostream>
 #include <new>
+#include <ostream>
 
 #include "memory.h"
 #include "object.h"
@@ -175,40 +177,42 @@ ObjUpvalue *Vm::newUpvalue(Value *slot) {
   return upvalue;
 }
 
-static void printFunction(ObjFunction *function) {
+static void printFunction(std::ostream &out, ObjFunction *function) {
   if (function->name == nullptr) {
-    std::printf("<script>");
+    out << "<script>";
     return;
   }
-  std::printf("<fn %s>", function->name->chars);
+  out << "<fn " << function->name->chars << '>';
 }
-void printObject(Value value) {
+void printObject(std::ostream &out, Value value) {
   switch (objectType(value)) {
   case OBJ_BOUND_METHOD:
-    printFunction(asBoundMethod(value)->method->function);
+    printFunction(out, asBoundMethod(value)->method->function);
     break;
   case OBJ_CLASS:
-    std::printf("%s", asClass(value)->name->chars);
+    out << asClass(value)->name->chars;
     break;
   case OBJ_CLOSURE:
-    printFunction(asClosure(value)->function);
+    printFunction(out, asClosure(value)->function);
     break;
   case OBJ_FUNCTION:
-    printFunction(asFunction(value));
+    printFunction(out, asFunction(value));
     break;
   case OBJ_INSTANCE:
-    std::printf("%s instance", asInstance(value)->klass->name->chars);
+    out << asInstance(value)->klass->name->chars << " instance";
     break;
   case OBJ_NATIVE:
-    std::printf("<native fn>");
+    out << "<native fn>";
     break;
   case OBJ_STRING:
-    std::printf("%s", asCString(value));
+    out << asCString(value);
     break;
   case OBJ_UPVALUE:
-    std::printf("upvalue");
+    out << "upvalue";
     break;
   }
 }
+
+void printObject(Value value) { printObject(std::cout, value); }
 
 } // namespace cpplox

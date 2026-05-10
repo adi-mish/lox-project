@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstring>
+#include <iosfwd>
 #include <vector>
 
 #include "common.h"
@@ -108,6 +109,7 @@ static inline bool valuesEqual(Value a, Value b) {
   return a == b;
 }
 
+void printValue(std::ostream &out, Value value);
 void printValue(Value value);
 
 } // namespace cpplox

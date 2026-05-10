@@ -1,5 +1,7 @@
 #pragma once
 
+#include <iosfwd>
+
 #include "chunk.h"
 #include "common.h"
 #include "table.h"
@@ -135,6 +137,7 @@ struct ObjBoundMethod {
   ObjClosure *method;
 };
 
+void printObject(std::ostream &out, Value value);
 void printObject(Value value);
 
 static inline bool isObjType(Value value, ObjectKind type) {
