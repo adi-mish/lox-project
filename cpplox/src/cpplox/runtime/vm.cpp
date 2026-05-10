@@ -1,3 +1,4 @@
+#include <assert.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
@@ -15,7 +16,12 @@
 
 namespace cpplox {
 
-Vm vm;
+static Vm *activeVm = NULL;
+
+Vm &currentVm() {
+  assert(activeVm != NULL);
+  return *activeVm;
+}
 
 #ifdef CPPLOX_ENABLE_VM_STATS
 static const char *opcodeName(int opcode) {
@@ -146,28 +152,29 @@ static const char *opcodeName(int opcode) {
   return "OP_UNKNOWN";
 }
 
-void setVMStatsEnabled(bool enabled) { vm.statsEnabled = enabled; }
+void Vm::setStatsEnabled(bool enabled) { statsEnabled = enabled; }
 
-void resetVMStats() {
-  bool enabled = vm.statsEnabled;
-  vm.opcodeCounts.fill(0);
-  vm.instructionsExecuted = 0;
-  vm.maxStackDepth = 0;
-  vm.closureCalls = 0;
-  vm.nativeCalls = 0;
-  vm.classCalls = 0;
-  vm.boundMethodCalls = 0;
-  vm.invokes = 0;
-  vm.globalCacheHits = 0;
-  vm.globalCacheMisses = 0;
-  vm.methodCacheHits = 0;
-  vm.methodCacheMisses = 0;
-  vm.fieldCacheHits = 0;
-  vm.fieldCacheMisses = 0;
-  vm.statsEnabled = enabled;
+void Vm::resetStats() {
+  bool enabled = statsEnabled;
+  opcodeCounts.fill(0);
+  instructionsExecuted = 0;
+  maxStackDepth = 0;
+  closureCalls = 0;
+  nativeCalls = 0;
+  classCalls = 0;
+  boundMethodCalls = 0;
+  invokes = 0;
+  globalCacheHits = 0;
+  globalCacheMisses = 0;
+  methodCacheHits = 0;
+  methodCacheMisses = 0;
+  fieldCacheHits = 0;
+  fieldCacheMisses = 0;
+  statsEnabled = enabled;
 }
 
 static void recordInstruction(uint8_t opcode) {
+  Vm &vm = currentVm();
   if (!vm.statsEnabled)
     return;
   vm.instructionsExecuted++;
@@ -177,28 +184,28 @@ static void recordInstruction(uint8_t opcode) {
     vm.maxStackDepth = depth;
 }
 
-void printVMStats() {
+void Vm::printStats() const {
   fprintf(stderr, "cpplox VM stats:\n");
-  fprintf(stderr, "  instructions: %" PRIu64 "\n", vm.instructionsExecuted);
-  fprintf(stderr, "  max_stack_depth: %" PRIu64 "\n", vm.maxStackDepth);
-  fprintf(stderr, "  bytes_allocated: %zu\n", vm.bytesAllocated);
-  fprintf(stderr, "  closure_calls: %" PRIu64 "\n", vm.closureCalls);
-  fprintf(stderr, "  native_calls: %" PRIu64 "\n", vm.nativeCalls);
-  fprintf(stderr, "  class_calls: %" PRIu64 "\n", vm.classCalls);
-  fprintf(stderr, "  bound_method_calls: %" PRIu64 "\n", vm.boundMethodCalls);
-  fprintf(stderr, "  invokes: %" PRIu64 "\n", vm.invokes);
-  fprintf(stderr, "  global_cache_hits: %" PRIu64 "\n", vm.globalCacheHits);
-  fprintf(stderr, "  global_cache_misses: %" PRIu64 "\n", vm.globalCacheMisses);
-  fprintf(stderr, "  method_cache_hits: %" PRIu64 "\n", vm.methodCacheHits);
-  fprintf(stderr, "  method_cache_misses: %" PRIu64 "\n", vm.methodCacheMisses);
-  fprintf(stderr, "  field_cache_hits: %" PRIu64 "\n", vm.fieldCacheHits);
-  fprintf(stderr, "  field_cache_misses: %" PRIu64 "\n", vm.fieldCacheMisses);
+  fprintf(stderr, "  instructions: %" PRIu64 "\n", instructionsExecuted);
+  fprintf(stderr, "  max_stack_depth: %" PRIu64 "\n", maxStackDepth);
+  fprintf(stderr, "  bytes_allocated: %zu\n", bytesAllocated);
+  fprintf(stderr, "  closure_calls: %" PRIu64 "\n", closureCalls);
+  fprintf(stderr, "  native_calls: %" PRIu64 "\n", nativeCalls);
+  fprintf(stderr, "  class_calls: %" PRIu64 "\n", classCalls);
+  fprintf(stderr, "  bound_method_calls: %" PRIu64 "\n", boundMethodCalls);
+  fprintf(stderr, "  invokes: %" PRIu64 "\n", invokes);
+  fprintf(stderr, "  global_cache_hits: %" PRIu64 "\n", globalCacheHits);
+  fprintf(stderr, "  global_cache_misses: %" PRIu64 "\n", globalCacheMisses);
+  fprintf(stderr, "  method_cache_hits: %" PRIu64 "\n", methodCacheHits);
+  fprintf(stderr, "  method_cache_misses: %" PRIu64 "\n", methodCacheMisses);
+  fprintf(stderr, "  field_cache_hits: %" PRIu64 "\n", fieldCacheHits);
+  fprintf(stderr, "  field_cache_misses: %" PRIu64 "\n", fieldCacheMisses);
   fprintf(stderr, "  opcodes:\n");
   for (int i = 0; i < OP_COUNT; i++) {
-    if (vm.opcodeCounts[i] == 0)
+    if (opcodeCounts[i] == 0)
       continue;
     fprintf(stderr, "    %-20s %" PRIu64 "\n", opcodeName(i),
-            vm.opcodeCounts[i]);
+            opcodeCounts[i]);
   }
 }
 #else
@@ -249,11 +256,13 @@ static Value clockNative(int argCount, Value *args) {
   return NUMBER_VAL((double)clock() / CLOCKS_PER_SEC);
 }
 static void resetStack() {
+  Vm &vm = currentVm();
   vm.stackTop = vm.stack.data();
   vm.frameCount = 0;
   vm.openUpvalues = NULL;
 }
 static void runtimeError(const char *format, ...) {
+  Vm &vm = currentVm();
   va_list args;
   va_start(args, format);
   vfprintf(stderr, format, args);
@@ -276,18 +285,21 @@ static void runtimeError(const char *format, ...) {
   resetStack();
 }
 static void defineNative(const char *name, NativeFn function) {
-  push(OBJ_VAL(copyString(name, (int)strlen(name))));
-  push(OBJ_VAL(newNative(function)));
+  Vm &vm = currentVm();
+  vm.push(OBJ_VAL(copyString(name, (int)strlen(name))));
+  vm.push(OBJ_VAL(newNative(function)));
   vm.globals.set(AS_STRING(vm.stack[0]), vm.stack[1]);
-  pop();
-  pop();
+  vm.pop();
+  vm.pop();
 }
 
-void initVM() {
+void Vm::initialize() {
+  activeVm = this;
+  Vm &vm = *this;
   resetStack();
 #ifdef CPPLOX_ENABLE_VM_STATS
   vm.statsEnabled = false;
-  resetVMStats();
+  resetStats();
 #endif
   vm.objects = NULL;
   vm.bytesAllocated = 0;
@@ -306,23 +318,29 @@ void initVM() {
   defineNative("clock", clockNative);
 }
 
-void freeVM() {
+void Vm::shutdown() {
+  Vm &vm = *this;
   vm.globals.clear();
   vm.strings.clear();
   vm.initString = NULL;
   freeObjects();
+  activeVm = NULL;
 }
-void push(Value value) {
-  *vm.stackTop = value;
-  vm.stackTop++;
+void Vm::push(Value value) {
+  *stackTop = value;
+  stackTop++;
 }
-Value pop() {
-  vm.stackTop--;
-  return *vm.stackTop;
+Value Vm::pop() {
+  stackTop--;
+  return *stackTop;
 }
-static Value peek(int distance) { return vm.stackTop[-1 - distance]; }
+static Value peek(int distance) {
+  Vm &vm = currentVm();
+  return vm.stackTop[-1 - distance];
+}
 
 static bool call(ObjClosure *closure, int argCount) {
+  Vm &vm = currentVm();
 
   if (argCount != closure->function->arity) {
     runtimeError("Expected %d arguments but got %d.", closure->function->arity,
@@ -343,6 +361,7 @@ static bool call(ObjClosure *closure, int argCount) {
   return true;
 }
 static bool callValue(Value callee, int argCount) {
+  Vm &vm = currentVm();
   if (IS_OBJ(callee)) {
     switch (OBJ_TYPE(callee)) {
     case OBJ_BOUND_METHOD: {
@@ -384,7 +403,7 @@ static bool callValue(Value callee, int argCount) {
 #endif
       Value result = native(argCount, vm.stackTop - argCount);
       vm.stackTop -= argCount + 1;
-      push(result);
+      vm.push(result);
       return true;
     }
     default:
@@ -448,6 +467,9 @@ static void writeInstanceField(ObjInstance *instance, int slot, Value value) {
 
 static bool findMethodCached(ObjClass *klass, ObjString *name,
                              InlineCache *cache, Value *method) {
+#ifdef CPPLOX_ENABLE_VM_STATS
+  Vm &vm = currentVm();
+#endif
   if (cache != NULL && cache->kind == CACHE_METHOD && cache->key == name &&
       cache->owner == klass &&
       cache->tableVersion == klass->methods.version()) {
@@ -485,6 +507,7 @@ static bool invokeFromClass(ObjClass *klass, ObjString *name, int argCount,
 }
 
 static bool invoke(ObjString *name, int argCount, InlineCache *cache) {
+  Vm &vm = currentVm();
 #ifdef CPPLOX_ENABLE_VM_STATS
   if (vm.statsEnabled)
     vm.invokes++;
@@ -537,14 +560,15 @@ static bool bindMethodCached(ObjClass *klass, ObjString *name,
     return false;
 
   ObjBoundMethod *bound = newBoundMethod(peek(0), AS_CLOSURE(method));
-  pop();
-  push(OBJ_VAL(bound));
+  currentVm().pop();
+  currentVm().push(OBJ_VAL(bound));
   return true;
 }
 static bool bindMethod(ObjClass *klass, ObjString *name) {
   return bindMethodCached(klass, name, NULL);
 }
 static ObjUpvalue *captureUpvalue(Value *local) {
+  Vm &vm = currentVm();
   ObjUpvalue *prevUpvalue = NULL;
   ObjUpvalue *upvalue = vm.openUpvalues;
   while (upvalue != NULL && upvalue->location > local) {
@@ -568,6 +592,7 @@ static ObjUpvalue *captureUpvalue(Value *local) {
   return createdUpvalue;
 }
 static void closeUpvalues(Value *last) {
+  Vm &vm = currentVm();
   while (vm.openUpvalues != NULL && vm.openUpvalues->location >= last) {
     ObjUpvalue *upvalue = vm.openUpvalues;
     upvalue->closed = *upvalue->location;
@@ -576,18 +601,20 @@ static void closeUpvalues(Value *last) {
   }
 }
 static void defineMethod(ObjString *name) {
+  Vm &vm = currentVm();
   Value method = peek(0);
   ObjClass *klass = AS_CLASS(peek(1));
   klass->methods.set(name, method);
   if (name == vm.initString) {
     klass->initializer = AS_CLOSURE(method);
   }
-  pop();
+  vm.pop();
 }
 static bool isFalsey(Value value) {
   return IS_NIL(value) || (IS_BOOL(value) && !AS_BOOL(value));
 }
 static void concatenate() {
+  Vm &vm = currentVm();
 
   ObjString *b = AS_STRING(peek(0));
   ObjString *a = AS_STRING(peek(1));
@@ -599,11 +626,12 @@ static void concatenate() {
   chars[length] = '\0';
 
   ObjString *result = takeString(chars, length);
-  pop();
-  pop();
-  push(OBJ_VAL(result));
+  vm.pop();
+  vm.pop();
+  vm.push(OBJ_VAL(result));
 }
 static InterpretResult run() {
+  Vm &vm = currentVm();
   CallFrame *frame = &vm.frames[vm.frameCount - 1];
 
 #define READ_BYTE() (*frame->ip++)
@@ -1056,17 +1084,18 @@ static InterpretResult run() {
 #undef BINARY_OP
 }
 
-InterpretResult interpret(const char *source) {
+InterpretResult Vm::interpret(const char *source) {
+  Vm &vm = *this;
 
   ObjFunction *function = compile(source);
   if (function == NULL)
     return INTERPRET_COMPILE_ERROR;
 
-  push(OBJ_VAL(function));
+  vm.push(OBJ_VAL(function));
 
   ObjClosure *closure = newClosure(function);
-  pop();
-  push(OBJ_VAL(closure));
+  vm.pop();
+  vm.push(OBJ_VAL(closure));
   call(closure, 0);
 
   return run();

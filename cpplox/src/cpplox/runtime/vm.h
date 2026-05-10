@@ -12,6 +12,12 @@ namespace cpplox {
 #define FRAMES_MAX 64
 #define STACK_MAX (FRAMES_MAX * UINT8_COUNT)
 
+typedef enum {
+  INTERPRET_OK,
+  INTERPRET_COMPILE_ERROR,
+  INTERPRET_RUNTIME_ERROR
+} InterpretResult;
+
 struct CallFrame {
   ObjClosure *closure;
   uint8_t *ip;
@@ -20,6 +26,19 @@ struct CallFrame {
 
 class Vm {
 public:
+  void initialize();
+  void shutdown();
+
+  InterpretResult interpret(const char *source);
+  void push(Value value);
+  Value pop();
+
+#ifdef CPPLOX_ENABLE_VM_STATS
+  void setStatsEnabled(bool enabled);
+  void resetStats();
+  void printStats() const;
+#endif
+
   std::array<CallFrame, FRAMES_MAX> frames;
   int frameCount;
 
@@ -55,26 +74,7 @@ public:
 #endif
 };
 
-typedef enum {
-  INTERPRET_OK,
-  INTERPRET_COMPILE_ERROR,
-  INTERPRET_RUNTIME_ERROR
-} InterpretResult;
-
-extern Vm vm;
-
-void initVM();
-void freeVM();
-
-InterpretResult interpret(const char *source);
-void push(Value value);
-Value pop();
-
-#ifdef CPPLOX_ENABLE_VM_STATS
-void setVMStatsEnabled(bool enabled);
-void resetVMStats();
-void printVMStats();
-#endif
+Vm &currentVm();
 
 } // namespace cpplox
 

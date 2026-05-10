@@ -15,11 +15,16 @@ namespace {
 
 class VmSession {
 public:
-  VmSession() { initVM(); }
-  ~VmSession() { freeVM(); }
+  VmSession() { vm_.initialize(); }
+  ~VmSession() { vm_.shutdown(); }
 
   VmSession(const VmSession &) = delete;
   VmSession &operator=(const VmSession &) = delete;
+
+  Vm &vm() { return vm_; }
+
+private:
+  Vm vm_;
 };
 
 std::string readFile(std::string_view path) {
@@ -33,8 +38,8 @@ std::string readFile(std::string_view path) {
                      std::istreambuf_iterator<char>());
 }
 
-int runSource(const std::string &source) {
-  InterpretResult result = interpret(source.c_str());
+int runSource(Vm &vm, const std::string &source) {
+  InterpretResult result = vm.interpret(source.c_str());
   if (result == INTERPRET_COMPILE_ERROR)
     return 65;
   if (result == INTERPRET_RUNTIME_ERROR)
@@ -42,16 +47,16 @@ int runSource(const std::string &source) {
   return 0;
 }
 
-int runFile(std::string_view path) {
+int runFile(Vm &vm, std::string_view path) {
   try {
-    return runSource(readFile(path));
+    return runSource(vm, readFile(path));
   } catch (const std::runtime_error &error) {
     std::cerr << error.what() << '\n';
     return 74;
   }
 }
 
-void repl() {
+void repl(Vm &vm) {
   std::string line;
   for (;;) {
     std::cout << "> ";
@@ -59,7 +64,7 @@ void repl() {
       std::cout << '\n';
       break;
     }
-    interpret(line.c_str());
+    vm.interpret(line.c_str());
   }
 }
 
@@ -240,8 +245,8 @@ int main(int argc, const char *argv[]) {
   }
 
 #ifdef CPPLOX_ENABLE_VM_STATS
-  setVMStatsEnabled(stats);
-  resetVMStats();
+  vm.vm().setStatsEnabled(stats);
+  vm.vm().resetStats();
 #else
   if (stats) {
     std::cerr << "cpplox was built without CPPLOX_ENABLE_VM_STATS.\n";
@@ -257,14 +262,14 @@ int main(int argc, const char *argv[]) {
     }
     exitCode = scanFile(path);
   } else if (path == nullptr) {
-    repl();
+    repl(vm.vm());
   } else {
-    exitCode = runFile(path);
+    exitCode = runFile(vm.vm(), path);
   }
 
 #ifdef CPPLOX_ENABLE_VM_STATS
   if (stats) {
-    printVMStats();
+    vm.vm().printStats();
   }
 #endif
   return exitCode;

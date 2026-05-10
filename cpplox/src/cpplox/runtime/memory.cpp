@@ -14,6 +14,7 @@ namespace cpplox {
 #define GC_HEAP_GROW_FACTOR 2
 
 void *reallocate(void *pointer, size_t oldSize, size_t newSize) {
+  Vm &vm = currentVm();
   vm.bytesAllocated += newSize - oldSize;
   if (newSize > oldSize) {
 #ifdef DEBUG_STRESS_GC
@@ -36,6 +37,7 @@ void *reallocate(void *pointer, size_t oldSize, size_t newSize) {
   return result;
 }
 void markObject(Obj *object) {
+  Vm &vm = currentVm();
   if (object == NULL)
     return;
   if (object->isMarked)
@@ -185,6 +187,7 @@ static void freeObject(Obj *object) {
   }
 }
 static void markRoots() {
+  Vm &vm = currentVm();
   for (Value *slot = vm.stack.data(); slot < vm.stackTop; slot++) {
     markValue(*slot);
   }
@@ -203,12 +206,14 @@ static void markRoots() {
   markObject((Obj *)vm.initString);
 }
 static void traceReferences() {
+  Vm &vm = currentVm();
   while (vm.grayCount > 0) {
     Obj *object = vm.grayStack[--vm.grayCount];
     blackenObject(object);
   }
 }
 static void sweep() {
+  Vm &vm = currentVm();
   Obj *previous = NULL;
   Obj *object = vm.objects;
   while (object != NULL) {
@@ -230,6 +235,7 @@ static void sweep() {
   }
 }
 void collectGarbage() {
+  Vm &vm = currentVm();
 #ifdef DEBUG_LOG_GC
   printf("-- gc begin\n");
   size_t before = vm.bytesAllocated;
@@ -249,6 +255,7 @@ void collectGarbage() {
 #endif
 }
 void freeObjects() {
+  Vm &vm = currentVm();
   Obj *object = vm.objects;
   while (object != NULL) {
     Obj *next = object->next;

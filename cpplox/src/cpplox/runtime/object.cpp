@@ -15,6 +15,7 @@ namespace cpplox {
   (type *)allocateObject(sizeof(type), objectType)
 
 static Obj *allocateObject(size_t size, ObjType type) {
+  Vm &vm = currentVm();
   Obj *object = (Obj *)reallocate(NULL, 0, size);
   object->type = type;
   object->isMarked = false;
@@ -83,9 +84,10 @@ static ObjString *allocateString(char *chars, int length, uint32_t hash) {
   string->chars = chars;
   string->hash = hash;
 
-  push(OBJ_VAL(string));
+  Vm &vm = currentVm();
+  vm.push(OBJ_VAL(string));
   vm.strings.set(string, NIL_VAL);
-  pop();
+  vm.pop();
 
   return string;
 }
@@ -98,6 +100,7 @@ static uint32_t hashString(const char *key, int length) {
   return hash;
 }
 ObjString *takeString(char *chars, int length) {
+  Vm &vm = currentVm();
 
   uint32_t hash = hashString(chars, length);
   ObjString *interned = vm.strings.findString(chars, length, hash);
@@ -109,6 +112,7 @@ ObjString *takeString(char *chars, int length) {
   return allocateString(chars, length, hash);
 }
 ObjString *copyString(const char *chars, int length) {
+  Vm &vm = currentVm();
   uint32_t hash = hashString(chars, length);
   ObjString *interned = vm.strings.findString(chars, length, hash);
   if (interned != NULL)
