@@ -4,7 +4,9 @@
 #include <sstream>
 #include <string>
 
+#include "ast_printer.h"
 #include "error_reporter.h"
+#include "parser.h"
 #include "scanner.h"
 
 namespace {
@@ -81,7 +83,12 @@ class LoxApp {
     }
 
     if (mode == Mode::PrintAst) {
-      reporter_.error(1, "AST printing is not implemented yet.");
+      loxpp::Parser parser(tokens, reporter_);
+      const auto expression = parser.parseExpression();
+      if (reporter_.hadError()) {
+        return;
+      }
+      std::cout << loxpp::AstPrinter().print(expression) << '\n';
       return;
     }
 
