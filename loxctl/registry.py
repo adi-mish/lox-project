@@ -37,6 +37,30 @@ IMPLEMENTATIONS: dict[str, Implementation] = {
             "test/limit/too_many_upvalues.lox",
         ),
     ),
+    "loxpp": Implementation(
+        name="loxpp",
+        description="C++23 tree-walking interpreter translated from jlox",
+        build_steps=(
+            command("cmake", "-S", "loxpp", "-B", "loxpp/build", "-DCMAKE_BUILD_TYPE=Release"),
+            command("cmake", "--build", "loxpp/build", "-j", max_parallel_jobs()),
+        ),
+        executable_candidates=(
+            repo_path("loxpp", "build", "Release", "loxpp"),
+            repo_path("loxpp", "build", "loxpp"),
+        ),
+        clean_paths=(repo_path("loxpp", "build"),),
+        supports_scan=True,
+        supports_print_ast=True,
+        expectation_marker="java",
+        default_skip_patterns=(
+            "test/limit/loop_too_large.lox",
+            "test/limit/no_reuse_constants.lox",
+            "test/limit/stack_overflow.lox",
+            "test/limit/too_many_constants.lox",
+            "test/limit/too_many_locals.lox",
+            "test/limit/too_many_upvalues.lox",
+        ),
+    ),
     "clox": Implementation(
         name="clox",
         description="C bytecode VM",
