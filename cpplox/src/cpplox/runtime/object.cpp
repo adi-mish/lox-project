@@ -85,8 +85,8 @@ static ObjString *allocateString(Vm &vm, char *chars, int length,
   string->chars = chars;
   string->hash = hash;
 
-  vm.push(OBJ_VAL(string));
-  vm.strings.set(string, NIL_VAL);
+  vm.push(objectValue(string));
+  vm.strings.set(string, nilValue());
   vm.pop();
 
   return string;
@@ -123,7 +123,7 @@ ObjString *Vm::copyString(const char *chars, int length) {
 }
 ObjUpvalue *Vm::newUpvalue(Value *slot) {
   ObjUpvalue *upvalue = allocateObject<ObjUpvalue>(*this, OBJ_UPVALUE);
-  upvalue->closed = NIL_VAL;
+  upvalue->closed = nilValue();
   upvalue->location = slot;
   upvalue->next = nullptr;
   return upvalue;

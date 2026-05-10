@@ -10,7 +10,7 @@ namespace cpplox {
 
 struct Entry {
   ObjString *key = nullptr;
-  Value value = NIL_VAL;
+  Value value = nilValue();
 };
 
 class Table {

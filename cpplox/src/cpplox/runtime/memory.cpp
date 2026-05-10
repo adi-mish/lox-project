@@ -44,7 +44,7 @@ void markObject(Obj *object) {
 
 #ifdef DEBUG_LOG_GC
   std::printf("%p mark ", (void *)object);
-  printValue(OBJ_VAL(object));
+  printValue(objectValue(object));
   std::printf("\n");
 #endif
 
@@ -53,8 +53,8 @@ void markObject(Obj *object) {
   vm.grayStack.push_back(object);
 }
 void markValue(Value value) {
-  if (IS_OBJ(value))
-    markObject(AS_OBJ(value));
+  if (isObj(value))
+    markObject(asObj(value));
 }
 static void markArray(const ValueArray &array) {
   for (Value value : array) {
@@ -76,7 +76,7 @@ static void markInlineCaches(Chunk *chunk) {
 static void blackenObject(Obj *object) {
 #ifdef DEBUG_LOG_GC
   std::printf("%p blacken ", (void *)object);
-  printValue(OBJ_VAL(object));
+  printValue(objectValue(object));
   std::printf("\n");
 #endif
 
@@ -114,7 +114,7 @@ static void blackenObject(Obj *object) {
     ObjInstance *instance = (ObjInstance *)object;
     markObject((Obj *)instance->klass);
     for (int i = 0; i < instance->fieldCapacity; i++) {
-      if (!IS_UNINITIALIZED(instance->fields[i])) {
+      if (!isUninitialized(instance->fields[i])) {
         markValue(instance->fields[i]);
       }
     }

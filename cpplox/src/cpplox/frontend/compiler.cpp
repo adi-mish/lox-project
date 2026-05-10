@@ -377,7 +377,7 @@ static void rememberGlobal(uint8_t constant) {
 
 static uint8_t identifierConstant(Token *name) {
   return makeConstant(
-      OBJ_VAL(compilingVm->copyString(name->start, name->length)));
+      objectValue(compilingVm->copyString(name->start, name->length)));
 }
 static bool identifiersEqual(Token *a, Token *b) {
   if (a->length != b->length)
@@ -593,7 +593,7 @@ static void grouping(bool canAssign) {
 static void number(bool canAssign) {
   double value = std::strtod(parser.previous.start, nullptr);
 
-  emitConstant(NUMBER_VAL(value));
+  emitConstant(numberValue(value));
 }
 static void or_(bool canAssign) {
   int elseJump = emitJump(OP_JUMP_IF_FALSE);
@@ -607,7 +607,7 @@ static void or_(bool canAssign) {
 }
 
 static void string(bool canAssign) {
-  emitConstant(OBJ_VAL(compilingVm->copyString(
+  emitConstant(objectValue(compilingVm->copyString(
       parser.previous.start + 1, parser.previous.length - 2)));
 }
 
@@ -812,7 +812,7 @@ static void function(FunctionType type) {
 
   ObjFunction *function = endCompiler();
 
-  emitBytes(OP_CLOSURE, makeConstant(OBJ_VAL(function)));
+  emitBytes(OP_CLOSURE, makeConstant(objectValue(function)));
 
   for (int i = 0; i < function->upvalueCount; i++) {
     emitByte(compiler.upvalues[i].isLocal ? 1 : 0);

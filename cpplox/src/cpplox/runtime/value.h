@@ -64,23 +64,24 @@ inline constexpr bool operator==(Value a, Value b) {
 
 inline constexpr bool operator!=(Value a, Value b) { return !(a == b); }
 
-#define IS_BOOL(value) ((value).isBool())
-#define IS_NIL(value) ((value).isNil())
-#define IS_NUMBER(value) ((value).isNumber())
-#define IS_OBJ(value) ((value).isObj())
-#define IS_UNINITIALIZED(value) ((value).isUninitialized())
+inline bool isBool(Value value) { return value.isBool(); }
+inline bool isNil(Value value) { return value.isNil(); }
+inline bool isNumber(Value value) { return value.isNumber(); }
+inline bool isObj(Value value) { return value.isObj(); }
+inline bool isUninitialized(Value value) { return value.isUninitialized(); }
 
-#define AS_BOOL(value) ((value).asBool())
-#define AS_NUMBER(value) valueToNum(value)
-#define AS_OBJ(value) ((value).asObj())
+inline bool asBool(Value value) { return value.asBool(); }
+inline Obj *asObj(Value value) { return value.asObj(); }
 
-#define BOOL_VAL(b) Value::boolean(b)
-#define FALSE_VAL Value::fromBits(QNAN | TAG_FALSE)
-#define TRUE_VAL Value::fromBits(QNAN | TAG_TRUE)
-#define NIL_VAL Value::nil()
-#define UNINITIALIZED_VAL Value::uninitialized()
-#define NUMBER_VAL(num) numToValue(num)
-#define OBJ_VAL(obj) Value::object((Obj *)obj)
+inline Value boolValue(bool value) { return Value::boolean(value); }
+inline Value falseValue() { return Value::fromBits(QNAN | TAG_FALSE); }
+inline Value trueValue() { return Value::fromBits(QNAN | TAG_TRUE); }
+inline Value nilValue() { return Value::nil(); }
+inline Value uninitializedValue() { return Value::uninitialized(); }
+inline Value objectValue(Obj *object) { return Value::object(object); }
+template <typename Object> inline Value objectValue(Object *object) {
+  return Value::object(&object->obj);
+}
 
 static inline double valueToNum(Value value) {
   double num;
@@ -94,6 +95,9 @@ static inline Value numToValue(double num) {
   std::memcpy(&bits, &num, sizeof(double));
   return Value::fromBits(bits);
 }
+
+inline double asNumber(Value value) { return valueToNum(value); }
+inline Value numberValue(double value) { return numToValue(value); }
 
 #else
 
@@ -154,22 +158,21 @@ inline Value objectValue(Obj *object) {
   result.as.obj = object;
   return result;
 }
+template <typename Object> inline Value objectValue(Object *object) {
+  return objectValue(&object->obj);
+}
 
-#define IS_BOOL(value) ((value).type == VAL_BOOL)
-#define IS_NIL(value) ((value).type == VAL_NIL)
-#define IS_NUMBER(value) ((value).type == VAL_NUMBER)
-#define IS_OBJ(value) ((value).type == VAL_OBJ)
-#define IS_UNINITIALIZED(value) ((value).type == VAL_UNINITIALIZED)
+inline bool isBool(Value value) { return value.type == VAL_BOOL; }
+inline bool isNil(Value value) { return value.type == VAL_NIL; }
+inline bool isNumber(Value value) { return value.type == VAL_NUMBER; }
+inline bool isObj(Value value) { return value.type == VAL_OBJ; }
+inline bool isUninitialized(Value value) {
+  return value.type == VAL_UNINITIALIZED;
+}
 
-#define AS_OBJ(value) ((value).as.obj)
-#define AS_BOOL(value) ((value).as.boolean)
-#define AS_NUMBER(value) ((value).as.number)
-
-#define BOOL_VAL(value) boolValue(value)
-#define NIL_VAL nilValue()
-#define UNINITIALIZED_VAL uninitializedValue()
-#define NUMBER_VAL(value) numberValue(value)
-#define OBJ_VAL(object) objectValue((Obj *)object)
+inline Obj *asObj(Value value) { return value.as.obj; }
+inline bool asBool(Value value) { return value.as.boolean; }
+inline double asNumber(Value value) { return value.as.number; }
 
 #endif
 
@@ -177,8 +180,8 @@ using ValueArray = std::vector<Value>;
 
 static inline bool valuesEqual(Value a, Value b) {
 #ifdef NAN_BOXING
-  if (IS_NUMBER(a) && IS_NUMBER(b)) {
-    return AS_NUMBER(a) == AS_NUMBER(b);
+  if (isNumber(a) && isNumber(b)) {
+    return asNumber(a) == asNumber(b);
   }
   return a == b;
 #else
@@ -186,13 +189,13 @@ static inline bool valuesEqual(Value a, Value b) {
     return false;
   switch (a.type) {
   case VAL_BOOL:
-    return AS_BOOL(a) == AS_BOOL(b);
+    return asBool(a) == asBool(b);
   case VAL_NIL:
     return true;
   case VAL_NUMBER:
-    return AS_NUMBER(a) == AS_NUMBER(b);
+    return asNumber(a) == asNumber(b);
   case VAL_OBJ:
-    return AS_OBJ(a) == AS_OBJ(b);
+    return asObj(a) == asObj(b);
   case VAL_UNINITIALIZED:
     return true;
   default:

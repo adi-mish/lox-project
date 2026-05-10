@@ -253,7 +253,7 @@ void Vm::printStats() const {
 #endif
 
 static Value clockNative(int argCount, Value *args) {
-  return NUMBER_VAL((double)std::clock() / CLOCKS_PER_SEC);
+  return numberValue((double)std::clock() / CLOCKS_PER_SEC);
 }
 static void resetStack() {
   Vm &vm = currentVm();
@@ -286,8 +286,8 @@ static void runtimeError(const char *format, ...) {
 }
 static void defineNative(const char *name, NativeFn function) {
   Vm &vm = currentVm();
-  vm.push(OBJ_VAL(vm.copyString(name, (int)std::strlen(name))));
-  vm.push(OBJ_VAL(vm.newNative(function)));
+  vm.push(objectValue(vm.copyString(name, (int)std::strlen(name))));
+  vm.push(objectValue(vm.newNative(function)));
   vm.globals.set(asString(vm.stack[0]), vm.stack[1]);
   vm.pop();
   vm.pop();
@@ -373,7 +373,7 @@ static bool call(ObjClosure *closure, int argCount) {
 }
 static bool callValue(Value callee, int argCount) {
   Vm &vm = currentVm();
-  if (IS_OBJ(callee)) {
+  if (isObj(callee)) {
     switch (objectType(callee)) {
     case OBJ_BOUND_METHOD: {
       ObjBoundMethod *bound = asBoundMethod(callee);
@@ -390,7 +390,7 @@ static bool callValue(Value callee, int argCount) {
       if (vm.statsEnabled)
         vm.classCalls++;
 #endif
-      vm.stackTop[-argCount - 1] = OBJ_VAL(vm.newInstance(klass));
+      vm.stackTop[-argCount - 1] = objectValue(vm.newInstance(klass));
       if (klass->initializer != nullptr) {
         return call(klass->initializer, argCount);
       } else if (argCount != 0) {
@@ -429,7 +429,7 @@ static bool getFieldSlot(ObjClass *klass, ObjString *name, int *slot) {
   Value slotValue;
   if (!klass->fieldSlots.get(name, &slotValue))
     return false;
-  *slot = (int)AS_NUMBER(slotValue);
+  *slot = (int)asNumber(slotValue);
   return true;
 }
 
@@ -439,7 +439,7 @@ static int ensureFieldSlot(ObjClass *klass, ObjString *name) {
     return slot;
 
   slot = klass->fieldSlotCount++;
-  klass->fieldSlots.set(name, NUMBER_VAL(slot));
+  klass->fieldSlots.set(name, numberValue(slot));
   klass->fieldVersion++;
   return slot;
 }
@@ -456,14 +456,14 @@ static void ensureInstanceFieldCapacity(ObjInstance *instance, int slot) {
 
   instance->fields = growArray(instance->fields, oldCapacity, newCapacity);
   for (int i = oldCapacity; i < newCapacity; i++) {
-    instance->fields[i] = UNINITIALIZED_VAL;
+    instance->fields[i] = uninitializedValue();
   }
   instance->fieldCapacity = newCapacity;
 }
 
 static bool readInstanceField(ObjInstance *instance, int slot, Value *value) {
   if (slot < 0 || slot >= instance->fieldCapacity ||
-      IS_UNINITIALIZED(instance->fields[slot])) {
+      isUninitialized(instance->fields[slot])) {
     return false;
   }
   *value = instance->fields[slot];
@@ -571,7 +571,7 @@ static bool bindMethodCached(ObjClass *klass, ObjString *name,
 
   ObjBoundMethod *bound = currentVm().newBoundMethod(peek(0), asClosure(method));
   currentVm().pop();
-  currentVm().push(OBJ_VAL(bound));
+  currentVm().push(objectValue(bound));
   return true;
 }
 static bool bindMethod(ObjClass *klass, ObjString *name) {
@@ -621,7 +621,7 @@ static void defineMethod(ObjString *name) {
   vm.pop();
 }
 static bool isFalsey(Value value) {
-  return IS_NIL(value) || (IS_BOOL(value) && !AS_BOOL(value));
+  return isNil(value) || (isBool(value) && !asBool(value));
 }
 static void concatenate() {
   Vm &vm = currentVm();
@@ -638,7 +638,7 @@ static void concatenate() {
   ObjString *result = vm.takeString(chars, length);
   vm.pop();
   vm.pop();
-  vm.push(OBJ_VAL(result));
+  vm.push(objectValue(result));
 }
 static InterpretResult run() {
   Vm &vm = currentVm();
@@ -664,11 +664,11 @@ static InterpretResult run() {
   do {                                                                         \
     Value bValue = vm.stackTop[-1];                                            \
     Value aValue = vm.stackTop[-2];                                            \
-    if (!IS_NUMBER(bValue) || !IS_NUMBER(aValue)) {                            \
+    if (!isNumber(bValue) || !isNumber(aValue)) {                            \
       runtimeError("Operands must be numbers.");                               \
       return INTERPRET_RUNTIME_ERROR;                                          \
     }                                                                          \
-    vm.stackTop[-2] = valueType(AS_NUMBER(aValue) op AS_NUMBER(bValue));       \
+    vm.stackTop[-2] = valueType(asNumber(aValue) op asNumber(bValue));       \
     vm.stackTop--;                                                             \
   } while (false)
 
@@ -709,13 +709,13 @@ static InterpretResult run() {
       break;
     }
     case OP_NIL:
-      PUSH_VALUE(NIL_VAL);
+      PUSH_VALUE(nilValue());
       break;
     case OP_TRUE:
-      PUSH_VALUE(BOOL_VAL(true));
+      PUSH_VALUE(boolValue(true));
       break;
     case OP_FALSE:
-      PUSH_VALUE(BOOL_VAL(false));
+      PUSH_VALUE(boolValue(false));
       break;
     case OP_POP:
       vm.stackTop--;
@@ -928,15 +928,15 @@ static InterpretResult run() {
     }
     case OP_EQUAL: {
       bool equal = valuesEqual(vm.stackTop[-2], vm.stackTop[-1]);
-      vm.stackTop[-2] = BOOL_VAL(equal);
+      vm.stackTop[-2] = boolValue(equal);
       vm.stackTop--;
       break;
     }
     case OP_GREATER:
-      BINARY_OP(BOOL_VAL, >);
+      BINARY_OP(boolValue, >);
       break;
     case OP_LESS:
-      BINARY_OP(BOOL_VAL, <);
+      BINARY_OP(boolValue, <);
       break;
 
     case OP_ADD: {
@@ -944,8 +944,8 @@ static InterpretResult run() {
       Value aValue = vm.stackTop[-2];
       if (isString(bValue) && isString(aValue)) {
         concatenate();
-      } else if (IS_NUMBER(bValue) && IS_NUMBER(aValue)) {
-        vm.stackTop[-2] = NUMBER_VAL(AS_NUMBER(aValue) + AS_NUMBER(bValue));
+      } else if (isNumber(bValue) && isNumber(aValue)) {
+        vm.stackTop[-2] = numberValue(asNumber(aValue) + asNumber(bValue));
         vm.stackTop--;
       } else {
         runtimeError("Operands must be two numbers or two strings.");
@@ -954,23 +954,23 @@ static InterpretResult run() {
       break;
     }
     case OP_SUBTRACT:
-      BINARY_OP(NUMBER_VAL, -);
+      BINARY_OP(numberValue, -);
       break;
     case OP_MULTIPLY:
-      BINARY_OP(NUMBER_VAL, *);
+      BINARY_OP(numberValue, *);
       break;
     case OP_DIVIDE:
-      BINARY_OP(NUMBER_VAL, /);
+      BINARY_OP(numberValue, /);
       break;
     case OP_NOT:
-      vm.stackTop[-1] = BOOL_VAL(isFalsey(vm.stackTop[-1]));
+      vm.stackTop[-1] = boolValue(isFalsey(vm.stackTop[-1]));
       break;
     case OP_NEGATE:
-      if (!IS_NUMBER(vm.stackTop[-1])) {
+      if (!isNumber(vm.stackTop[-1])) {
         runtimeError("Operand must be a number.");
         return INTERPRET_RUNTIME_ERROR;
       }
-      vm.stackTop[-1] = NUMBER_VAL(-AS_NUMBER(vm.stackTop[-1]));
+      vm.stackTop[-1] = numberValue(-asNumber(vm.stackTop[-1]));
       break;
     case OP_PRINT: {
       printValue(POP_VALUE());
@@ -1031,7 +1031,7 @@ static InterpretResult run() {
     case OP_CLOSURE: {
       ObjFunction *function = asFunction(READ_CONSTANT());
       ObjClosure *closure = vm.newClosure(function);
-      PUSH_VALUE(OBJ_VAL(closure));
+      PUSH_VALUE(objectValue(closure));
       for (int i = 0; i < closure->upvalueCount; i++) {
         uint8_t isLocal = READ_BYTE();
         uint8_t index = READ_BYTE();
@@ -1063,7 +1063,7 @@ static InterpretResult run() {
       break;
     }
     case OP_CLASS:
-      PUSH_VALUE(OBJ_VAL(vm.newClass(READ_STRING())));
+      PUSH_VALUE(objectValue(vm.newClass(READ_STRING())));
       break;
     case OP_INHERIT: {
       Value superclass = peek(1);
@@ -1101,11 +1101,11 @@ InterpretResult Vm::interpret(const char *source) {
   if (function == nullptr)
     return INTERPRET_COMPILE_ERROR;
 
-  vm.push(OBJ_VAL(function));
+  vm.push(objectValue(function));
 
   ObjClosure *closure = vm.newClosure(function);
   vm.pop();
-  vm.push(OBJ_VAL(closure));
+  vm.push(objectValue(closure));
   call(closure, 0);
 
   return run();

@@ -15,7 +15,7 @@ static InlineCache emptyInlineCache() {
   cache.secondaryVersion = 0;
   cache.entryIndex = -1;
   cache.tableCapacity = 0;
-  cache.value = NIL_VAL;
+  cache.value = nilValue();
   return cache;
 }
 
@@ -37,7 +37,7 @@ void Chunk::truncate(int size) {
 }
 
 int Chunk::addConstant(Value value) {
-  if (IS_OBJ(value)) {
+  if (isObj(value)) {
     for (int i = 0; i < static_cast<int>(constants_.size()); i++) {
       if (valuesEqual(constants_[i], value))
         return i;

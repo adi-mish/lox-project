@@ -24,7 +24,7 @@ Entry *Table::findEntry(Entry *entries, int capacity, ObjString *key) {
     Entry *entry = &entries[index];
 
     if (entry->key == nullptr) {
-      if (IS_NIL(entry->value)) {
+      if (isNil(entry->value)) {
 
         return tombstone != nullptr ? tombstone : entry;
       } else {
@@ -99,7 +99,7 @@ bool Table::set(ObjString *key, Value value) {
   Entry *entry = findEntry(entries_.data(), capacity(), key);
   bool isNewKey = entry->key == nullptr;
 
-  if (isNewKey && IS_NIL(entry->value)) {
+  if (isNewKey && isNil(entry->value)) {
     count_++;
     version_++;
   }
@@ -117,7 +117,7 @@ bool Table::remove(ObjString *key) {
     return false;
 
   entry->key = nullptr;
-  entry->value = BOOL_VAL(true);
+  entry->value = boolValue(true);
   version_++;
   return true;
 }
@@ -139,7 +139,7 @@ ObjString *Table::findString(const char *chars, int length,
     const Entry *entry = &entries_[index];
     if (entry->key == nullptr) {
 
-      if (IS_NIL(entry->value))
+      if (isNil(entry->value))
         return nullptr;
     } else if (entry->key->length == length && entry->key->hash == hash &&
                std::memcmp(entry->key->chars, chars, length) == 0) {

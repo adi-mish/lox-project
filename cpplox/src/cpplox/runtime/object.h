@@ -98,10 +98,10 @@ struct ObjBoundMethod {
 void printObject(Value value);
 
 static inline bool isObjType(Value value, ObjectKind type) {
-  return IS_OBJ(value) && AS_OBJ(value)->type == type;
+  return isObj(value) && asObj(value)->type == type;
 }
 
-inline ObjectKind objectType(Value value) { return AS_OBJ(value)->type; }
+inline ObjectKind objectType(Value value) { return asObj(value)->type; }
 inline bool isBoundMethod(Value value) {
   return isObjType(value, OBJ_BOUND_METHOD);
 }
@@ -113,25 +113,25 @@ inline bool isNative(Value value) { return isObjType(value, OBJ_NATIVE); }
 inline bool isString(Value value) { return isObjType(value, OBJ_STRING); }
 
 inline ObjBoundMethod *asBoundMethod(Value value) {
-  return reinterpret_cast<ObjBoundMethod *>(AS_OBJ(value));
+  return reinterpret_cast<ObjBoundMethod *>(asObj(value));
 }
 inline ObjClass *asClass(Value value) {
-  return reinterpret_cast<ObjClass *>(AS_OBJ(value));
+  return reinterpret_cast<ObjClass *>(asObj(value));
 }
 inline ObjClosure *asClosure(Value value) {
-  return reinterpret_cast<ObjClosure *>(AS_OBJ(value));
+  return reinterpret_cast<ObjClosure *>(asObj(value));
 }
 inline ObjFunction *asFunction(Value value) {
-  return reinterpret_cast<ObjFunction *>(AS_OBJ(value));
+  return reinterpret_cast<ObjFunction *>(asObj(value));
 }
 inline ObjInstance *asInstance(Value value) {
-  return reinterpret_cast<ObjInstance *>(AS_OBJ(value));
+  return reinterpret_cast<ObjInstance *>(asObj(value));
 }
 inline NativeFn asNative(Value value) {
-  return reinterpret_cast<ObjNative *>(AS_OBJ(value))->function;
+  return reinterpret_cast<ObjNative *>(asObj(value))->function;
 }
 inline ObjString *asString(Value value) {
-  return reinterpret_cast<ObjString *>(AS_OBJ(value));
+  return reinterpret_cast<ObjString *>(asObj(value));
 }
 inline char *asCString(Value value) { return asString(value)->chars; }
 

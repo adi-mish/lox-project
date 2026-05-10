@@ -19,26 +19,26 @@ void freeValueArray(ValueArray *array) {
 }
 void printValue(Value value) {
 #ifdef NAN_BOXING
-  if (IS_BOOL(value)) {
-    std::printf(AS_BOOL(value) ? "true" : "false");
-  } else if (IS_NIL(value)) {
+  if (isBool(value)) {
+    std::printf(asBool(value) ? "true" : "false");
+  } else if (isNil(value)) {
     std::printf("nil");
-  } else if (IS_NUMBER(value)) {
-    std::printf("%g", AS_NUMBER(value));
-  } else if (IS_OBJ(value)) {
+  } else if (isNumber(value)) {
+    std::printf("%g", asNumber(value));
+  } else if (isObj(value)) {
     printObject(value);
   }
 #else
 
   switch (value.type) {
   case VAL_BOOL:
-    std::printf(AS_BOOL(value) ? "true" : "false");
+    std::printf(asBool(value) ? "true" : "false");
     break;
   case VAL_NIL:
     std::printf("nil");
     break;
   case VAL_NUMBER:
-    std::printf("%g", AS_NUMBER(value));
+    std::printf("%g", asNumber(value));
     break;
   case VAL_OBJ:
     printObject(value);
