@@ -297,20 +297,23 @@ Useful knobs:
 Recent verification from the root orchestrator:
 
 ```text
+$ ./lox.py test jlox clox cpplox eloxir --skip-build --timeout 10
 jlox: 259 passed, 0 failed, 6 skipped, 265 total
 clox: 263 passed, 0 failed, 2 skipped, 265 total
 cpplox: 263 passed, 0 failed, 2 skipped, 265 total
-eloxir: 265 passed, 0 failed, 265 total
+eloxir: 265 passed, 0 failed, 0 skipped, 265 total
 ```
 
 The skips are implementation-surface differences described above, not known
 semantic failures.
 
-Recent benchmark comparison:
+Recent bytecode/JIT benchmark comparison:
 
 ```text
-clox: 11 passed, 0 failed, 0 skipped, 11 total (20.638s)
-cpplox: 11 passed, 0 failed, 0 skipped, 11 total (19.998s)
+$ ./lox.py bench clox cpplox eloxir --skip-build --timings 33 --timeout 60
+clox: 11 passed, 0 failed, 0 skipped, 11 total (18.972s)
+cpplox: 11 passed, 0 failed, 0 skipped, 11 total (14.915s)
+eloxir: 11 passed, 0 failed, 0 skipped, 11 total (13.382s)
 ```
 
 ## Acknowledgements
