@@ -21,7 +21,7 @@ set(
 )
 set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS ${ALLOWED_BUILD_TYPES})
 
-option(ELOXIR_ENABLE_CACHE_STATS "Enable runtime cache instrumentation" ON)
+option(ELOXIR_ENABLE_CACHE_STATS "Enable runtime cache instrumentation" OFF)
 if (ELOXIR_ENABLE_CACHE_STATS)
   add_compile_definitions(ELOXIR_ENABLE_CACHE_STATS)
 endif()
@@ -41,9 +41,25 @@ endif()
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+function(eloxir_enable_warnings target_name)
+  if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(${target_name} PRIVATE
+      $<$<CONFIG:Debug>:-g3 -Wall -Wextra -Wpedantic>
+      $<$<CONFIG:Release>:-Wall -Wextra -Wpedantic -O3 -DNDEBUG>
+      $<$<CONFIG:RelWithDebInfo>:-Wall -Wextra -Wpedantic -O2 -g -DNDEBUG>
+    )
+  elseif (MSVC)
+    target_compile_options(${target_name} PRIVATE
+      $<$<CONFIG:Debug>:/W4 /Zi /Od>
+      $<$<CONFIG:Release>:/W4 /O2 /DNDEBUG>
+      $<$<CONFIG:RelWithDebInfo>:/W4 /O2 /Zi /DNDEBUG>
+    )
+  endif()
+endfunction()
+
 # 3) Find LLVM, include dirs, definitions…
 find_package(LLVM REQUIRED CONFIG)
-include_directories(${LLVM_INCLUDE_DIRS})
+include_directories(SYSTEM ${LLVM_INCLUDE_DIRS})
 add_definitions(${LLVM_DEFINITIONS})
 
 # 4) Subdirectories
@@ -61,17 +77,7 @@ target_link_libraries(eloxir PRIVATE
   LLVMAsmPrinter LLVMX86Desc LLVMX86Info LLVMX86CodeGen LLVMX86AsmParser
 )
 
-# 6) Apply minimal warnings + sanitizers
-if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-  target_compile_options(eloxir PRIVATE
-    $<$<CONFIG:Debug>: -g3 -Wall -Wextra -Wpedantic>
-    $<$<CONFIG:Release>:-Wall -Wextra -Wpedantic -O3 -DNDEBUG>
-    $<$<CONFIG:RelWithDebInfo>:-Wall -Wextra -Wpedantic -O2 -g -DNDEBUG>
-  )
-elseif (MSVC)
-  target_compile_options(eloxir PRIVATE
-    $<$<CONFIG:Debug>:/W4 /WX /Zi /Od>
-    $<$<CONFIG:Release>:/W4 /WX /O2 /DNDEBUG>
-    $<$<CONFIG:RelWithDebInfo>:/W4 /WX /O2 /Zi /DNDEBUG>
-  )
-endif()
+# 6) Apply a consistent warning policy to all local targets.
+foreach(target_name IN ITEMS Runtime Frontend CodeGen EloxirJIT eloxir)
+  eloxir_enable_warnings(${target_name})
+endforeach()

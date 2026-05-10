@@ -84,7 +84,7 @@ void Resolver::addUpvalue(const std::string &name) {
   current_func.upvalue_indices[name] = index;
 }
 
-void Resolver::addUpvalueChain(const std::string &name, int depth) {
+void Resolver::addUpvalueChain(const std::string &name, int /*depth*/) {
   // Add upvalue to all intermediate function levels
   // depth = 0 means current scope, depth = 1 means immediate parent, etc.
 
@@ -100,7 +100,7 @@ void Resolver::addUpvalueChain(const std::string &name, int depth) {
   // This will be handled in the function completion logic.
 }
 
-int Resolver::resolveUpvalue(Function *function, const Token &name) {
+int Resolver::resolveUpvalue(Function * /*function*/, const Token &name) {
   if (function_stack.empty()) {
     return -1; // Not an upvalue
   }

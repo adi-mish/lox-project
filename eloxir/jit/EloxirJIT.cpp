@@ -4,8 +4,11 @@
 #include <llvm/ExecutionEngine/Orc/JITTargetMachineBuilder.h>
 #include <llvm/ExecutionEngine/Orc/LLJIT.h>
 #include <llvm/ExecutionEngine/Orc/ThreadSafeModule.h>
+#include <llvm/ADT/StringMap.h>
 #include <llvm/Support/CodeGen.h>
 #include <llvm/Support/Error.h>
+#include <llvm/TargetParser/Host.h>
+#include <algorithm>
 #include <thread>
 
 namespace eloxir {
@@ -14,6 +17,23 @@ llvm::Expected<std::unique_ptr<EloxirJIT>> EloxirJIT::Create() {
   auto jtmb = llvm::orc::JITTargetMachineBuilder::detectHost();
   if (!jtmb)
     return jtmb.takeError();
+
+  auto hostCpu = llvm::sys::getHostCPUName();
+  if (!hostCpu.empty()) {
+    jtmb->setCPU(hostCpu.str());
+  }
+
+  auto hostFeatures = llvm::sys::getHostCPUFeatures();
+  if (!hostFeatures.empty()) {
+    std::vector<std::string> features;
+    features.reserve(hostFeatures.size());
+    for (const auto &feature : hostFeatures) {
+      features.push_back((feature.second ? "+" : "-") + feature.first().str());
+    }
+    std::sort(features.begin(), features.end());
+    jtmb->addFeatures(features);
+  }
+
   jtmb->setCodeGenOptLevel(llvm::CodeGenOptLevel::Aggressive);
   auto dl = jtmb->getDefaultDataLayoutForTarget();
   if (!dl)
@@ -122,6 +142,22 @@ llvm::Expected<std::unique_ptr<EloxirJIT>> EloxirJIT::Create() {
   runtimeSymbols[mangle("elx_call_value")] = llvm::orc::ExecutorSymbolDef(
       llvm::orc::ExecutorAddr::fromPtr(&elx_call_value),
       llvm::JITSymbolFlags::Exported);
+  runtimeSymbols[mangle("elx_call_property")] =
+      llvm::orc::ExecutorSymbolDef(
+          llvm::orc::ExecutorAddr::fromPtr(&elx_call_property),
+          llvm::JITSymbolFlags::Exported);
+  runtimeSymbols[mangle("elx_prepare_property_call")] =
+      llvm::orc::ExecutorSymbolDef(
+          llvm::orc::ExecutorAddr::fromPtr(&elx_prepare_property_call),
+          llvm::JITSymbolFlags::Exported);
+  runtimeSymbols[mangle("elx_prepare_property_call_cached")] =
+      llvm::orc::ExecutorSymbolDef(
+          llvm::orc::ExecutorAddr::fromPtr(&elx_prepare_property_call_cached),
+          llvm::JITSymbolFlags::Exported);
+  runtimeSymbols[mangle("elx_call_prepared_property")] =
+      llvm::orc::ExecutorSymbolDef(
+          llvm::orc::ExecutorAddr::fromPtr(&elx_call_prepared_property),
+          llvm::JITSymbolFlags::Exported);
   runtimeSymbols[mangle("elx_is_function")] = llvm::orc::ExecutorSymbolDef(
       llvm::orc::ExecutorAddr::fromPtr(&elx_is_function),
       llvm::JITSymbolFlags::Exported);
@@ -333,7 +369,7 @@ llvm::Expected<std::unique_ptr<EloxirJIT>> EloxirJIT::Create() {
         return tsm;
       });
 
-  return std::move(j);
+  return j;
 }
 
 llvm::Error EloxirJIT::addModule(llvm::orc::ThreadSafeModule tsm) {

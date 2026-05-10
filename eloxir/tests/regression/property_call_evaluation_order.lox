@@ -1,0 +1,11 @@
+var side = false;
+
+fun mark() {
+  side = true;
+}
+
+class Foo {}
+
+var foo = Foo();
+foo.nope(mark());
+print side;

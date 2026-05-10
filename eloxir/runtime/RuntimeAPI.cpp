@@ -1,5 +1,6 @@
 #include "RuntimeAPI.h"
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -26,6 +27,9 @@ static std::unordered_map<std::string, uint64_t> global_interned_strings;
 // Global environment for cross-line persistence
 static std::unordered_map<std::string, uint64_t> global_variables;
 static std::unordered_map<std::string, uint64_t> global_functions;
+
+static constexpr int PROPERTY_CALL_FIELD = 1;
+static constexpr int PROPERTY_CALL_METHOD = 2;
 
 #if defined(ELOXIR_ENABLE_CACHE_STATS)
 void CacheStatsCollector::reset() {
@@ -559,10 +563,6 @@ static uint64_t invoke_closure_pointer(void *function_ptr, uint64_t *args,
   }
 }
 
-static ObjShape *createShape(ObjShape *parent, ObjString *newField) {
-  return new ObjShape(parent, newField);
-}
-
 static bool shapeTryGetSlot(ObjShape *shape, ObjString *field, size_t *slotOut) {
   if (!shape || !field)
     return false;
@@ -576,39 +576,14 @@ static bool shapeTryGetSlot(ObjShape *shape, ObjString *field, size_t *slotOut) 
   return true;
 }
 
-static ObjShape *shapeEnsureField(ObjShape *base, ObjString *field) {
-  if (!field)
-    return base;
-
-  if (!base)
-    base = createShape(nullptr, nullptr);
-
-  auto it = base->transitions.find(field);
-  if (it != base->transitions.end())
-    return it->second;
-
-  ObjShape *next = createShape(base, field);
-  base->transitions[field] = next;
-  return next;
-}
-
-static void ensureInstanceShape(ObjInstance *instance, ObjShape *shape) {
-  if (!instance)
-    return;
-
-  if (instance->shape == shape)
-    return;
-
-  instance->shape = shape;
-  size_t slotCount = shape ? shape->slotCount : 0;
-  ensureInstanceCapacity(instance, slotCount, true);
-}
-
 } // namespace
 
 static void propertyCacheUpdate(PropertyCache *cache, ObjShape *shape,
                                 size_t slot, uint32_t capacity,
                                 bool is_set) {
+#if !defined(ELOXIR_ENABLE_CACHE_STATS)
+  (void)is_set;
+#endif
   if (!cache || !shape || capacity == 0)
     return;
 
@@ -881,6 +856,67 @@ static ObjBoundMethod *getBoundMethod(Value v) {
 }
 
 static uint64_t findMethodOnClass(ObjClass *klass, ObjString *name);
+
+static uint64_t callMethodWithoutBinding(uint64_t receiver_bits,
+                                         uint64_t method_bits, uint64_t *args,
+                                         int arg_count) {
+  Value method_val = Value::fromBits(method_bits);
+  ObjClosure *closure = getClosure(method_val);
+  ObjFunction *func = closure ? closure->function : getFunction(method_val);
+  ObjNative *native = (closure || func) ? nullptr : getNative(method_val);
+
+  int expected_total = -1;
+  const char *method_name = "<anonymous>";
+  if (func) {
+    expected_total = func->arity;
+    if (func->name && func->name[0] != '\0') {
+      method_name = func->name;
+    }
+  } else if (native) {
+    expected_total = native->arity;
+    if (native->name && native->name[0] != '\0') {
+      method_name = native->name;
+    }
+  }
+
+  if (expected_total >= 0) {
+    int expected_user_args = expected_total > 0 ? expected_total - 1 : 0;
+    if (arg_count != expected_user_args) {
+      std::string error_msg =
+          formatArityError(method_name, expected_user_args, arg_count);
+      elx_runtime_error(error_msg.c_str());
+      return Value::nil().getBits();
+    }
+  }
+
+  constexpr size_t kSmallArgCapacity = 16;
+  std::array<uint64_t, kSmallArgCapacity> small_args{};
+  std::vector<uint64_t> heap_args;
+  size_t total_arg_count = static_cast<size_t>(arg_count) + 1;
+  uint64_t *method_args = small_args.data();
+  if (total_arg_count > small_args.size()) {
+    heap_args.resize(total_arg_count);
+    method_args = heap_args.data();
+  }
+
+  method_args[0] = receiver_bits;
+  for (int i = 0; i < arg_count; ++i) {
+    method_args[i + 1] = args ? args[i] : Value::nil().getBits();
+  }
+
+  int call_arg_count = static_cast<int>(total_arg_count);
+  if (closure) {
+    return elx_call_closure(method_bits, method_args, call_arg_count);
+  }
+  if (func) {
+    return elx_call_function(method_bits, method_args, call_arg_count);
+  }
+  if (native) {
+    return elx_call_native(method_bits, method_args, call_arg_count);
+  }
+  return elx_call_value(method_bits, method_args, call_arg_count);
+}
+
 static ObjShape *ensureInstanceShape(ObjInstance *instance) {
   if (!instance)
     return nullptr;
@@ -1056,25 +1092,6 @@ uint64_t elx_readLine() {
   }
 }
 
-static uint64_t native_clock_adapter(int arg_count, const uint64_t * /*args*/) {
-  if (arg_count != 0) {
-    std::string error_msg = formatArityError("clock", 0, arg_count);
-    elx_runtime_error(error_msg.c_str());
-    return Value::nil().getBits();
-  }
-  return elx_clock();
-}
-
-static uint64_t native_readLine_adapter(int arg_count,
-                                        const uint64_t * /*args*/) {
-  if (arg_count != 0) {
-    std::string error_msg = formatArityError("readLine", 0, arg_count);
-    elx_runtime_error(error_msg.c_str());
-    return Value::nil().getBits();
-  }
-  return elx_readLine();
-}
-
 uint64_t elx_debug_string_address(uint64_t str_bits) {
   Value v = Value::fromBits(str_bits);
   if (v.isObj()) {
@@ -1089,27 +1106,25 @@ uint64_t elx_debug_string_address(uint64_t str_bits) {
 }
 
 uint64_t elx_intern_string(const char *chars, int length) {
-  // Create a std::string for lookup in the intern table
-  std::string str(chars, length);
-
-  // Check if this string is already interned globally
-  auto intern_it = global_interned_strings.find(str);
-  if (intern_it != global_interned_strings.end()) {
-    return intern_it->second; // Return the existing interned string
+  auto [intern_it, inserted] =
+      global_interned_strings.try_emplace(std::string(chars, length), 0);
+  if (!inserted) {
+    return intern_it->second;
   }
 
-  // If not found, create a new string object
-  uint64_t new_string = elx_allocate_string(chars, length);
+  uint64_t new_string = elx_allocate_string(intern_it->first.data(), length);
+  if (Value::fromBits(new_string).isNil()) {
+    global_interned_strings.erase(intern_it);
+    return new_string;
+  }
 
-  // Add it to the global intern table
-  global_interned_strings[str] = new_string;
-
+  intern_it->second = new_string;
   return new_string;
 }
 
 uint64_t elx_allocate_string(const char *chars, int length) {
   // Allocate memory for the string object
-  size_t size = sizeof(ObjString) + length + 1; // +1 for null terminator
+  size_t size = offsetof(ObjString, chars) + length + 1;
   ObjString *str = static_cast<ObjString *>(malloc(size));
   if (!str) {
     return Value::nil().getBits();
@@ -1157,7 +1172,7 @@ uint64_t elx_concatenate_strings(uint64_t a_bits, uint64_t b_bits) {
   }
 
   int new_length = str_a->length + str_b->length;
-  size_t size = sizeof(ObjString) + new_length + 1;
+  size_t size = offsetof(ObjString, chars) + new_length + 1;
   ObjString *result = static_cast<ObjString *>(malloc(size));
 
   result->obj.type = ObjType::STRING;
@@ -1573,11 +1588,8 @@ uint64_t elx_call_value(uint64_t callee_bits, uint64_t *args, int arg_count) {
         return Value::nil().getBits();
       }
 
-      uint64_t bound_bits = elx_bind_method(instance_bits, initializer_bits);
-      if (elx_has_runtime_error())
-        return Value::nil().getBits();
-
-      elx_call_value(bound_bits, args, arg_count);
+      callMethodWithoutBinding(instance_bits, initializer_bits, args,
+                               arg_count);
       if (elx_has_runtime_error())
         return Value::nil().getBits();
     } else if (arg_count != 0) {
@@ -1599,43 +1611,8 @@ uint64_t elx_call_value(uint64_t callee_bits, uint64_t *args, int arg_count) {
       return Value::nil().getBits();
     }
 
-    Value method_val = Value::fromBits(bound->method);
-    ObjClosure *closure = getClosure(method_val);
-    ObjFunction *func =
-        closure ? closure->function : getFunction(method_val);
-
-    const char *method_name = (func && func->name && func->name[0] != '\0')
-                                  ? func->name
-                                  : "<anonymous>";
-    if (func) {
-      int expected_total = func->arity;
-      int expected_user_args = expected_total > 0 ? expected_total - 1 : 0;
-      if (arg_count != expected_user_args) {
-        std::string error_msg =
-            formatArityError(method_name, expected_user_args, arg_count);
-        elx_runtime_error(error_msg.c_str());
-        return Value::nil().getBits();
-      }
-    }
-
-    std::vector<uint64_t> method_args(static_cast<size_t>(arg_count) + 1);
-    method_args[0] = bound->receiver;
-    for (int i = 0; i < arg_count; ++i) {
-      method_args[i + 1] = args ? args[i] : Value::nil().getBits();
-    }
-
-    int call_arg_count = static_cast<int>(method_args.size());
-    if (closure) {
-      return elx_call_closure(bound->method, method_args.data(),
-                              call_arg_count);
-    }
-
-    if (func) {
-      return elx_call_function(bound->method, method_args.data(),
-                               call_arg_count);
-    }
-
-    return elx_call_value(bound->method, method_args.data(), call_arg_count);
+    return callMethodWithoutBinding(bound->receiver, bound->method, args,
+                                    arg_count);
   }
   default:
     elx_runtime_error("Can only call functions and classes.");
@@ -1944,6 +1921,50 @@ void elx_call_cache_invalidate(CallInlineCache *cache) {
   cache->padding = 0;
 }
 
+static bool configureMethodCallCache(CallInlineCache *cache,
+                                     uint64_t method_bits, ObjClass *klass,
+                                     uint64_t callee_bits = 0) {
+  if (!cache || !klass)
+    return false;
+
+  Value method_val = Value::fromBits(method_bits);
+  ObjClosure *closure = getClosure(method_val);
+  ObjFunction *func = closure ? closure->function : getFunction(method_val);
+  ObjNative *native = closure ? nullptr : getNative(method_val);
+
+  void *target = nullptr;
+  int flags = 0;
+  int expected_total = 0;
+
+  if (closure && closure->function && closure->function->llvm_function) {
+    target = closure->function->llvm_function;
+    expected_total = closure->function->arity;
+    flags |= CALL_CACHE_FLAG_METHOD_IS_CLOSURE;
+  } else if (func && func->llvm_function) {
+    target = func->llvm_function;
+    expected_total = func->arity;
+    flags |= CALL_CACHE_FLAG_METHOD_IS_FUNCTION;
+  } else if (native && native->function) {
+    target = reinterpret_cast<void *>(native->function);
+    expected_total = native->arity;
+    flags |= CALL_CACHE_FLAG_METHOD_IS_NATIVE;
+  } else {
+    return false;
+  }
+
+  elx_call_cache_invalidate(cache);
+  cache->callee_bits = callee_bits;
+  cache->guard0_bits = method_bits;
+  cache->guard1_bits = reinterpret_cast<uint64_t>(klass);
+  cache->target_ptr = target;
+  cache->kind = static_cast<int32_t>(CallInlineCacheKind::BOUND_METHOD);
+  cache->flags = flags;
+  cache->expected_arity = (expected_total >= 0)
+                              ? (expected_total > 0 ? expected_total - 1 : 0)
+                              : expected_total;
+  return true;
+}
+
 void elx_call_cache_update(CallInlineCache *cache, uint64_t callee_bits) {
   if (!cache)
     return;
@@ -1963,7 +1984,7 @@ void elx_call_cache_update(CallInlineCache *cache, uint64_t callee_bits) {
     return;
 
   Obj *obj = static_cast<Obj *>(obj_ptr);
-  bool updated = false;
+  [[maybe_unused]] bool updated = false;
 
   switch (obj->type) {
   case ObjType::FUNCTION: {
@@ -2004,46 +2025,14 @@ void elx_call_cache_update(CallInlineCache *cache, uint64_t callee_bits) {
   }
   case ObjType::BOUND_METHOD: {
     ObjBoundMethod *bound = static_cast<ObjBoundMethod *>(obj_ptr);
-    Value method_val = Value::fromBits(bound->method);
-    ObjClosure *closure = getClosure(method_val);
-    ObjFunction *func = closure ? closure->function : getFunction(method_val);
-    ObjNative *native = closure ? nullptr : getNative(method_val);
-
-    void *target = nullptr;
-    int flags = 0;
-    int expected_total = 0;
-
-    if (closure && closure->function && closure->function->llvm_function) {
-      target = closure->function->llvm_function;
-      expected_total = closure->function->arity;
-      flags |= CALL_CACHE_FLAG_METHOD_IS_CLOSURE;
-    } else if (func && func->llvm_function) {
-      target = func->llvm_function;
-      expected_total = func->arity;
-      flags |= CALL_CACHE_FLAG_METHOD_IS_FUNCTION;
-    } else if (native && native->function) {
-      target = reinterpret_cast<void *>(native->function);
-      expected_total = native->arity;
-      flags |= CALL_CACHE_FLAG_METHOD_IS_NATIVE;
-    } else {
-      return;
-    }
-
     Value receiver_val = Value::fromBits(bound->receiver);
     ObjInstance *instance = getInstance(receiver_val);
     if (!instance || !instance->klass)
       return;
 
-    cache->callee_bits = callee_bits;
-    cache->guard0_bits = bound->method;
-    cache->guard1_bits = reinterpret_cast<uint64_t>(instance->klass);
-    cache->target_ptr = target;
-    cache->kind = static_cast<int32_t>(CallInlineCacheKind::BOUND_METHOD);
-    cache->flags = flags;
-    cache->expected_arity = (expected_total >= 0)
-                                ? (expected_total > 0 ? expected_total - 1 : 0)
-                                : expected_total;
-    updated = true;
+    updated =
+        configureMethodCallCache(cache, bound->method, instance->klass,
+                                 callee_bits);
     break;
   }
   case ObjType::CLASS: {
@@ -2304,7 +2293,16 @@ uint64_t elx_call_bound_method_fast(uint64_t bound_bits, uint64_t *args,
     return elx_call_value(bound_bits, args, arg_count);
   }
 
-  std::vector<uint64_t> method_args(static_cast<size_t>(arg_count) + 1);
+  constexpr size_t kSmallArgCapacity = 16;
+  std::array<uint64_t, kSmallArgCapacity> small_args{};
+  std::vector<uint64_t> heap_args;
+  size_t total_arg_count = static_cast<size_t>(arg_count) + 1;
+  uint64_t *method_args = small_args.data();
+  if (total_arg_count > small_args.size()) {
+    heap_args.resize(total_arg_count);
+    method_args = heap_args.data();
+  }
+
   method_args[0] = bound->receiver;
   for (int i = 0; i < arg_count; ++i) {
     method_args[i + 1] = args ? args[i] : Value::nil().getBits();
@@ -2313,27 +2311,27 @@ uint64_t elx_call_bound_method_fast(uint64_t bound_bits, uint64_t *args,
   int total_expected = expected_arity;
   if (total_expected >= 0)
     total_expected += 1;
-  int total_arg_count = static_cast<int>(method_args.size());
+  int method_arg_count = static_cast<int>(total_arg_count);
 
   if (flags & CALL_CACHE_FLAG_METHOD_IS_CLOSURE) {
-    return elx_call_closure_fast(method_bits, method_args.data(),
-                                 total_arg_count, function_ptr,
+    return elx_call_closure_fast(method_bits, method_args, method_arg_count,
+                                 function_ptr,
                                  total_expected);
   }
 
   if (flags & CALL_CACHE_FLAG_METHOD_IS_FUNCTION) {
-    return elx_call_function_fast(method_bits, method_args.data(),
-                                  total_arg_count, function_ptr,
+    return elx_call_function_fast(method_bits, method_args, method_arg_count,
+                                  function_ptr,
                                   total_expected);
   }
 
   if (flags & CALL_CACHE_FLAG_METHOD_IS_NATIVE) {
-    return elx_call_native_fast(method_bits, method_args.data(),
-                                total_arg_count, function_ptr,
+    return elx_call_native_fast(method_bits, method_args, method_arg_count,
+                                function_ptr,
                                 total_expected);
   }
 
-  return elx_call_value(method_bits, method_args.data(), total_arg_count);
+  return elx_call_value(method_bits, method_args, method_arg_count);
 }
 
 uint64_t elx_call_class_fast(uint64_t class_bits, uint64_t *args, int arg_count,
@@ -2372,12 +2370,22 @@ uint64_t elx_call_class_fast(uint64_t class_bits, uint64_t *args, int arg_count,
         (klass->name && klass->name->chars && klass->name->length > 0)
             ? klass->name->chars
             : "<anonymous>";
-    std::string error_msg = formatArityError(class_name, expected_arity, arg_count);
+    std::string error_msg =
+        formatArityError(class_name, expected_arity, arg_count);
     elx_runtime_error(error_msg.c_str());
     return Value::nil().getBits();
   }
 
-  std::vector<uint64_t> init_args(static_cast<size_t>(arg_count) + 1);
+  constexpr size_t kSmallArgCapacity = 16;
+  std::array<uint64_t, kSmallArgCapacity> small_args{};
+  std::vector<uint64_t> heap_args;
+  size_t total_arg_count = static_cast<size_t>(arg_count) + 1;
+  uint64_t *init_args = small_args.data();
+  if (total_arg_count > small_args.size()) {
+    heap_args.resize(total_arg_count);
+    init_args = heap_args.data();
+  }
+
   init_args[0] = instance_bits;
   for (int i = 0; i < arg_count; ++i) {
     init_args[i + 1] = args ? args[i] : Value::nil().getBits();
@@ -2386,23 +2394,23 @@ uint64_t elx_call_class_fast(uint64_t class_bits, uint64_t *args, int arg_count,
   int total_expected = expected_arity;
   if (total_expected >= 0)
     total_expected += 1;
-  int total_arg_count = static_cast<int>(init_args.size());
+  int init_arg_count = static_cast<int>(total_arg_count);
 
   uint64_t result = Value::nil().getBits();
   if (flags & CALL_CACHE_FLAG_METHOD_IS_CLOSURE) {
-    result = elx_call_closure_fast(initializer_bits, init_args.data(),
-                                   total_arg_count, function_ptr,
+    result = elx_call_closure_fast(initializer_bits, init_args, init_arg_count,
+                                   function_ptr,
                                    total_expected);
   } else if (flags & CALL_CACHE_FLAG_METHOD_IS_FUNCTION) {
-    result = elx_call_function_fast(initializer_bits, init_args.data(),
-                                    total_arg_count, function_ptr,
+    result = elx_call_function_fast(initializer_bits, init_args, init_arg_count,
+                                    function_ptr,
                                     total_expected);
   } else if (flags & CALL_CACHE_FLAG_METHOD_IS_NATIVE) {
-    result = elx_call_native_fast(initializer_bits, init_args.data(),
-                                  total_arg_count, function_ptr,
+    result = elx_call_native_fast(initializer_bits, init_args, init_arg_count,
+                                  function_ptr,
                                   total_expected);
   } else {
-    result = elx_call_value(initializer_bits, init_args.data(), total_arg_count);
+    result = elx_call_value(initializer_bits, init_args, init_arg_count);
   }
 
   if (elx_has_runtime_error())
@@ -2578,6 +2586,101 @@ static bool tryReadInstanceField(ObjInstance *instance, ObjShape *shape,
   if (out_value)
     *out_value = instance->fieldValues[slot];
   return true;
+}
+
+int elx_prepare_property_call(uint64_t instance_bits, uint64_t name_bits,
+                              uint64_t *out_target) {
+  return elx_prepare_property_call_cached(instance_bits, name_bits, nullptr,
+                                          out_target);
+}
+
+int elx_prepare_property_call_cached(uint64_t instance_bits, uint64_t name_bits,
+                                     CallInlineCache *cache,
+                                     uint64_t *out_target) {
+  if (out_target) {
+    *out_target = Value::nil().getBits();
+  }
+
+  Value instance_val = Value::fromBits(instance_bits);
+  ObjInstance *instance = getInstance(instance_val);
+  if (!instance) {
+    elx_runtime_error("Only instances have properties.");
+    return -1;
+  }
+
+  std::string field_name;
+  ObjString *field_key = extractStringKey(name_bits, &field_name);
+  if (!field_key) {
+    elx_runtime_error("Property name must be a string.");
+    return -1;
+  }
+
+  ObjShape *shape = ensureInstanceShape(instance);
+  uint64_t field_bits = Value::nil().getBits();
+  if (tryReadInstanceField(instance, shape, field_key, nullptr, nullptr,
+                           &field_bits)) {
+    if (out_target) {
+      *out_target = field_bits;
+    }
+    return PROPERTY_CALL_FIELD;
+  }
+
+  if (cache && instance->klass &&
+      cache->kind == static_cast<int32_t>(CallInlineCacheKind::BOUND_METHOD) &&
+      cache->guard1_bits == reinterpret_cast<uint64_t>(instance->klass) &&
+      cache->guard0_bits != 0) {
+    if (out_target) {
+      *out_target = cache->guard0_bits;
+    }
+    return PROPERTY_CALL_METHOD;
+  }
+
+  uint64_t method_bits = instance->klass
+                             ? findMethodOnClass(instance->klass, field_key)
+                             : Value::nil().getBits();
+  if (method_bits != Value::nil().getBits()) {
+    configureMethodCallCache(cache, method_bits, instance->klass);
+    if (out_target) {
+      *out_target = method_bits;
+    }
+    return PROPERTY_CALL_METHOD;
+  }
+
+  std::string message = "Undefined property '" + field_name + "'.";
+  elx_runtime_error_silent(message.c_str());
+  elx_emit_runtime_error();
+  return -1;
+}
+
+uint64_t elx_call_prepared_property(int target_kind, uint64_t receiver_bits,
+                                    uint64_t target_bits, uint64_t *args,
+                                    int arg_count) {
+  if (target_kind == PROPERTY_CALL_FIELD) {
+    return elx_call_value(target_bits, args, arg_count);
+  }
+
+  if (target_kind == PROPERTY_CALL_METHOD) {
+    return callMethodWithoutBinding(receiver_bits, target_bits, args,
+                                    arg_count);
+  }
+
+  elx_runtime_error("Can only call functions and classes.");
+  return Value::nil().getBits();
+}
+
+uint64_t elx_call_property(uint64_t instance_bits, uint64_t name_bits,
+                           uint64_t *args, int arg_count) {
+  elx_clear_runtime_error();
+
+  uint64_t target_bits = Value::nil().getBits();
+  int target_kind =
+      elx_prepare_property_call(instance_bits, name_bits, &target_bits);
+  if (elx_has_runtime_error()) {
+    return Value::nil().getBits();
+  }
+
+  return elx_call_prepared_property(target_kind, instance_bits, target_bits,
+                                    args, arg_count);
 }
 
 uint64_t elx_get_instance_field(uint64_t instance_bits, uint64_t name_bits) {

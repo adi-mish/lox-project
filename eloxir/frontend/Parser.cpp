@@ -136,21 +136,11 @@ std::unique_ptr<Stmt> Parser::forStatement() {
 
   // Parse the initializer
   std::unique_ptr<Stmt> initializer;
-  Token loopVar(TokenType::IDENTIFIER, "", std::monostate{}, 0);
-  bool hasLoopVar = false;
 
   if (match(TokenType::SEMICOLON)) {
     initializer = nullptr;
   } else if (match(TokenType::VAR)) {
-    auto varDecl = varDeclaration();
-    if (auto var = dynamic_cast<Var *>(varDecl.get())) {
-      loopVar = var->name;
-      hasLoopVar = true;
-      // We'll transform this later
-      initializer = std::move(varDecl);
-    } else {
-      initializer = std::move(varDecl);
-    }
+    initializer = varDeclaration();
   } else {
     initializer = expressionStatement();
   }

@@ -1,11 +1,11 @@
 #pragma once
 
-#include <algorithm>
-#include <cctype>
 #include <cstdlib>
 #include <string>
+#include <string_view>
 
 #include <llvm/Analysis/CGSCCPassManager.h>
+#include <llvm/Analysis/TargetTransformInfo.h>
 #include <llvm/Analysis/LoopAnalysisManager.h>
 #include <llvm/ExecutionEngine/Orc/ThreadSafeModule.h>
 #include <llvm/IR/PassManager.h>
@@ -13,8 +13,6 @@
 #include <llvm/Passes/PassBuilder.h>
 #include <llvm/Target/TargetMachine.h>
 #include <llvm/Support/Error.h>
-#include <cstdlib>
-#include <string_view>
 
 namespace eloxir {
 
@@ -30,11 +28,23 @@ inline bool optimisationEnabled() {
 inline void runOptimisationPipeline(llvm::Module &module,
                                     llvm::TargetMachine *targetMachine) {
   llvm::PipelineTuningOptions tuningOptions;
+  tuningOptions.LoopInterleaving = true;
+  tuningOptions.LoopVectorization = true;
+  tuningOptions.SLPVectorization = true;
+  tuningOptions.LoopUnrolling = true;
+  tuningOptions.MergeFunctions = true;
+  tuningOptions.InlinerThreshold = 550;
+  tuningOptions.CallGraphProfile = true;
+
   llvm::PassBuilder passBuilder(targetMachine, tuningOptions);
   llvm::LoopAnalysisManager lam;
   llvm::FunctionAnalysisManager fam;
   llvm::CGSCCAnalysisManager cgam;
   llvm::ModuleAnalysisManager mam;
+
+  if (targetMachine) {
+    fam.registerPass([&] { return targetMachine->getTargetIRAnalysis(); });
+  }
 
   passBuilder.registerModuleAnalyses(mam);
   passBuilder.registerCGSCCAnalyses(cgam);
@@ -44,9 +54,15 @@ inline void runOptimisationPipeline(llvm::Module &module,
 
   llvm::ModulePassManager mpm =
       passBuilder.buildPerModuleDefaultPipeline(llvm::OptimizationLevel::O3);
+  llvm::ModulePassManager lateCleanup;
+  if (llvm::Error err = passBuilder.parsePassPipeline(
+          lateCleanup,
+          "globalopt,function(instcombine,simplifycfg),globaldce")) {
+    llvm::consumeError(std::move(err));
+  } else {
+    mpm.addPass(std::move(lateCleanup));
+  }
   mpm.run(module, mam);
-
-  (void)targetMachine;
 }
 
 inline void optimise(llvm::orc::ThreadSafeModule &tsm,

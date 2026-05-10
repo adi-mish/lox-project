@@ -22,8 +22,8 @@ static constexpr uint64_t QNAN = 0x7ff8000000000000ULL;
 static constexpr uint64_t MASK_TAG = 0x7ULL << 48;
 
 CodeGenVisitor::CodeGenVisitor(llvm::Module &m)
-    : builder(m.getContext()), ctx(m.getContext()), mod(m), value(nullptr),
-      currentFunction(nullptr), resolver_upvalues(nullptr),
+    : builder(m.getContext()), ctx(m.getContext()), mod(m),
+      currentFunction(nullptr), value(nullptr), resolver_upvalues(nullptr),
       resolver_locals(nullptr) {
   // Declare external runtime fns
   llvm::FunctionType *printFnTy =
@@ -233,6 +233,26 @@ CodeGenVisitor::CodeGenVisitor(llvm::Module &m)
       false);
   mod.getOrInsertFunction("elx_call_class_fast", callClassFastTy);
 
+  llvm::FunctionType *callPropertyTy = llvm::FunctionType::get(
+      llvmValueTy(), {llvmValueTy(), llvmValueTy(), valuePtrTy, i32Ty}, false);
+  mod.getOrInsertFunction("elx_call_property", callPropertyTy);
+
+  llvm::FunctionType *preparePropertyCallTy = llvm::FunctionType::get(
+      i32Ty, {llvmValueTy(), llvmValueTy(), valuePtrTy}, false);
+  mod.getOrInsertFunction("elx_prepare_property_call",
+                          preparePropertyCallTy);
+
+  llvm::FunctionType *preparePropertyCallCachedTy = llvm::FunctionType::get(
+      i32Ty, {llvmValueTy(), llvmValueTy(), callCachePtrTy, valuePtrTy}, false);
+  mod.getOrInsertFunction("elx_prepare_property_call_cached",
+                          preparePropertyCallCachedTy);
+
+  llvm::FunctionType *callPreparedPropertyTy = llvm::FunctionType::get(
+      llvmValueTy(), {i32Ty, llvmValueTy(), llvmValueTy(), valuePtrTy, i32Ty},
+      false);
+  mod.getOrInsertFunction("elx_call_prepared_property",
+                          callPreparedPropertyTy);
+
   llvm::FunctionType *instanceShapePtrTy =
       llvm::FunctionType::get(shapePtrTy, {llvmValueTy()}, false);
   mod.getOrInsertFunction("elx_instance_shape_ptr", instanceShapePtrTy);
@@ -301,6 +321,46 @@ CodeGenVisitor::CodeGenVisitor(llvm::Module &m)
   llvm::FunctionType *safeDivideTy = llvm::FunctionType::get(
       llvmValueTy(), {llvmValueTy(), llvmValueTy()}, false);
   mod.getOrInsertFunction("elx_safe_divide", safeDivideTy);
+
+  auto markNoUnwind = [this](const char *name) {
+    if (auto *fn = mod.getFunction(name)) {
+      fn->setDoesNotThrow();
+    }
+  };
+  auto markReadOnly = [&](const char *name) {
+    if (auto *fn = mod.getFunction(name)) {
+      fn->setDoesNotThrow();
+      fn->setWillReturn();
+      fn->setOnlyReadsMemory();
+    }
+  };
+
+  for (const char *name : {
+           "elx_value_is_string",
+           "elx_strings_equal",
+           "elx_strings_equal_interned",
+           "elx_is_function",
+           "elx_is_closure",
+           "elx_is_native",
+           "elx_is_class",
+           "elx_is_bound_method",
+           "elx_bound_method_matches",
+           "elx_instance_shape_ptr",
+           "elx_instance_field_values_ptr",
+           "elx_instance_field_presence_ptr",
+           "elx_has_runtime_error",
+       }) {
+    markReadOnly(name);
+  }
+
+  for (const char *name : {
+           "elx_print",
+           "elx_runtime_error",
+           "elx_clear_runtime_error",
+           "elx_safe_divide",
+       }) {
+    markNoUnwind(name);
+  }
 
   // Built-ins will be initialized when first generating code
 }
@@ -1443,6 +1503,89 @@ void CodeGenVisitor::visitCallExpr(Call *e) {
     throw CompileError("Can't have more than 255 arguments.");
   }
 
+  if (auto *get = dynamic_cast<Get *>(e->callee.get())) {
+    llvm::Function *preparePropertyFn =
+        mod.getFunction("elx_prepare_property_call_cached");
+    llvm::Function *callPreparedPropertyFn =
+        mod.getFunction("elx_call_prepared_property");
+    llvm::Function *hasErrorFn = mod.getFunction("elx_has_runtime_error");
+    if (preparePropertyFn && callPreparedPropertyFn && hasErrorFn) {
+      get->object->accept(this);
+      llvm::Value *receiver = value;
+      llvm::Value *nameValue = stringConst(get->name.getLexeme(), true);
+      llvm::Function *fn = builder.GetInsertBlock()->getParent();
+      llvm::Value *targetSlot =
+          createStackAlloca(fn, llvmValueTy(), "property_call_target");
+      builder.CreateStore(nilConst(), targetSlot);
+      llvm::Value *cache = getCallCacheGlobal("propertycall", e);
+      llvm::Value *targetKind = builder.CreateCall(
+          preparePropertyFn, {receiver, nameValue, cache, targetSlot},
+          "property_call_kind");
+
+      llvm::Value *hasError = builder.CreateCall(hasErrorFn, {}, "has_error");
+      llvm::Value *hasErrorBool = builder.CreateICmpNE(
+          hasError, llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0),
+          "property_call_prepare_failed");
+      auto errorBB =
+          llvm::BasicBlock::Create(ctx, "property.call.error", fn);
+      auto argsBB = llvm::BasicBlock::Create(ctx, "property.call.args", fn);
+      auto contBB = llvm::BasicBlock::Create(ctx, "property.call.cont", fn);
+      builder.CreateCondBr(hasErrorBool, errorBB, argsBB);
+
+      builder.SetInsertPoint(errorBB);
+      llvm::Value *errorValue = nilConst();
+      builder.CreateBr(contBB);
+      auto errorEndBB = builder.GetInsertBlock();
+
+      builder.SetInsertPoint(argsBB);
+
+      std::vector<llvm::Value *> args;
+      for (auto &arg : e->arguments) {
+        arg->accept(this);
+        args.push_back(value);
+      }
+
+      llvm::Value *argArray = nullptr;
+      llvm::Value *argCount =
+          llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), args.size());
+
+      if (!args.empty()) {
+        argArray = builder.CreateAlloca(
+            llvmValueTy(),
+            llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), args.size()),
+            "args");
+
+        for (size_t i = 0; i < args.size(); ++i) {
+          llvm::Value *idx =
+              llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), i);
+          llvm::Value *elemPtr = builder.CreateGEP(llvmValueTy(), argArray, idx);
+          builder.CreateStore(args[i], elemPtr);
+        }
+      } else {
+        argArray = llvm::ConstantPointerNull::get(
+            llvm::PointerType::get(llvmValueTy(), 0));
+      }
+
+      llvm::Value *targetValue =
+          builder.CreateLoad(llvmValueTy(), targetSlot, "property_call_target");
+      llvm::Value *callResult = builder.CreateCall(
+          callPreparedPropertyFn,
+          {targetKind, receiver, targetValue, argArray, argCount},
+          "call_property");
+      checkRuntimeError(callResult);
+      llvm::Value *successValue = value;
+      builder.CreateBr(contBB);
+      auto successEndBB = builder.GetInsertBlock();
+
+      builder.SetInsertPoint(contBB);
+      auto result = builder.CreatePHI(llvmValueTy(), 2, "property_call_result");
+      result->addIncoming(errorValue, errorEndBB);
+      result->addIncoming(successValue, successEndBB);
+      value = result;
+      return;
+    }
+  }
+
   e->callee->accept(this);
   llvm::Value *callee = value;
 
@@ -1826,10 +1969,10 @@ void CodeGenVisitor::visitPrintStmt(Print *s) {
 }
 
 void CodeGenVisitor::visitVarStmt(Var *s) {
-  visitVarStmtWithExecution(s, 1); // Default execution count
+  visitVarStmtWithExecution(s);
 }
 
-void CodeGenVisitor::visitVarStmtWithExecution(Var *s, int blockExecution) {
+void CodeGenVisitor::visitVarStmtWithExecution(Var *s) {
   // Evaluate initializer or use nil
   if (s->initializer) {
     s->initializer->accept(this);
@@ -1932,10 +2075,6 @@ void CodeGenVisitor::visitBlockStmt(Block *s) {
   // Increment block depth to track nesting
   blockDepth++;
 
-  // Track this block's execution count for proper loop variable scoping
-  blockExecutionCount[s]++;
-  int currentBlockExecution = blockExecutionCount[s];
-
   // Pass 1: Find all function declarations and create their signatures
   for (auto &stmt : s->statements) {
     if (auto funcStmt = dynamic_cast<Function *>(stmt.get())) {
@@ -1956,9 +2095,7 @@ void CodeGenVisitor::visitBlockStmt(Block *s) {
       // Track this variable for stack cleanup
       blockVariables.push_back(varStmt->name.getLexeme());
 
-      // Pass the block execution count to variable declaration
-      // This will be used to create unique storage for loop body variables
-      visitVarStmtWithExecution(varStmt, currentBlockExecution);
+      visitVarStmtWithExecution(varStmt);
     } else if (auto funcStmt = dynamic_cast<Function *>(stmt.get())) {
       blockVariables.push_back(funcStmt->name.getLexeme());
       stmt->accept(this);

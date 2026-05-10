@@ -48,12 +48,6 @@ class CodeGenVisitor : public ExprVisitor, public StmtVisitor {
   // Counter for creating unique variable names in loop contexts
   int variableCounter = 0;
 
-  // Track block re-execution for proper loop variable scoping
-  std::unordered_map<const Block *, int> blockExecutionCount;
-
-  // Track variables that are declared in for-loop initializers
-  std::unordered_set<std::string> loopVariables;
-
   // Per-variable storage stack for proper lexical scoping
   // Maps variable name to stack of storage locations (most recent = back())
   std::unordered_map<std::string, std::vector<llvm::Value *>> variableStacks;
@@ -190,9 +184,7 @@ public:
   void visitExpressionStmt(Expression *s) override;
   void visitPrintStmt(Print *s) override;
   void visitVarStmt(Var *s) override;
-  void
-  visitVarStmtWithExecution(Var *s,
-                            int blockExecution); // Helper for loop variables
+  void visitVarStmtWithExecution(Var *s);
   void visitBlockStmt(Block *s) override;
   void visitIfStmt(If *s) override;
   void visitWhileStmt(While *s) override;

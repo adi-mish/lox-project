@@ -12,7 +12,6 @@
 #include <llvm/IR/PassManager.h>
 #include <llvm/Support/TargetSelect.h>
 #include <llvm/Transforms/Utils/Cloning.h>
-#include "../jit/OptimisationPipeline.h"
 #include <initializer_list>
 #include <memory>
 #include <sstream>
@@ -87,7 +86,7 @@ public:
                                expr->value.get());
   }
 
-  void visitThisExpr(eloxir::This *expr) override { result = "this"; }
+  void visitThisExpr(eloxir::This *) override { result = "this"; }
 
   void visitSuperExpr(eloxir::Super *expr) override {
     result = parenthesizeParts("super", expr->method.getLexeme());

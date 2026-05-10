@@ -110,6 +110,12 @@ class RuntimeRegressionTests(unittest.TestCase):
         self.assertIn("Stack overflow.", result.stderr)
         self.assertEqual(result.stdout.strip(), "")
 
+    def test_property_call_resolves_before_arguments(self) -> None:
+        result = self._run_fixture("property_call_evaluation_order.lox")
+        self.assertEqual(result.returncode, 70)
+        self.assertIn("Undefined property 'nope'.", result.stderr)
+        self.assertEqual(result.stdout.strip(), "false")
+
 
 if __name__ == "__main__":
     unittest.main()

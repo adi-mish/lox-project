@@ -30,7 +30,7 @@ struct Obj {
 struct ObjString {
   Obj obj;
   int length;
-  char chars[]; // flexible array member
+  char chars[1];
 };
 
 struct ObjFunction {
@@ -179,6 +179,17 @@ uint64_t elx_allocate_function(const char *name, int arity,
                                void *llvm_function);
 uint64_t elx_call_function(uint64_t func_bits, uint64_t *args, int arg_count);
 uint64_t elx_call_value(uint64_t callee_bits, uint64_t *args, int arg_count);
+uint64_t elx_call_property(uint64_t instance_bits, uint64_t name_bits,
+                           uint64_t *args, int arg_count);
+int elx_prepare_property_call(uint64_t instance_bits, uint64_t name_bits,
+                              uint64_t *out_target);
+int elx_prepare_property_call_cached(uint64_t instance_bits,
+                                     uint64_t name_bits,
+                                     eloxir::CallInlineCache *cache,
+                                     uint64_t *out_target);
+uint64_t elx_call_prepared_property(int target_kind, uint64_t receiver_bits,
+                                    uint64_t target_bits, uint64_t *args,
+                                    int arg_count);
 int elx_is_function(uint64_t value_bits);
 int elx_is_native(uint64_t value_bits);
 int elx_is_class(uint64_t value_bits);
