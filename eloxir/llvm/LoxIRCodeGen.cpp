@@ -7,6 +7,7 @@
 #include <cstring>
 #include <sstream>
 #include <unordered_map>
+#include <unordered_set>
 
 #include <llvm/IR/BasicBlock.h>
 #include <llvm/IR/Constants.h>
@@ -71,6 +72,7 @@ private:
   std::unordered_map<uint32_t, llvm::Value *> values_;
   std::unordered_map<uint32_t, LoxType> types_;
   std::unordered_map<std::string, llvm::Value *> locals_;
+  std::unordered_set<std::string> capturedLocals_;
   std::unordered_map<std::string, llvm::Function *> functions_;
   std::unordered_map<std::string, const LoxFunction *> loxFunctions_;
 
@@ -119,20 +121,47 @@ private:
     return module_.getFunction(name);
   }
 
+  llvm::Value *createStackSlot(const std::string &name) {
+    llvm::IRBuilder<> entryBuilder(
+        &function_->getEntryBlock(), function_->getEntryBlock().begin());
+    return entryBuilder.CreateAlloca(valueTy(), nullptr, name + ".slot");
+  }
+
+  llvm::Value *createHeapSlot(llvm::Value *initial,
+                              const std::string &name) {
+    auto *allocate = runtime("elx_allocate_value_slot");
+    if (!allocate) {
+      return nullptr;
+    }
+    auto *slot =
+        builder_.CreateCall(allocate, {initial}, name + ".heap.slot");
+    guardRuntimeError();
+    return slot;
+  }
+
+  bool isCapturedLocal(const std::string &name) const {
+    return capturedLocals_.find(name) != capturedLocals_.end();
+  }
+
   llvm::Value *localSlot(const std::string &name) {
     auto it = locals_.find(name);
     if (it != locals_.end()) {
       return it->second;
     }
 
-    auto *allocate = runtime("elx_allocate_value_slot");
-    if (!allocate) {
-      return nullptr;
+    llvm::Value *slot = nullptr;
+    if (isCapturedLocal(name)) {
+      llvm::IRBuilder<> entryBuilder(
+          &function_->getEntryBlock(), function_->getEntryBlock().begin());
+      auto *allocate = runtime("elx_allocate_value_slot");
+      if (!allocate) {
+        return nullptr;
+      }
+      slot =
+          entryBuilder.CreateCall(allocate, {nilValue()}, name + ".heap.slot");
+    } else {
+      slot = createStackSlot(name);
     }
-    llvm::IRBuilder<> entryBuilder(
-        &function_->getEntryBlock(), function_->getEntryBlock().begin());
-    auto *slot =
-        entryBuilder.CreateCall(allocate, {nilValue()}, name + ".slot");
     locals_[name] = slot;
     return slot;
   }
@@ -212,6 +241,7 @@ private:
     values_.clear();
     types_.clear();
     locals_.clear();
+    capturedLocals_ = capturedLocalSymbols(function);
 
     for (const auto &block : function.blocks()) {
       blocks_[block.id().id] =
@@ -269,6 +299,20 @@ private:
   LoxType typeOf(ValueId id) const {
     auto it = types_.find(id.id);
     return it == types_.end() ? LoxType::Unknown : it->second;
+  }
+
+  std::unordered_set<std::string>
+  capturedLocalSymbols(const LoxFunction &) const {
+    std::unordered_set<std::string> symbols;
+    for (const auto &entry : loxFunctions_) {
+      for (const Upvalue &upvalue : entry.second->upvalues()) {
+        if (upvalue.source == UpvalueSourceKind::Local &&
+            !upvalue.sourceSymbol.empty()) {
+          symbols.insert(upvalue.sourceSymbol);
+        }
+      }
+    }
+    return symbols;
   }
 
   void bind(const Instruction &instruction, llvm::Value *value,
@@ -486,15 +530,20 @@ private:
       return unsupported(instruction, "missing local symbol");
     }
     if (instruction.declaresSymbol) {
-      auto *allocate = runtime("elx_allocate_value_slot");
-      if (!allocate) {
-        return unsupported(instruction, "missing elx_allocate_value_slot");
+      llvm::Value *slot = nullptr;
+      if (isCapturedLocal(instruction.symbol)) {
+        slot = createHeapSlot(lookup(instruction.operands[0]),
+                              instruction.symbol);
+      } else {
+        slot = localSlot(instruction.symbol);
+        if (slot) {
+          builder_.CreateStore(lookup(instruction.operands[0]), slot);
+        }
       }
-      auto *slot = builder_.CreateCall(
-          allocate, {lookup(instruction.operands[0])},
-          instruction.symbol + ".slot");
+      if (!slot) {
+        return unsupported(instruction, "missing local slot");
+      }
       locals_[instruction.symbol] = slot;
-      guardRuntimeError();
       return std::nullopt;
     }
     auto *slot = localSlot(instruction.symbol);
@@ -802,9 +851,27 @@ private:
     ValueId rightId = instruction.operands[1];
     auto *left = lookup(leftId);
     auto *right = lookup(rightId);
+    LoxType leftType = typeOf(leftId);
+    LoxType rightType = typeOf(rightId);
 
-    if (typeOf(leftId) != LoxType::Number ||
-        typeOf(rightId) != LoxType::Number) {
+    if ((instruction.binaryOp == BinaryOp::Equal ||
+         instruction.binaryOp == BinaryOp::NotEqual) &&
+        leftType != LoxType::Unknown && rightType != LoxType::Unknown &&
+        !(leftType == LoxType::Number && rightType == LoxType::Number)) {
+      llvm::Value *equal = nullptr;
+      if (leftType != rightType) {
+        equal = builder_.getFalse();
+      } else {
+        equal = builder_.CreateICmpEQ(left, right, "eq.bits");
+      }
+      if (instruction.binaryOp == BinaryOp::NotEqual) {
+        equal = builder_.CreateNot(equal, "neq.bits");
+      }
+      bind(instruction, boolValue(equal), LoxType::Bool);
+      return std::nullopt;
+    }
+
+    if (leftType != LoxType::Number || rightType != LoxType::Number) {
       const char *helper = nullptr;
       LoxType resultType = LoxType::Unknown;
       switch (instruction.binaryOp) {

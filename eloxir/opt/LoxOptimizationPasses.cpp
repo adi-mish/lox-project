@@ -6,6 +6,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <variant>
+#include <vector>
 
 namespace eloxir::loxir {
 namespace {
@@ -295,6 +296,149 @@ bool isPure(const Instruction &instruction) {
   }
 }
 
+bool isPure(const Instruction &instruction,
+            const std::unordered_set<std::string> &declaredGlobals) {
+  if (isPure(instruction)) {
+    return true;
+  }
+  switch (instruction.kind) {
+  case InstructionKind::LoadLocal:
+  case InstructionKind::LoadUpvalue:
+    return true;
+  case InstructionKind::LoadGlobal:
+    return declaredGlobals.find(instruction.symbol) != declaredGlobals.end();
+  default:
+    return false;
+  }
+}
+
+std::vector<BlockId> successors(const BasicBlock &block) {
+  if (block.instructions().empty()) {
+    return {};
+  }
+  const Instruction &terminator = block.instructions().back();
+  switch (terminator.kind) {
+  case InstructionKind::Jump:
+    return terminator.target.valid() ? std::vector<BlockId>{terminator.target}
+                                     : std::vector<BlockId>{};
+  case InstructionKind::Branch: {
+    std::vector<BlockId> result;
+    if (terminator.target.valid()) {
+      result.push_back(terminator.target);
+    }
+    if (terminator.falseTarget.valid() &&
+        terminator.falseTarget.id != terminator.target.id) {
+      result.push_back(terminator.falseTarget);
+    }
+    return result;
+  }
+  default:
+    return {};
+  }
+}
+
+bool sameSet(const std::unordered_set<std::string> &left,
+             const std::unordered_set<std::string> &right) {
+  if (left.size() != right.size()) {
+    return false;
+  }
+  for (const auto &value : left) {
+    if (right.find(value) == right.end()) {
+      return false;
+    }
+  }
+  return true;
+}
+
+std::unordered_set<std::string>
+intersectSets(const std::vector<std::unordered_set<std::string>> &sets) {
+  if (sets.empty()) {
+    return {};
+  }
+  std::unordered_set<std::string> result = sets.front();
+  for (size_t index = 1; index < sets.size(); ++index) {
+    for (auto it = result.begin(); it != result.end();) {
+      if (sets[index].find(*it) == sets[index].end()) {
+        it = result.erase(it);
+      } else {
+        ++it;
+      }
+    }
+  }
+  return result;
+}
+
+void addDeclaredGlobals(const BasicBlock &block,
+                        std::unordered_set<std::string> &globals) {
+  for (const Instruction &instruction : block.instructions()) {
+    if (instruction.kind == InstructionKind::StoreGlobal &&
+        instruction.declaresSymbol && !instruction.symbol.empty()) {
+      globals.insert(instruction.symbol);
+    }
+  }
+}
+
+std::unordered_map<uint32_t, std::unordered_set<std::string>>
+computeDefiniteGlobals(const LoxFunction &function) {
+  std::unordered_map<uint32_t, std::unordered_set<std::string>> in;
+  std::unordered_map<uint32_t, std::unordered_set<std::string>> out;
+  std::unordered_map<uint32_t, std::vector<uint32_t>> predecessors;
+  std::unordered_set<std::string> allDeclared;
+
+  for (const BasicBlock &block : function.blocks()) {
+    addDeclaredGlobals(block, allDeclared);
+  }
+
+  const uint32_t entryBlock =
+      function.blocks().empty() ? UINT32_MAX : function.blocks().front().id().id;
+
+  for (const BasicBlock &block : function.blocks()) {
+    if (block.id().id == entryBlock) {
+      in[block.id().id] = {};
+      out[block.id().id] = {};
+    } else {
+      in[block.id().id] = allDeclared;
+      out[block.id().id] = allDeclared;
+    }
+    for (BlockId successor : successors(block)) {
+      predecessors[successor.id].push_back(block.id().id);
+    }
+  }
+
+  bool changed = false;
+  do {
+    changed = false;
+    for (const BasicBlock &block : function.blocks()) {
+      std::unordered_set<std::string> newIn;
+      if (block.id().id != entryBlock) {
+        auto predIt = predecessors.find(block.id().id);
+        if (predIt != predecessors.end() && !predIt->second.empty()) {
+          std::vector<std::unordered_set<std::string>> incoming;
+          incoming.reserve(predIt->second.size());
+          for (uint32_t pred : predIt->second) {
+            incoming.push_back(out[pred]);
+          }
+          newIn = intersectSets(incoming);
+        }
+      }
+
+      auto newOut = newIn;
+      addDeclaredGlobals(block, newOut);
+
+      if (!sameSet(in[block.id().id], newIn)) {
+        in[block.id().id] = std::move(newIn);
+        changed = true;
+      }
+      if (!sameSet(out[block.id().id], newOut)) {
+        out[block.id().id] = std::move(newOut);
+        changed = true;
+      }
+    }
+  } while (changed);
+
+  return in;
+}
+
 LoxType valueType(ValueId value,
                   const std::unordered_map<uint32_t, LoxType> &types) {
   auto it = types.find(value.id);
@@ -480,6 +624,7 @@ public:
       bool functionChanged = false;
       do {
         functionChanged = false;
+        auto definiteGlobals = computeDefiniteGlobals(function);
         std::unordered_set<uint32_t> usedValues;
         for (const auto &parameter : function.parameters()) {
           if (parameter.value.valid()) {
@@ -493,18 +638,25 @@ public:
         }
 
         for (auto &block : function.blocks()) {
+          std::unordered_set<std::string> declaredGlobals =
+              definiteGlobals[block.id().id];
           auto &instructions = block.instructions();
-          const auto oldSize = instructions.size();
-          instructions.erase(
-              std::remove_if(instructions.begin(), instructions.end(),
-                             [&](const Instruction &instruction) {
-                               return instruction.result &&
-                                      isPure(instruction) &&
-                                      usedValues.find(instruction.result->id) ==
-                                          usedValues.end();
-                             }),
-              instructions.end());
-          functionChanged |= instructions.size() != oldSize;
+          std::vector<Instruction> kept;
+          kept.reserve(instructions.size());
+          for (auto &instruction : instructions) {
+            const bool remove =
+                instruction.result && isPure(instruction, declaredGlobals) &&
+                usedValues.find(instruction.result->id) == usedValues.end();
+            if (!remove) {
+              kept.push_back(std::move(instruction));
+            }
+            if (instruction.kind == InstructionKind::StoreGlobal &&
+                instruction.declaresSymbol && !instruction.symbol.empty()) {
+              declaredGlobals.insert(instruction.symbol);
+            }
+          }
+          functionChanged |= kept.size() != instructions.size();
+          instructions = std::move(kept);
         }
         changed |= functionChanged;
       } while (functionChanged);
