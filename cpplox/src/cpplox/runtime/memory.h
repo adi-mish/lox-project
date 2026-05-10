@@ -1,11 +1,31 @@
 #pragma once
 
+#include <vector>
+
 #include "common.h"
 #include "object.h"
 
 namespace cpplox {
 
 class Vm;
+
+class Heap {
+public:
+  void initialize();
+  void *reallocate(Vm &vm, void *pointer, size_t oldSize, size_t newSize);
+
+  size_t bytesAllocated() const { return bytesAllocated_; }
+  size_t nextGC() const { return nextGC_; }
+  void setNextGC(size_t nextGC) { nextGC_ = nextGC; }
+  Obj *&objects() { return objects_; }
+  std::vector<Obj *> &grayStack() { return grayStack_; }
+
+private:
+  size_t bytesAllocated_ = 0;
+  size_t nextGC_ = 1024 * 1024;
+  Obj *objects_ = nullptr;
+  std::vector<Obj *> grayStack_;
+};
 
 void *reallocate(Vm &vm, void *pointer, size_t oldSize, size_t newSize);
 

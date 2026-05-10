@@ -69,8 +69,8 @@ static Object *allocateObject(Vm &vm, ObjectKind type) {
   header->type = type;
   header->isMarked = false;
 
-  header->next = vm.objects;
-  vm.objects = header;
+  header->next = vm.heap.objects();
+  vm.heap.objects() = header;
 
 #ifdef DEBUG_LOG_GC
   std::printf("%p allocate %zu for %d\n", (void *)object, sizeof(Object),

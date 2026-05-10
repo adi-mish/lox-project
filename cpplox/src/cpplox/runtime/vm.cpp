@@ -179,7 +179,7 @@ void Vm::printStats() const {
   std::fprintf(stderr, "cpplox VM stats:\n");
   std::fprintf(stderr, "  instructions: %" PRIu64 "\n", instructionsExecuted);
   std::fprintf(stderr, "  max_stack_depth: %" PRIu64 "\n", maxStackDepth);
-  std::fprintf(stderr, "  bytes_allocated: %zu\n", bytesAllocated);
+  std::fprintf(stderr, "  bytes_allocated: %zu\n", heap.bytesAllocated());
   std::fprintf(stderr, "  closure_calls: %" PRIu64 "\n", closureCalls);
   std::fprintf(stderr, "  native_calls: %" PRIu64 "\n", nativeCalls);
   std::fprintf(stderr, "  class_calls: %" PRIu64 "\n", classCalls);
@@ -282,11 +282,7 @@ void Vm::initialize() {
   vm.statsEnabled = false;
   resetStats();
 #endif
-  vm.objects = nullptr;
-  vm.bytesAllocated = 0;
-  vm.nextGC = 1024 * 1024;
-
-  vm.grayStack.clear();
+  vm.heap.initialize();
 
   vm.globals.clear();
   vm.strings.clear();

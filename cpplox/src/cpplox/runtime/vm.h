@@ -3,6 +3,7 @@
 #include <array>
 #include <vector>
 
+#include "memory.h"
 #include "object.h"
 #include "table.h"
 #include "value.h"
@@ -68,10 +69,7 @@ public:
   ObjString *initString;
   ObjUpvalue *openUpvalues;
 
-  size_t bytesAllocated;
-  size_t nextGC;
-  Obj *objects;
-  std::vector<Obj *> grayStack;
+  Heap heap;
   std::vector<ObjFunction *> compilerRoots;
 #ifdef CPPLOX_ENABLE_VM_STATS
   bool statsEnabled;

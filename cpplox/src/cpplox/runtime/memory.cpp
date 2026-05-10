@@ -12,14 +12,21 @@ namespace cpplox {
 
 inline constexpr size_t GC_HEAP_GROW_FACTOR = 2;
 
-void *reallocate(Vm &vm, void *pointer, size_t oldSize, size_t newSize) {
-  vm.bytesAllocated += newSize - oldSize;
+void Heap::initialize() {
+  bytesAllocated_ = 0;
+  nextGC_ = 1024 * 1024;
+  objects_ = nullptr;
+  grayStack_.clear();
+}
+
+void *Heap::reallocate(Vm &vm, void *pointer, size_t oldSize, size_t newSize) {
+  bytesAllocated_ += newSize - oldSize;
   if (newSize > oldSize) {
 #ifdef DEBUG_STRESS_GC
     collectGarbage(vm);
 #endif
 
-    if (vm.bytesAllocated > vm.nextGC) {
+    if (bytesAllocated_ > nextGC_) {
       collectGarbage(vm);
     }
   }
@@ -34,6 +41,11 @@ void *reallocate(Vm &vm, void *pointer, size_t oldSize, size_t newSize) {
     std::exit(1);
   return result;
 }
+
+void *reallocate(Vm &vm, void *pointer, size_t oldSize, size_t newSize) {
+  return vm.heap.reallocate(vm, pointer, oldSize, newSize);
+}
+
 void markObject(Vm &vm, Obj *object) {
   if (object == nullptr)
     return;
@@ -48,7 +60,7 @@ void markObject(Vm &vm, Obj *object) {
 
   object->isMarked = true;
 
-  vm.grayStack.push_back(object);
+  vm.heap.grayStack().push_back(object);
 }
 void markValue(Vm &vm, Value value) {
   if (isObj(value))
@@ -195,15 +207,16 @@ static void markRoots(Vm &vm) {
   markObject(vm, (Obj *)vm.initString);
 }
 static void traceReferences(Vm &vm) {
-  while (!vm.grayStack.empty()) {
-    Obj *object = vm.grayStack.back();
-    vm.grayStack.pop_back();
+  auto &grayStack = vm.heap.grayStack();
+  while (!grayStack.empty()) {
+    Obj *object = grayStack.back();
+    grayStack.pop_back();
     blackenObject(vm, object);
   }
 }
 static void sweep(Vm &vm) {
   Obj *previous = nullptr;
-  Obj *object = vm.objects;
+  Obj *object = vm.heap.objects();
   while (object != nullptr) {
     if (object->isMarked) {
       object->isMarked = false;
@@ -215,7 +228,7 @@ static void sweep(Vm &vm) {
       if (previous != nullptr) {
         previous->next = object;
       } else {
-        vm.objects = object;
+        vm.heap.objects() = object;
       }
 
       freeObject(vm, unreached);
@@ -225,7 +238,7 @@ static void sweep(Vm &vm) {
 void collectGarbage(Vm &vm) {
 #ifdef DEBUG_LOG_GC
   std::printf("-- gc begin\n");
-  size_t before = vm.bytesAllocated;
+  size_t before = vm.heap.bytesAllocated();
 #endif
 
   markRoots(vm);
@@ -233,22 +246,24 @@ void collectGarbage(Vm &vm) {
   vm.strings.removeWhite();
   sweep(vm);
 
-  vm.nextGC = vm.bytesAllocated * GC_HEAP_GROW_FACTOR;
+  vm.heap.setNextGC(vm.heap.bytesAllocated() * GC_HEAP_GROW_FACTOR);
 
 #ifdef DEBUG_LOG_GC
   std::printf("-- gc end\n");
   std::printf("   collected %zu bytes (from %zu to %zu) next at %zu\n",
-         before - vm.bytesAllocated, before, vm.bytesAllocated, vm.nextGC);
+         before - vm.heap.bytesAllocated(), before, vm.heap.bytesAllocated(),
+         vm.heap.nextGC());
 #endif
 }
 void freeObjects(Vm &vm) {
-  Obj *object = vm.objects;
+  Obj *object = vm.heap.objects();
   while (object != nullptr) {
     Obj *next = object->next;
     freeObject(vm, object);
     object = next;
   }
-  vm.grayStack.clear();
+  vm.heap.objects() = nullptr;
+  vm.heap.grayStack().clear();
 }
 
 } // namespace cpplox
