@@ -18,6 +18,10 @@ typedef struct {
   Entry *entry;
   uint32_t tableVersion;
   void *owner;
+  void *secondaryOwner;
+  uint32_t secondaryVersion;
+  int entryIndex;
+  int tableCapacity;
   Value value;
 } InlineCache;
 

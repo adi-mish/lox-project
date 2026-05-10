@@ -56,6 +56,10 @@ int addConstant(Chunk *chunk, Value value) {
       chunk->inlineCaches[i].entry = NULL;
       chunk->inlineCaches[i].tableVersion = 0;
       chunk->inlineCaches[i].owner = NULL;
+      chunk->inlineCaches[i].secondaryOwner = NULL;
+      chunk->inlineCaches[i].secondaryVersion = 0;
+      chunk->inlineCaches[i].entryIndex = -1;
+      chunk->inlineCaches[i].tableCapacity = 0;
       chunk->inlineCaches[i].value = NIL_VAL;
     }
     chunk->inlineCacheCapacity = chunk->constants.capacity;
@@ -65,6 +69,10 @@ int addConstant(Chunk *chunk, Value value) {
   chunk->inlineCaches[chunk->constants.count - 1].entry = NULL;
   chunk->inlineCaches[chunk->constants.count - 1].tableVersion = 0;
   chunk->inlineCaches[chunk->constants.count - 1].owner = NULL;
+  chunk->inlineCaches[chunk->constants.count - 1].secondaryOwner = NULL;
+  chunk->inlineCaches[chunk->constants.count - 1].secondaryVersion = 0;
+  chunk->inlineCaches[chunk->constants.count - 1].entryIndex = -1;
+  chunk->inlineCaches[chunk->constants.count - 1].tableCapacity = 0;
   chunk->inlineCaches[chunk->constants.count - 1].value = NIL_VAL;
   pop();
   return chunk->constants.count - 1;

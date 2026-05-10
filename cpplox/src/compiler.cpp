@@ -65,7 +65,13 @@ typedef struct Compiler {
   int localCount;
   Upvalue upvalues[UINT8_COUNT];
   int scopeDepth;
+  int logicalByteCount;
 } Compiler;
+
+typedef struct {
+  int code;
+  int logical;
+} LoopStart;
 
 typedef struct ClassCompiler {
   struct ClassCompiler *enclosing;
@@ -77,6 +83,12 @@ Compiler *current = NULL;
 ClassCompiler *currentClass = NULL;
 
 static Chunk *currentChunk() { return &current->function->chunk; }
+static LoopStart currentLoopStart() {
+  LoopStart start;
+  start.code = currentChunk()->count;
+  start.logical = current->logicalByteCount;
+  return start;
+}
 
 static void errorAt(Token *token, const char *message) {
   if (parser.panicMode)
@@ -128,15 +140,20 @@ static bool match(TokenType type) {
 }
 static void emitByte(uint8_t byte) {
   writeChunk(currentChunk(), byte, parser.previous.line);
+  current->logicalByteCount++;
 }
 static void emitBytes(uint8_t byte1, uint8_t byte2) {
   emitByte(byte1);
   emitByte(byte2);
 }
-static void emitLoop(int loopStart) {
+static void emitLoop(LoopStart loopStart) {
   emitByte(OP_LOOP);
 
-  int offset = currentChunk()->count - loopStart + 2;
+  int logicalOffset = current->logicalByteCount - loopStart.logical + 2;
+  if (logicalOffset > UINT16_MAX)
+    error("Loop body too large.");
+
+  int offset = currentChunk()->count - loopStart.code + 2;
   if (offset > UINT16_MAX)
     error("Loop body too large.");
 
@@ -189,6 +206,7 @@ static void initCompiler(Compiler *compiler, FunctionType type) {
   compiler->type = type;
   compiler->localCount = 0;
   compiler->scopeDepth = 0;
+  compiler->logicalByteCount = 0;
   compiler->function = newFunction();
   current = compiler;
   if (type != TYPE_SCRIPT) {
@@ -246,6 +264,43 @@ static void statement();
 static void declaration();
 static ParseRule *getRule(TokenType type);
 static void parsePrecedence(Precedence precedence);
+
+static bool discardPureExpression(int start) {
+  Chunk *chunk = currentChunk();
+  int depth = 0;
+  for (int offset = start; offset < chunk->count;) {
+    switch (chunk->code[offset]) {
+    case OP_CONSTANT:
+      depth++;
+      offset += 2;
+      break;
+    case OP_NIL:
+    case OP_TRUE:
+    case OP_FALSE:
+      depth++;
+      offset++;
+      break;
+    case OP_EQUAL:
+      if (depth < 2)
+        return false;
+      depth--;
+      offset++;
+      break;
+    case OP_NOT:
+      if (depth < 1)
+        return false;
+      offset++;
+      break;
+    default:
+      return false;
+    }
+  }
+  if (depth == 1) {
+    chunk->count = start;
+    return true;
+  }
+  return false;
+}
 
 static uint8_t identifierConstant(Token *name) {
   return makeConstant(OBJ_VAL(copyString(name->start, name->length)));
@@ -766,8 +821,13 @@ static void varDeclaration() {
   defineVariable(global);
 }
 static void expressionStatement() {
+  int start = currentChunk()->count;
   expression();
   consume(TOKEN_SEMICOLON, "Expect ';' after expression.");
+  if (discardPureExpression(start)) {
+    current->logicalByteCount++;
+    return;
+  }
   emitByte(OP_POP);
 }
 static void forStatement() {
@@ -782,7 +842,7 @@ static void forStatement() {
     expressionStatement();
   }
 
-  int loopStart = currentChunk()->count;
+  LoopStart loopStart = currentLoopStart();
 
   int exitJump = -1;
   if (!match(TOKEN_SEMICOLON)) {
@@ -795,7 +855,7 @@ static void forStatement() {
 
   if (!match(TOKEN_RIGHT_PAREN)) {
     int bodyJump = emitJump(OP_JUMP);
-    int incrementStart = currentChunk()->count;
+    LoopStart incrementStart = currentLoopStart();
     expression();
     emitByte(OP_POP);
     consume(TOKEN_RIGHT_PAREN, "Expect ')' after for clauses.");
@@ -856,7 +916,7 @@ static void returnStatement() {
   }
 }
 static void whileStatement() {
-  int loopStart = currentChunk()->count;
+  LoopStart loopStart = currentLoopStart();
   consume(TOKEN_LEFT_PAREN, "Expect '(' after 'while'.");
   expression();
   consume(TOKEN_RIGHT_PAREN, "Expect ')' after condition.");

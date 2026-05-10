@@ -377,18 +377,18 @@ static bool callValue(Value callee, int argCount) {
   runtimeError("Can only call functions and classes.");
   return false;
 }
-static bool invokeFromClass(ObjClass *klass, ObjString *name, int argCount,
-                            InlineCache *cache) {
+static bool findMethodCached(ObjClass *klass, ObjString *name,
+                             InlineCache *cache, Value *method) {
   if (cache != NULL && cache->kind == CACHE_METHOD && cache->key == name &&
       cache->owner == klass &&
       cache->tableVersion == klass->methods.version) {
     RECORD_METHOD_CACHE_HIT();
-    return call(AS_CLOSURE(cache->value), argCount);
+    *method = cache->value;
+    return true;
   }
 
   RECORD_METHOD_CACHE_MISS();
-  Value method;
-  if (!tableGet(&klass->methods, name, &method)) {
+  if (!tableGet(&klass->methods, name, method)) {
     runtimeError("Undefined property '%s'.", name->chars);
     return false;
   }
@@ -397,9 +397,21 @@ static bool invokeFromClass(ObjClass *klass, ObjString *name, int argCount,
     cache->kind = CACHE_METHOD;
     cache->key = name;
     cache->owner = klass;
-    cache->value = method;
+    cache->value = *method;
     cache->tableVersion = klass->methods.version;
+    cache->secondaryOwner = NULL;
+    cache->secondaryVersion = 0;
+    cache->entryIndex = -2;
+    cache->tableCapacity = -1;
   }
+  return true;
+}
+
+static bool invokeFromClass(ObjClass *klass, ObjString *name, int argCount,
+                            InlineCache *cache) {
+  Value method;
+  if (!findMethodCached(klass, name, cache, &method))
+    return false;
   return call(AS_CLOSURE(method), argCount);
 }
 
@@ -416,37 +428,49 @@ static bool invoke(ObjString *name, int argCount, InlineCache *cache) {
   }
 
   ObjInstance *instance = AS_INSTANCE(receiver);
-
-  Value value;
-  if (tableGet(&instance->fields, name, &value)) {
-    vm.stackTop[-argCount - 1] = value;
-    return callValue(value, argCount);
+  if (cache != NULL && cache->kind == CACHE_METHOD && cache->key == name &&
+      cache->owner == instance->klass &&
+      cache->tableVersion == instance->klass->methods.version &&
+      cache->tableCapacity == instance->fields.capacity) {
+    if (cache->entryIndex == -1) {
+      RECORD_METHOD_CACHE_HIT();
+      return call(AS_CLOSURE(cache->value), argCount);
+    }
+    if (cache->entryIndex >= 0) {
+      Entry *fieldSlot = &instance->fields.entries[cache->entryIndex];
+      if (fieldSlot->key == NULL && IS_NIL(fieldSlot->value)) {
+        RECORD_METHOD_CACHE_HIT();
+        return call(AS_CLOSURE(cache->value), argCount);
+      }
+    }
   }
 
-  return invokeFromClass(instance->klass, name, argCount, cache);
+  Value value;
+  Entry *fieldSlot = tableFindSlot(&instance->fields, name);
+  if (fieldSlot != NULL && fieldSlot->key == name) {
+    vm.stackTop[-argCount - 1] = fieldSlot->value;
+    return callValue(fieldSlot->value, argCount);
+  }
+
+  if (!findMethodCached(instance->klass, name, cache, &value))
+    return false;
+  if (cache != NULL) {
+    cache->tableCapacity = instance->fields.capacity;
+    cache->entryIndex = -2;
+    if (instance->fields.capacity == 0) {
+      cache->entryIndex = -1;
+    } else if (fieldSlot != NULL && fieldSlot->key == NULL &&
+               IS_NIL(fieldSlot->value)) {
+      cache->entryIndex = (int)(fieldSlot - instance->fields.entries);
+    }
+  }
+  return call(AS_CLOSURE(value), argCount);
 }
 static bool bindMethodCached(ObjClass *klass, ObjString *name,
                              InlineCache *cache) {
   Value method;
-  if (cache != NULL && cache->kind == CACHE_METHOD && cache->key == name &&
-      cache->owner == klass &&
-      cache->tableVersion == klass->methods.version) {
-    RECORD_METHOD_CACHE_HIT();
-    method = cache->value;
-  } else {
-    RECORD_METHOD_CACHE_MISS();
-    if (!tableGet(&klass->methods, name, &method)) {
-      runtimeError("Undefined property '%s'.", name->chars);
-      return false;
-    }
-    if (cache != NULL) {
-      cache->kind = CACHE_METHOD;
-      cache->key = name;
-      cache->owner = klass;
-      cache->value = method;
-      cache->tableVersion = klass->methods.version;
-    }
-  }
+  if (!findMethodCached(klass, name, cache, &method))
+    return false;
 
   ObjBoundMethod *bound = newBoundMethod(peek(0), AS_CLOSURE(method));
   pop();
@@ -736,22 +760,26 @@ static InterpretResult run() {
 
       Entry *entry = cache->entry;
       if (cache->kind == CACHE_FIELD && cache->key == name &&
-          cache->owner == instance &&
-          cache->tableVersion == instance->fields.version && entry != NULL &&
-          entry->key == name) {
-        RECORD_FIELD_CACHE_HIT();
-        vm.stackTop[-1] = entry->value;
-        break;
+          cache->owner == instance->klass &&
+          cache->tableCapacity == instance->fields.capacity &&
+          cache->entryIndex >= 0) {
+        entry = &instance->fields.entries[cache->entryIndex];
+        if (entry->key == name) {
+          RECORD_FIELD_CACHE_HIT();
+          vm.stackTop[-1] = entry->value;
+          break;
+        }
       }
 
       RECORD_FIELD_CACHE_MISS();
-      entry = tableGetEntry(&instance->fields, name);
-      if (entry != NULL) {
+      entry = tableFindSlot(&instance->fields, name);
+      if (entry != NULL && entry->key == name) {
         cache->kind = CACHE_FIELD;
         cache->key = name;
-        cache->owner = instance;
+        cache->owner = instance->klass;
         cache->entry = entry;
-        cache->tableVersion = instance->fields.version;
+        cache->entryIndex = (int)(entry - instance->fields.entries);
+        cache->tableCapacity = instance->fields.capacity;
         vm.stackTop[-1] = entry->value;
         break;
       }

@@ -55,11 +55,16 @@ bool tableGet(Table *table, ObjString *key, Value *value) {
   *value = entry->value;
   return true;
 }
-Entry *tableGetEntry(Table *table, ObjString *key) {
-  if (table->count == 0)
+Entry *tableFindSlot(Table *table, ObjString *key) {
+  if (table->capacity == 0)
     return NULL;
 
-  Entry *entry = findEntry(table->entries, table->capacity, key);
+  return findEntry(table->entries, table->capacity, key);
+}
+Entry *tableGetEntry(Table *table, ObjString *key) {
+  Entry *entry = tableFindSlot(table, key);
+  if (entry == NULL)
+    return NULL;
   if (entry->key == NULL)
     return NULL;
   return entry;
@@ -98,8 +103,10 @@ bool tableSet(Table *table, ObjString *key, Value value) {
   Entry *entry = findEntry(table->entries, table->capacity, key);
   bool isNewKey = entry->key == NULL;
 
-  if (isNewKey && IS_NIL(entry->value))
+  if (isNewKey && IS_NIL(entry->value)) {
     table->count++;
+    table->version++;
+  }
 
   entry->key = key;
   entry->value = value;
@@ -115,6 +122,7 @@ bool tableDelete(Table *table, ObjString *key) {
 
   entry->key = NULL;
   entry->value = BOOL_VAL(true);
+  table->version++;
   return true;
 }
 void tableAddAll(Table *from, Table *to) {
