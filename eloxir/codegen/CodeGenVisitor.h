@@ -103,6 +103,9 @@ class CodeGenVisitor : public ExprVisitor, public StmtVisitor {
   llvm::StructType *callCacheTy = nullptr;
   std::unordered_map<const Expr *, llvm::GlobalVariable *> callCacheGlobals;
   std::unordered_map<std::string, llvm::GlobalVariable *> functionObjectSlots;
+  std::unordered_map<std::string, llvm::GlobalVariable *> stringConstantSlots;
+  std::vector<std::string> stringConstantOrder;
+  int stringConstantCounter = 0;
 
 public:
   CodeGenVisitor(llvm::Module &m);
@@ -209,6 +212,7 @@ private:
   llvm::GlobalVariable *getCallCacheGlobal(const std::string &prefix,
                                            const Expr *expr);
   llvm::GlobalVariable *getFunctionObjectSlot(const std::string &name);
+  llvm::GlobalVariable *getStringConstantSlot(const std::string &value);
   void emitLegacyGetExpr(Get *e, llvm::Value *objectValue,
                          llvm::Value *nameValue);
   void emitLegacySetExpr(Set *e, llvm::Value *objectValue);

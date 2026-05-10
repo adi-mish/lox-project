@@ -495,6 +495,24 @@ CodeGenVisitor::getFunctionObjectSlot(const std::string &name) {
   return slot;
 }
 
+llvm::GlobalVariable *
+CodeGenVisitor::getStringConstantSlot(const std::string &value) {
+  auto it = stringConstantSlots.find(value);
+  if (it != stringConstantSlots.end()) {
+    return it->second;
+  }
+
+  uint64_t nilBits = QNAN | (static_cast<uint64_t>(Tag::NIL) << 48);
+  auto *initial = llvm::ConstantInt::get(llvmValueTy(), nilBits);
+  auto *slot = new llvm::GlobalVariable(
+      mod, llvmValueTy(), false, llvm::GlobalValue::PrivateLinkage, initial,
+      "elx.str." + std::to_string(stringConstantCounter++));
+  slot->setAlignment(llvm::Align(sizeof(uint64_t)));
+  stringConstantSlots.emplace(value, slot);
+  stringConstantOrder.push_back(value);
+  return slot;
+}
+
 std::size_t CodeGenVisitor::saturatingLoopAdd(std::size_t current,
                                               std::size_t increment) const {
   constexpr std::size_t sentinel = MAX_LOOP_BODY_INSTRUCTIONS + 1;
@@ -721,22 +739,19 @@ llvm::Value *CodeGenVisitor::stringConst(const std::string &str,
     recordConstant();
   }
 
-  // Use global string interning instead of local interning
-  auto strConstant = builder.CreateGlobalStringPtr(str, "str");
-  auto lengthConst =
-      llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), str.length());
-
-  // Call elx_intern_string for global interning
-  auto internFn = mod.getFunction("elx_intern_string");
-  if (!internFn) {
-    // Fallback to nil if function not found
-    return nilConst();
+  if (syncAllGlobals) {
+    auto strConstant = builder.CreateGlobalStringPtr(str, "str");
+    auto lengthConst =
+        llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), str.length());
+    auto internFn = mod.getFunction("elx_intern_string");
+    if (!internFn) {
+      return nilConst();
+    }
+    return builder.CreateCall(internFn, {strConstant, lengthConst}, "strobj");
   }
 
-  auto strObj =
-      builder.CreateCall(internFn, {strConstant, lengthConst}, "strobj");
-
-  return strObj;
+  auto *slot = getStringConstantSlot(str);
+  return builder.CreateLoad(llvmValueTy(), slot, "strconst");
 }
 
 CodeGenVisitor::PropertyCacheEntry &
@@ -2423,8 +2438,8 @@ llvm::Value *CodeGenVisitor::createFunctionObjectImmediate(
 }
 
 void CodeGenVisitor::createGlobalFunctionObjects() {
-  if (pendingFunctions.empty()) {
-    return; // No functions to process
+  if (pendingFunctions.empty() && stringConstantOrder.empty()) {
+    return;
   }
 
   // Create a temporary global initialization function to hold the object
@@ -2441,6 +2456,21 @@ void CodeGenVisitor::createGlobalFunctionObjects() {
 
   currentFunction = nullptr; // We're at global scope now
   builder.SetInsertPoint(entryBB);
+
+  if (auto internFn = mod.getFunction("elx_intern_string")) {
+    for (const auto &str : stringConstantOrder) {
+      auto slotIt = stringConstantSlots.find(str);
+      if (slotIt == stringConstantSlots.end()) {
+        continue;
+      }
+      auto strConstant = builder.CreateGlobalStringPtr(str, "str");
+      auto lengthConst =
+          llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), str.length());
+      auto interned =
+          builder.CreateCall(internFn, {strConstant, lengthConst}, "strobj");
+      builder.CreateStore(interned, slotIt->second);
+    }
+  }
 
   // Only create objects for pending functions that don't already exist
   for (const auto &pending : pendingFunctions) {
@@ -2473,6 +2503,7 @@ void CodeGenVisitor::createGlobalFunctionObjects() {
 
   // Clear pending functions
   pendingFunctions.clear();
+  stringConstantOrder.clear();
 }
 
 void CodeGenVisitor::visitFunctionStmt(Function *s) {
