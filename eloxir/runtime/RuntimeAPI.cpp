@@ -1208,10 +1208,8 @@ int elx_is_function(uint64_t value_bits) {
 
 uint64_t elx_allocate_function(const char *name, int arity,
                                void *llvm_function) {
-  // Allocate memory for the function object
   size_t name_len = 0;
   if (name) {
-    // Calculate string length manually
     const char *p = name;
     while (*p) {
       name_len++;
@@ -1228,7 +1226,6 @@ uint64_t elx_allocate_function(const char *name, int arity,
   func->arity = arity;
   func->llvm_function = llvm_function;
 
-  // Copy the name after the function struct
   char *name_storage = reinterpret_cast<char *>(func + 1);
   if (name) {
     std::memcpy(name_storage, name, name_len);
@@ -1236,7 +1233,6 @@ uint64_t elx_allocate_function(const char *name, int arity,
   name_storage[name_len] = '\0';
   func->name = name_storage;
 
-  // Track the allocation
   trackObject(func);
 
   return Value::object(func).getBits();

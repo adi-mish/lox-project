@@ -94,7 +94,7 @@ IMPLEMENTATIONS: dict[str, Implementation] = {
                 "eloxir",
                 "-B",
                 "eloxir/build",
-                "-DCMAKE_BUILD_TYPE=RelWithDebInfo",
+                "-DCMAKE_BUILD_TYPE=Release",
                 "-DELOXIR_ENABLE_CACHE_STATS=OFF",
             ),
             command("cmake", "--build", "eloxir/build", "-j", max_parallel_jobs()),

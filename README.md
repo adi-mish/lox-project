@@ -254,7 +254,7 @@ Build directly:
 
 ```bash
 cmake -S eloxir -B eloxir/build \
-  -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+  -DCMAKE_BUILD_TYPE=Release \
   -DELOXIR_ENABLE_CACHE_STATS=OFF
 cmake --build eloxir/build
 ```

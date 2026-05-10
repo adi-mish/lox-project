@@ -2,10 +2,9 @@ cmake_minimum_required(VERSION 3.22)
 project(eloxir LANGUAGES C CXX)
 
 # Provide a helpful default build configuration so invoking CMake without a
-# `-DCMAKE_BUILD_TYPE` still produces an optimised binary. `RelWithDebInfo`
-# keeps symbols for profiling while enabling release optimisations. Users can
-# still opt in to the other standard configurations.
-set(DEFAULT_BUILD_TYPE "RelWithDebInfo")
+# `-DCMAKE_BUILD_TYPE` still produces the fastest normal binary. Use
+# `RelWithDebInfo` explicitly when profiling with full debug symbols.
+set(DEFAULT_BUILD_TYPE "Release")
 if (NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
   message(STATUS "No build type selected, defaulting to ${DEFAULT_BUILD_TYPE}")
   set(
