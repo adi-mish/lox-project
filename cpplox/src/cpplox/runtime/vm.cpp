@@ -305,9 +305,7 @@ void Vm::initialize() {
   vm.bytesAllocated = 0;
   vm.nextGC = 1024 * 1024;
 
-  vm.grayCount = 0;
-  vm.grayCapacity = 0;
-  vm.grayStack = NULL;
+  vm.grayStack.clear();
 
   vm.globals.clear();
   vm.strings.clear();

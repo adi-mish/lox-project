@@ -50,16 +50,7 @@ void markObject(Obj *object) {
 
   object->isMarked = true;
 
-  if (vm.grayCapacity < vm.grayCount + 1) {
-    vm.grayCapacity = growCapacity(vm.grayCapacity);
-    vm.grayStack =
-        (Obj **)std::realloc(vm.grayStack, sizeof(Obj *) * vm.grayCapacity);
-
-    if (vm.grayStack == NULL)
-      std::exit(1);
-  }
-
-  vm.grayStack[vm.grayCount++] = object;
+  vm.grayStack.push_back(object);
 }
 void markValue(Value value) {
   if (IS_OBJ(value))
@@ -206,8 +197,9 @@ static void markRoots() {
 }
 static void traceReferences() {
   Vm &vm = currentVm();
-  while (vm.grayCount > 0) {
-    Obj *object = vm.grayStack[--vm.grayCount];
+  while (!vm.grayStack.empty()) {
+    Obj *object = vm.grayStack.back();
+    vm.grayStack.pop_back();
     blackenObject(object);
   }
 }
@@ -261,8 +253,7 @@ void freeObjects() {
     freeObject(object);
     object = next;
   }
-
-  std::free(vm.grayStack);
+  vm.grayStack.clear();
 }
 
 } // namespace cpplox

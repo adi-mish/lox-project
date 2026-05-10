@@ -72,9 +72,7 @@ public:
   size_t bytesAllocated;
   size_t nextGC;
   Obj *objects;
-  int grayCount;
-  int grayCapacity;
-  Obj **grayStack;
+  std::vector<Obj *> grayStack;
   std::vector<ObjFunction *> compilerRoots;
 #ifdef CPPLOX_ENABLE_VM_STATS
   bool statsEnabled;
