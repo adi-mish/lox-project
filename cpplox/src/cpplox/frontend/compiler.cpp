@@ -86,6 +86,7 @@ Parser parser;
 static Scanner scanner;
 Compiler *current = NULL;
 ClassCompiler *currentClass = NULL;
+static Vm *compilingVm = NULL;
 static std::array<ObjString *, UINT8_COUNT> knownGlobals;
 static int knownGlobalCount = 0;
 
@@ -222,11 +223,11 @@ static void initCompiler(Compiler *compiler, FunctionType type) {
   compiler->localCount = 0;
   compiler->scopeDepth = 0;
   compiler->logicalByteCount = 0;
-  compiler->function = newFunction();
   current = compiler;
+  compiler->function = compilingVm->newFunction();
   if (type != TYPE_SCRIPT) {
     current->function->name =
-        copyString(parser.previous.start, parser.previous.length);
+        compilingVm->copyString(parser.previous.start, parser.previous.length);
   }
 
   Local *local = &current->locals[current->localCount++];
@@ -368,7 +369,8 @@ static void rememberGlobal(uint8_t constant) {
 }
 
 static uint8_t identifierConstant(Token *name) {
-  return makeConstant(OBJ_VAL(copyString(name->start, name->length)));
+  return makeConstant(
+      OBJ_VAL(compilingVm->copyString(name->start, name->length)));
 }
 static bool identifiersEqual(Token *a, Token *b) {
   if (a->length != b->length)
@@ -598,8 +600,8 @@ static void or_(bool canAssign) {
 }
 
 static void string(bool canAssign) {
-  emitConstant(OBJ_VAL(
-      copyString(parser.previous.start + 1, parser.previous.length - 2)));
+  emitConstant(OBJ_VAL(compilingVm->copyString(
+      parser.previous.start + 1, parser.previous.length - 2)));
 }
 
 static void namedVariable(Token name, bool canAssign) {
@@ -1054,7 +1056,8 @@ static void statement() {
   }
 }
 
-ObjFunction *compile(const char *source) {
+ObjFunction *compile(Vm &vm, const char *source) {
+  compilingVm = &vm;
   scanner.reset(source);
   knownGlobalCount = 0;
 
@@ -1072,6 +1075,7 @@ ObjFunction *compile(const char *source) {
   }
 
   ObjFunction *function = endCompiler();
+  compilingVm = NULL;
   return parser.hadError ? NULL : function;
 }
 void markCompilerRoots() {

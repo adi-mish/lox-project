@@ -128,28 +128,6 @@ ObjUpvalue *Vm::newUpvalue(Value *slot) {
   return upvalue;
 }
 
-ObjBoundMethod *newBoundMethod(Value receiver, ObjClosure *method) {
-  return currentVm().newBoundMethod(receiver, method);
-}
-ObjClass *newClass(ObjString *name) { return currentVm().newClass(name); }
-ObjClosure *newClosure(ObjFunction *function) {
-  return currentVm().newClosure(function);
-}
-ObjFunction *newFunction() { return currentVm().newFunction(); }
-ObjInstance *newInstance(ObjClass *klass) {
-  return currentVm().newInstance(klass);
-}
-ObjNative *newNative(NativeFn function) {
-  return currentVm().newNative(function);
-}
-ObjString *takeString(char *chars, int length) {
-  return currentVm().takeString(chars, length);
-}
-ObjString *copyString(const char *chars, int length) {
-  return currentVm().copyString(chars, length);
-}
-ObjUpvalue *newUpvalue(Value *slot) { return currentVm().newUpvalue(slot); }
-
 static void printFunction(ObjFunction *function) {
   if (function->name == NULL) {
     printf("<script>");

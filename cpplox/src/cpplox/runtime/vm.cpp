@@ -1087,7 +1087,7 @@ static InterpretResult run() {
 InterpretResult Vm::interpret(const char *source) {
   Vm &vm = *this;
 
-  ObjFunction *function = compile(source);
+  ObjFunction *function = compile(vm, source);
   if (function == NULL)
     return INTERPRET_COMPILE_ERROR;
 
