@@ -92,6 +92,4 @@ public:
 #endif
 };
 
-Vm &currentVm();
-
 } // namespace cpplox

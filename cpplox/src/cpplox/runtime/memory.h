@@ -5,31 +5,33 @@
 
 namespace cpplox {
 
-void *reallocate(void *pointer, size_t oldSize, size_t newSize);
+class Vm;
+
+void *reallocate(Vm &vm, void *pointer, size_t oldSize, size_t newSize);
 
 inline int growCapacity(int capacity) { return capacity < 8 ? 8 : capacity * 2; }
 
-template <typename T> T *allocate(int count = 1) {
-  return static_cast<T *>(reallocate(nullptr, 0, sizeof(T) * count));
+template <typename T> T *allocate(Vm &vm, int count = 1) {
+  return static_cast<T *>(reallocate(vm, nullptr, 0, sizeof(T) * count));
 }
 
-template <typename T> void release(T *pointer) {
-  reallocate(pointer, sizeof(T), 0);
+template <typename T> void release(Vm &vm, T *pointer) {
+  reallocate(vm, pointer, sizeof(T), 0);
 }
 
-template <typename T> T *growArray(T *pointer, int oldCount, int newCount) {
+template <typename T>
+T *growArray(Vm &vm, T *pointer, int oldCount, int newCount) {
   return static_cast<T *>(
-      reallocate(pointer, sizeof(T) * oldCount, sizeof(T) * newCount));
+      reallocate(vm, pointer, sizeof(T) * oldCount, sizeof(T) * newCount));
 }
 
-template <typename T> void freeArray(T *pointer, int oldCount) {
-  reallocate(pointer, sizeof(T) * oldCount, 0);
+template <typename T> void freeArray(Vm &vm, T *pointer, int oldCount) {
+  reallocate(vm, pointer, sizeof(T) * oldCount, 0);
 }
 
-void markObject(Obj *object);
-void markValue(Value value);
-void collectGarbage();
-void freeObjects();
+void markObject(Vm &vm, Obj *object);
+void markValue(Vm &vm, Value value);
+void collectGarbage(Vm &vm);
+void freeObjects(Vm &vm);
 
 } // namespace cpplox
-

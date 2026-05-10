@@ -7,6 +7,8 @@
 
 namespace cpplox {
 
+class Vm;
+
 struct Entry {
   ObjString *key = nullptr;
   Value value = nilValue();
@@ -28,7 +30,7 @@ public:
   void addAllFrom(const Table &from);
   ObjString *findString(const char *chars, int length, uint32_t hash) const;
   void removeWhite();
-  void mark() const;
+  void mark(Vm &vm) const;
 
   int count() const { return count_; }
   int capacity() const { return static_cast<int>(entries_.size()); }
@@ -46,4 +48,3 @@ private:
 };
 
 } // namespace cpplox
-

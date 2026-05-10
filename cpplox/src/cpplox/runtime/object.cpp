@@ -13,7 +13,7 @@ namespace cpplox {
 
 template <typename Object>
 static Object *allocateObject(Vm &vm, ObjectKind type) {
-  Object *object = allocate<Object>();
+  Object *object = allocate<Object>(vm);
   Obj *header = reinterpret_cast<Obj *>(object);
   header->type = type;
   header->isMarked = false;
@@ -46,7 +46,7 @@ ObjClass *Vm::newClass(ObjString *name) {
   return klass;
 }
 ObjClosure *Vm::newClosure(ObjFunction *function) {
-  ObjUpvalue **upvalues = allocate<ObjUpvalue *>(function->upvalueCount);
+  ObjUpvalue **upvalues = allocate<ObjUpvalue *>(*this, function->upvalueCount);
   for (int i = 0; i < function->upvalueCount; i++) {
     upvalues[i] = nullptr;
   }
@@ -103,7 +103,7 @@ ObjString *Vm::takeString(char *chars, int length) {
   uint32_t hash = hashString(chars, length);
   ObjString *interned = strings.findString(chars, length, hash);
   if (interned != nullptr) {
-    freeArray(chars, length + 1);
+    freeArray(*this, chars, length + 1);
     return interned;
   }
 
@@ -115,7 +115,7 @@ ObjString *Vm::copyString(const char *chars, int length) {
   if (interned != nullptr)
     return interned;
 
-  char *heapChars = allocate<char>(length + 1);
+  char *heapChars = allocate<char>(*this, length + 1);
   std::memcpy(heapChars, chars, length);
   heapChars[length] = '\0';
 

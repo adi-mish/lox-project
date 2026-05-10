@@ -158,10 +158,10 @@ void Table::removeWhite() {
     }
   }
 }
-void Table::mark() const {
+void Table::mark(Vm &vm) const {
   for (const Entry &entry : entries_) {
-    markObject((Obj *)entry.key);
-    markValue(entry.value);
+    markObject(vm, reinterpret_cast<Obj *>(entry.key));
+    markValue(vm, entry.value);
   }
 }
 

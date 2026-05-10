@@ -1,4 +1,3 @@
-#include <cassert>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -15,13 +14,6 @@
 #include "vm.h"
 
 namespace cpplox {
-
-static Vm *activeVm = nullptr;
-
-Vm &currentVm() {
-  assert(activeVm != nullptr);
-  return *activeVm;
-}
 
 #ifdef CPPLOX_ENABLE_VM_STATS
 static const char *opcodeName(int opcode) {
@@ -248,14 +240,12 @@ static void recordFieldCacheMiss(Vm &) {}
 static Value clockNative(int argCount, Value *args) {
   return numberValue((double)std::clock() / CLOCKS_PER_SEC);
 }
-static void resetStack() {
-  Vm &vm = currentVm();
+static void resetStack(Vm &vm) {
   vm.stackTop = vm.stack.data();
   vm.frameCount = 0;
   vm.openUpvalues = nullptr;
 }
-static void runtimeError(const char *format, ...) {
-  Vm &vm = currentVm();
+static void runtimeError(Vm &vm, const char *format, ...) {
   va_list args;
   va_start(args, format);
   std::vfprintf(stderr, format, args);
@@ -275,10 +265,9 @@ static void runtimeError(const char *format, ...) {
     }
   }
 
-  resetStack();
+  resetStack(vm);
 }
-static void defineNative(const char *name, NativeFn function) {
-  Vm &vm = currentVm();
+static void defineNative(Vm &vm, const char *name, NativeFn function) {
   vm.push(objectValue(vm.copyString(name, (int)std::strlen(name))));
   vm.push(objectValue(vm.newNative(function)));
   vm.globals.set(asString(vm.stack[0]), vm.stack[1]);
@@ -287,9 +276,8 @@ static void defineNative(const char *name, NativeFn function) {
 }
 
 void Vm::initialize() {
-  activeVm = this;
   Vm &vm = *this;
-  resetStack();
+  resetStack(vm);
 #ifdef CPPLOX_ENABLE_VM_STATS
   vm.statsEnabled = false;
   resetStats();
@@ -306,7 +294,7 @@ void Vm::initialize() {
   vm.initString = nullptr;
   vm.initString = vm.copyString("init", 4);
 
-  defineNative("clock", clockNative);
+  defineNative(vm, "clock", clockNative);
 }
 
 void Vm::shutdown() {
@@ -314,8 +302,7 @@ void Vm::shutdown() {
   vm.globals.clear();
   vm.strings.clear();
   vm.initString = nullptr;
-  freeObjects();
-  activeVm = nullptr;
+  freeObjects(*this);
 }
 void Vm::push(Value value) {
   *stackTop = value;
@@ -334,26 +321,23 @@ void Vm::popCompilerRoot() { compilerRoots.pop_back(); }
 
 void Vm::markCompilerRoots() {
   for (ObjFunction *function : compilerRoots) {
-    markObject(reinterpret_cast<Obj *>(function));
+    markObject(*this, reinterpret_cast<Obj *>(function));
   }
 }
 
-static Value peek(int distance) {
-  Vm &vm = currentVm();
+static Value peek(Vm &vm, int distance) {
   return vm.stackTop[-1 - distance];
 }
 
-static bool call(ObjClosure *closure, int argCount) {
-  Vm &vm = currentVm();
-
+static bool call(Vm &vm, ObjClosure *closure, int argCount) {
   if (argCount != closure->function->arity) {
-    runtimeError("Expected %d arguments but got %d.", closure->function->arity,
-                 argCount);
+    runtimeError(vm, "Expected %d arguments but got %d.",
+                 closure->function->arity, argCount);
     return false;
   }
 
   if (vm.frameCount == kMaxFrames) {
-    runtimeError("Stack overflow.");
+    runtimeError(vm, "Stack overflow.");
     return false;
   }
 
@@ -364,8 +348,7 @@ static bool call(ObjClosure *closure, int argCount) {
   frame->slots = vm.stackTop - argCount - 1;
   return true;
 }
-static bool callValue(Value callee, int argCount) {
-  Vm &vm = currentVm();
+static bool callValue(Vm &vm, Value callee, int argCount) {
   if (isObj(callee)) {
     switch (objectType(callee)) {
     case OBJ_BOUND_METHOD: {
@@ -375,7 +358,7 @@ static bool callValue(Value callee, int argCount) {
         vm.boundMethodCalls++;
 #endif
       vm.stackTop[-argCount - 1] = bound->receiver;
-      return call(bound->method, argCount);
+      return call(vm, bound->method, argCount);
     }
     case OBJ_CLASS: {
       ObjClass *klass = asClass(callee);
@@ -385,9 +368,9 @@ static bool callValue(Value callee, int argCount) {
 #endif
       vm.stackTop[-argCount - 1] = objectValue(vm.newInstance(klass));
       if (klass->initializer != nullptr) {
-        return call(klass->initializer, argCount);
+        return call(vm, klass->initializer, argCount);
       } else if (argCount != 0) {
-        runtimeError("Expected 0 arguments but got %d.", argCount);
+        runtimeError(vm, "Expected 0 arguments but got %d.", argCount);
         return false;
       }
       return true;
@@ -397,7 +380,7 @@ static bool callValue(Value callee, int argCount) {
       if (vm.statsEnabled)
         vm.closureCalls++;
 #endif
-      return call(asClosure(callee), argCount);
+      return call(vm, asClosure(callee), argCount);
 
     case OBJ_NATIVE: {
       NativeFn native = asNative(callee);
@@ -414,7 +397,7 @@ static bool callValue(Value callee, int argCount) {
       break;
     }
   }
-  runtimeError("Can only call functions and classes.");
+  runtimeError(vm, "Can only call functions and classes.");
   return false;
 }
 
@@ -437,7 +420,8 @@ static int ensureFieldSlot(ObjClass *klass, ObjString *name) {
   return slot;
 }
 
-static void ensureInstanceFieldCapacity(ObjInstance *instance, int slot) {
+static void ensureInstanceFieldCapacity(Vm &vm, ObjInstance *instance,
+                                        int slot) {
   if (slot < instance->fieldCapacity)
     return;
 
@@ -447,7 +431,7 @@ static void ensureInstanceFieldCapacity(ObjInstance *instance, int slot) {
     newCapacity = growCapacity(newCapacity);
   }
 
-  instance->fields = growArray(instance->fields, oldCapacity, newCapacity);
+  instance->fields = growArray(vm, instance->fields, oldCapacity, newCapacity);
   for (int i = oldCapacity; i < newCapacity; i++) {
     instance->fields[i] = uninitializedValue();
   }
@@ -463,14 +447,14 @@ static bool readInstanceField(ObjInstance *instance, int slot, Value *value) {
   return true;
 }
 
-static void writeInstanceField(ObjInstance *instance, int slot, Value value) {
-  ensureInstanceFieldCapacity(instance, slot);
+static void writeInstanceField(Vm &vm, ObjInstance *instance, int slot,
+                               Value value) {
+  ensureInstanceFieldCapacity(vm, instance, slot);
   instance->fields[slot] = value;
 }
 
-static bool findMethodCached(ObjClass *klass, ObjString *name,
+static bool findMethodCached(Vm &vm, ObjClass *klass, ObjString *name,
                              InlineCache *cache, Value *method) {
-  Vm &vm = currentVm();
   if (cache != nullptr && cache->kind == CACHE_METHOD && cache->key == name &&
       cache->owner == klass &&
       cache->tableVersion == klass->methods.version()) {
@@ -481,7 +465,7 @@ static bool findMethodCached(ObjClass *klass, ObjString *name,
 
   recordMethodCacheMiss(vm);
   if (!klass->methods.get(name, method)) {
-    runtimeError("Undefined property '%s'.", name->chars);
+    runtimeError(vm, "Undefined property '%s'.", name->chars);
     return false;
   }
 
@@ -499,24 +483,23 @@ static bool findMethodCached(ObjClass *klass, ObjString *name,
   return true;
 }
 
-static bool invokeFromClass(ObjClass *klass, ObjString *name, int argCount,
-                            InlineCache *cache) {
+static bool invokeFromClass(Vm &vm, ObjClass *klass, ObjString *name,
+                            int argCount, InlineCache *cache) {
   Value method;
-  if (!findMethodCached(klass, name, cache, &method))
+  if (!findMethodCached(vm, klass, name, cache, &method))
     return false;
-  return call(asClosure(method), argCount);
+  return call(vm, asClosure(method), argCount);
 }
 
-static bool invoke(ObjString *name, int argCount, InlineCache *cache) {
-  Vm &vm = currentVm();
+static bool invoke(Vm &vm, ObjString *name, int argCount, InlineCache *cache) {
 #ifdef CPPLOX_ENABLE_VM_STATS
   if (vm.statsEnabled)
     vm.invokes++;
 #endif
-  Value receiver = peek(argCount);
+  Value receiver = peek(vm, argCount);
 
   if (!isInstance(receiver)) {
-    runtimeError("Only instances have methods.");
+    runtimeError(vm, "Only instances have methods.");
     return false;
   }
 
@@ -527,13 +510,13 @@ static bool invoke(ObjString *name, int argCount, InlineCache *cache) {
       cache->secondaryVersion == instance->klass->fieldVersion) {
     if (cache->entryIndex == -1) {
       recordMethodCacheHit(vm);
-      return call(asClosure(cache->value), argCount);
+      return call(vm, asClosure(cache->value), argCount);
     }
     if (cache->entryIndex >= 0) {
       Value ignored;
       if (!readInstanceField(instance, cache->entryIndex, &ignored)) {
         recordMethodCacheHit(vm);
-        return call(asClosure(cache->value), argCount);
+        return call(vm, asClosure(cache->value), argCount);
       }
     }
   }
@@ -543,33 +526,32 @@ static bool invoke(ObjString *name, int argCount, InlineCache *cache) {
   if (getFieldSlot(instance->klass, name, &fieldSlot) &&
       readInstanceField(instance, fieldSlot, &value)) {
     vm.stackTop[-argCount - 1] = value;
-    return callValue(value, argCount);
+    return callValue(vm, value, argCount);
   }
 
-  if (!findMethodCached(instance->klass, name, cache, &value))
+  if (!findMethodCached(vm, instance->klass, name, cache, &value))
     return false;
   if (cache != nullptr) {
     cache->secondaryVersion = instance->klass->fieldVersion;
     cache->entryIndex = fieldSlot >= 0 ? fieldSlot : -1;
   }
-  return call(asClosure(value), argCount);
+  return call(vm, asClosure(value), argCount);
 }
-static bool bindMethodCached(ObjClass *klass, ObjString *name,
+static bool bindMethodCached(Vm &vm, ObjClass *klass, ObjString *name,
                              InlineCache *cache) {
   Value method;
-  if (!findMethodCached(klass, name, cache, &method))
+  if (!findMethodCached(vm, klass, name, cache, &method))
     return false;
 
-  ObjBoundMethod *bound = currentVm().newBoundMethod(peek(0), asClosure(method));
-  currentVm().pop();
-  currentVm().push(objectValue(bound));
+  ObjBoundMethod *bound = vm.newBoundMethod(peek(vm, 0), asClosure(method));
+  vm.pop();
+  vm.push(objectValue(bound));
   return true;
 }
-static bool bindMethod(ObjClass *klass, ObjString *name) {
-  return bindMethodCached(klass, name, nullptr);
+static bool bindMethod(Vm &vm, ObjClass *klass, ObjString *name) {
+  return bindMethodCached(vm, klass, name, nullptr);
 }
-static ObjUpvalue *captureUpvalue(Value *local) {
-  Vm &vm = currentVm();
+static ObjUpvalue *captureUpvalue(Vm &vm, Value *local) {
   ObjUpvalue *prevUpvalue = nullptr;
   ObjUpvalue *upvalue = vm.openUpvalues;
   while (upvalue != nullptr && upvalue->location > local) {
@@ -592,8 +574,7 @@ static ObjUpvalue *captureUpvalue(Value *local) {
 
   return createdUpvalue;
 }
-static void closeUpvalues(Value *last) {
-  Vm &vm = currentVm();
+static void closeUpvalues(Vm &vm, Value *last) {
   while (vm.openUpvalues != nullptr && vm.openUpvalues->location >= last) {
     ObjUpvalue *upvalue = vm.openUpvalues;
     upvalue->closed = *upvalue->location;
@@ -601,10 +582,9 @@ static void closeUpvalues(Value *last) {
     vm.openUpvalues = upvalue->next;
   }
 }
-static void defineMethod(ObjString *name) {
-  Vm &vm = currentVm();
-  Value method = peek(0);
-  ObjClass *klass = asClass(peek(1));
+static void defineMethod(Vm &vm, ObjString *name) {
+  Value method = peek(vm, 0);
+  ObjClass *klass = asClass(peek(vm, 1));
   klass->methods.set(name, method);
   if (name == vm.initString) {
     klass->initializer = asClosure(method);
@@ -614,14 +594,12 @@ static void defineMethod(ObjString *name) {
 static bool isFalsey(Value value) {
   return isNil(value) || (isBool(value) && !asBool(value));
 }
-static void concatenate() {
-  Vm &vm = currentVm();
-
-  ObjString *b = asString(peek(0));
-  ObjString *a = asString(peek(1));
+static void concatenate(Vm &vm) {
+  ObjString *b = asString(peek(vm, 0));
+  ObjString *a = asString(peek(vm, 1));
 
   int length = a->length + b->length;
-  char *chars = allocate<char>(length + 1);
+  char *chars = allocate<char>(vm, length + 1);
   std::memcpy(chars, a->chars, a->length);
   std::memcpy(chars + a->length, b->chars, b->length);
   chars[length] = '\0';
@@ -631,8 +609,7 @@ static void concatenate() {
   vm.pop();
   vm.push(objectValue(result));
 }
-static InterpretResult run() {
-  Vm &vm = currentVm();
+static InterpretResult run(Vm &vm) {
   CallFrame *frame = &vm.frames[vm.frameCount - 1];
 
   auto readByte = [&]() -> uint8_t { return *frame->ip++; };
@@ -650,7 +627,7 @@ static InterpretResult run() {
     Value bValue = vm.stackTop[-1];
     Value aValue = vm.stackTop[-2];
     if (!isNumber(bValue) || !isNumber(aValue)) {
-      runtimeError("Operands must be numbers.");
+      runtimeError(vm, "Operands must be numbers.");
       return false;
     }
     vm.stackTop[-2] = makeValue(op(asNumber(aValue), asNumber(bValue)));
@@ -739,7 +716,7 @@ static InterpretResult run() {
     case OP_SET_LOCAL: {
       uint8_t slot = readByte();
 
-      frame->slots[slot] = peek(0);
+      frame->slots[slot] = peek(vm, 0);
       break;
     }
     case OP_SET_LOCAL_0:
@@ -783,7 +760,7 @@ static InterpretResult run() {
       recordGlobalCacheMiss(vm);
       entry = vm.globals.getEntry(name);
       if (entry == nullptr) {
-        runtimeError("Undefined variable '%s'.", name->chars);
+        runtimeError(vm, "Undefined variable '%s'.", name->chars);
         return INTERPRET_RUNTIME_ERROR;
       }
 
@@ -819,7 +796,7 @@ static InterpretResult run() {
         recordGlobalCacheMiss(vm);
         entry = vm.globals.getEntry(name);
         if (entry == nullptr) {
-          runtimeError("Undefined variable '%s'.", name->chars);
+          runtimeError(vm, "Undefined variable '%s'.", name->chars);
           return INTERPRET_RUNTIME_ERROR;
         }
         cache->kind = CACHE_GLOBAL;
@@ -844,12 +821,12 @@ static InterpretResult run() {
       break;
     }
     case OP_GET_PROPERTY: {
-      if (!isInstance(peek(0))) {
-        runtimeError("Only instances have properties.");
+      if (!isInstance(peek(vm, 0))) {
+        runtimeError(vm, "Only instances have properties.");
         return INTERPRET_RUNTIME_ERROR;
       }
 
-      ObjInstance *instance = asInstance(peek(0));
+      ObjInstance *instance = asInstance(peek(vm, 0));
       uint8_t constant = readByte();
       Chunk *chunk = &frame->closure->function->chunk;
       ObjString *name = asString(chunk->constantAt(constant));
@@ -884,20 +861,20 @@ static InterpretResult run() {
         break;
       }
 
-      if (!bindMethodCached(instance->klass, name, cache)) {
+      if (!bindMethodCached(vm, instance->klass, name, cache)) {
         return INTERPRET_RUNTIME_ERROR;
       }
       break;
     }
     case OP_SET_PROPERTY: {
-      if (!isInstance(peek(1))) {
-        runtimeError("Only instances have fields.");
+      if (!isInstance(peek(vm, 1))) {
+        runtimeError(vm, "Only instances have fields.");
         return INTERPRET_RUNTIME_ERROR;
       }
 
-      ObjInstance *instance = asInstance(peek(1));
+      ObjInstance *instance = asInstance(peek(vm, 1));
       int fieldSlot = ensureFieldSlot(instance->klass, readString());
-      writeInstanceField(instance, fieldSlot, peek(0));
+      writeInstanceField(vm, instance, fieldSlot, peek(vm, 0));
       Value value = popValue();
       popValue();
       pushValue(value);
@@ -907,7 +884,7 @@ static InterpretResult run() {
       ObjString *name = readString();
       ObjClass *superclass = asClass(popValue());
 
-      if (!bindMethod(superclass, name)) {
+      if (!bindMethod(vm, superclass, name)) {
         return INTERPRET_RUNTIME_ERROR;
       }
       break;
@@ -931,12 +908,12 @@ static InterpretResult run() {
       Value bValue = vm.stackTop[-1];
       Value aValue = vm.stackTop[-2];
       if (isString(bValue) && isString(aValue)) {
-        concatenate();
+        concatenate(vm);
       } else if (isNumber(bValue) && isNumber(aValue)) {
         vm.stackTop[-2] = numberValue(asNumber(aValue) + asNumber(bValue));
         vm.stackTop--;
       } else {
-        runtimeError("Operands must be two numbers or two strings.");
+        runtimeError(vm, "Operands must be two numbers or two strings.");
         return INTERPRET_RUNTIME_ERROR;
       }
       break;
@@ -958,7 +935,7 @@ static InterpretResult run() {
       break;
     case OP_NEGATE:
       if (!isNumber(vm.stackTop[-1])) {
-        runtimeError("Operand must be a number.");
+        runtimeError(vm, "Operand must be a number.");
         return INTERPRET_RUNTIME_ERROR;
       }
       vm.stackTop[-1] = numberValue(-asNumber(vm.stackTop[-1]));
@@ -977,7 +954,7 @@ static InterpretResult run() {
     case OP_JUMP_IF_FALSE: {
       uint16_t offset = readShort();
 
-      if (isFalsey(peek(0)))
+      if (isFalsey(peek(vm, 0)))
         frame->ip += offset;
       break;
     }
@@ -989,7 +966,7 @@ static InterpretResult run() {
     }
     case OP_CALL: {
       int argCount = readByte();
-      if (!callValue(peek(argCount), argCount)) {
+      if (!callValue(vm, peek(vm, argCount), argCount)) {
         return INTERPRET_RUNTIME_ERROR;
       }
       frame = &vm.frames[vm.frameCount - 1];
@@ -1000,7 +977,7 @@ static InterpretResult run() {
       Chunk *chunk = &frame->closure->function->chunk;
       ObjString *method = asString(chunk->constantAt(constant));
       int argCount = readByte();
-      if (!invoke(method, argCount, &chunk->inlineCache(constant))) {
+      if (!invoke(vm, method, argCount, &chunk->inlineCache(constant))) {
         return INTERPRET_RUNTIME_ERROR;
       }
       frame = &vm.frames[vm.frameCount - 1];
@@ -1012,7 +989,7 @@ static InterpretResult run() {
       ObjString *method = asString(chunk->constantAt(constant));
       int argCount = readByte();
       ObjClass *superclass = asClass(popValue());
-      if (!invokeFromClass(superclass, method, argCount,
+      if (!invokeFromClass(vm, superclass, method, argCount,
                            &chunk->inlineCache(constant))) {
         return INTERPRET_RUNTIME_ERROR;
       }
@@ -1027,7 +1004,7 @@ static InterpretResult run() {
         uint8_t isLocal = readByte();
         uint8_t index = readByte();
         if (isLocal) {
-          closure->upvalues[i] = captureUpvalue(frame->slots + index);
+          closure->upvalues[i] = captureUpvalue(vm, frame->slots + index);
         } else {
           closure->upvalues[i] = frame->closure->upvalues[index];
         }
@@ -1035,13 +1012,13 @@ static InterpretResult run() {
       break;
     }
     case OP_CLOSE_UPVALUE:
-      closeUpvalues(vm.stackTop - 1);
+      closeUpvalues(vm, vm.stackTop - 1);
       vm.stackTop--;
       break;
     case OP_RETURN: {
 
       Value result = popValue();
-      closeUpvalues(frame->slots);
+      closeUpvalues(vm, frame->slots);
       vm.frameCount--;
       if (vm.frameCount == 0) {
         popValue();
@@ -1057,13 +1034,13 @@ static InterpretResult run() {
       pushValue(objectValue(vm.newClass(readString())));
       break;
     case OP_INHERIT: {
-      Value superclass = peek(1);
+      Value superclass = peek(vm, 1);
       if (!isClass(superclass)) {
-        runtimeError("Superclass must be a class.");
+        runtimeError(vm, "Superclass must be a class.");
         return INTERPRET_RUNTIME_ERROR;
       }
 
-      ObjClass *subclass = asClass(peek(0));
+      ObjClass *subclass = asClass(peek(vm, 0));
       ObjClass *superKlass = asClass(superclass);
       subclass->methods.addAllFrom(superKlass->methods);
       subclass->initializer = superKlass->initializer;
@@ -1071,7 +1048,7 @@ static InterpretResult run() {
       break;
     }
     case OP_METHOD:
-      defineMethod(readString());
+      defineMethod(vm, readString());
       break;
     }
   }
@@ -1089,9 +1066,9 @@ InterpretResult Vm::interpret(const char *source) {
   ObjClosure *closure = vm.newClosure(function);
   vm.pop();
   vm.push(objectValue(closure));
-  call(closure, 0);
+  call(vm, closure, 0);
 
-  return run();
+  return run(vm);
 }
 
 } // namespace cpplox

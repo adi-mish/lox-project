@@ -12,16 +12,15 @@ namespace cpplox {
 
 inline constexpr size_t GC_HEAP_GROW_FACTOR = 2;
 
-void *reallocate(void *pointer, size_t oldSize, size_t newSize) {
-  Vm &vm = currentVm();
+void *reallocate(Vm &vm, void *pointer, size_t oldSize, size_t newSize) {
   vm.bytesAllocated += newSize - oldSize;
   if (newSize > oldSize) {
 #ifdef DEBUG_STRESS_GC
-    collectGarbage();
+    collectGarbage(vm);
 #endif
 
     if (vm.bytesAllocated > vm.nextGC) {
-      collectGarbage();
+      collectGarbage(vm);
     }
   }
 
@@ -35,8 +34,7 @@ void *reallocate(void *pointer, size_t oldSize, size_t newSize) {
     std::exit(1);
   return result;
 }
-void markObject(Obj *object) {
-  Vm &vm = currentVm();
+void markObject(Vm &vm, Obj *object) {
   if (object == nullptr)
     return;
   if (object->isMarked)
@@ -52,28 +50,28 @@ void markObject(Obj *object) {
 
   vm.grayStack.push_back(object);
 }
-void markValue(Value value) {
+void markValue(Vm &vm, Value value) {
   if (isObj(value))
-    markObject(asObj(value));
+    markObject(vm, asObj(value));
 }
-static void markArray(const ValueArray &array) {
+static void markArray(Vm &vm, const ValueArray &array) {
   for (Value value : array) {
-    markValue(value);
+    markValue(vm, value);
   }
 }
-static void markInlineCaches(Chunk *chunk) {
+static void markInlineCaches(Vm &vm, Chunk *chunk) {
   for (int i = 0; i < static_cast<int>(chunk->constants().size()); i++) {
     InlineCache *cache = &chunk->inlineCache(i);
     if ((cache->kind == CACHE_FIELD || cache->kind == CACHE_METHOD) &&
         cache->owner != nullptr) {
-      markObject((Obj *)cache->owner);
+      markObject(vm, reinterpret_cast<Obj *>(cache->owner));
     }
     if (cache->kind == CACHE_METHOD) {
-      markValue(cache->value);
+      markValue(vm, cache->value);
     }
   }
 }
-static void blackenObject(Obj *object) {
+static void blackenObject(Vm &vm, Obj *object) {
 #ifdef DEBUG_LOG_GC
   std::printf("%p blacken ", (void *)object);
   printValue(objectValue(object));
@@ -83,128 +81,125 @@ static void blackenObject(Obj *object) {
   switch (object->type) {
   case OBJ_BOUND_METHOD: {
     ObjBoundMethod *bound = (ObjBoundMethod *)object;
-    markValue(bound->receiver);
-    markObject((Obj *)bound->method);
+    markValue(vm, bound->receiver);
+    markObject(vm, (Obj *)bound->method);
     break;
   }
   case OBJ_CLASS: {
     ObjClass *klass = (ObjClass *)object;
-    markObject((Obj *)klass->name);
-    klass->methods.mark();
-    markObject((Obj *)klass->initializer);
-    klass->fieldSlots.mark();
+    markObject(vm, (Obj *)klass->name);
+    klass->methods.mark(vm);
+    markObject(vm, (Obj *)klass->initializer);
+    klass->fieldSlots.mark(vm);
     break;
   }
   case OBJ_CLOSURE: {
     ObjClosure *closure = (ObjClosure *)object;
-    markObject((Obj *)closure->function);
+    markObject(vm, (Obj *)closure->function);
     for (int i = 0; i < closure->upvalueCount; i++) {
-      markObject((Obj *)closure->upvalues[i]);
+      markObject(vm, (Obj *)closure->upvalues[i]);
     }
     break;
   }
   case OBJ_FUNCTION: {
     ObjFunction *function = (ObjFunction *)object;
-    markObject((Obj *)function->name);
-    markArray(function->chunk.constants());
-    markInlineCaches(&function->chunk);
+    markObject(vm, (Obj *)function->name);
+    markArray(vm, function->chunk.constants());
+    markInlineCaches(vm, &function->chunk);
     break;
   }
   case OBJ_INSTANCE: {
     ObjInstance *instance = (ObjInstance *)object;
-    markObject((Obj *)instance->klass);
+    markObject(vm, (Obj *)instance->klass);
     for (int i = 0; i < instance->fieldCapacity; i++) {
       if (!isUninitialized(instance->fields[i])) {
-        markValue(instance->fields[i]);
+        markValue(vm, instance->fields[i]);
       }
     }
     break;
   }
   case OBJ_UPVALUE:
-    markValue(((ObjUpvalue *)object)->closed);
+    markValue(vm, ((ObjUpvalue *)object)->closed);
     break;
   case OBJ_NATIVE:
   case OBJ_STRING:
     break;
   }
 }
-static void freeObject(Obj *object) {
+static void freeObject(Vm &vm, Obj *object) {
 #ifdef DEBUG_LOG_GC
   std::printf("%p free type %d\n", (void *)object, objectKindIndex(object->type));
 #endif
 
   switch (object->type) {
   case OBJ_BOUND_METHOD:
-    release(reinterpret_cast<ObjBoundMethod *>(object));
+    release(vm, reinterpret_cast<ObjBoundMethod *>(object));
     break;
   case OBJ_CLASS: {
     ObjClass *klass = (ObjClass *)object;
     klass->methods.~Table();
     klass->fieldSlots.~Table();
-    release(klass);
+    release(vm, klass);
     break;
   }
   case OBJ_CLOSURE: {
     ObjClosure *closure = (ObjClosure *)object;
-    freeArray(closure->upvalues, closure->upvalueCount);
-    release(closure);
+    freeArray(vm, closure->upvalues, closure->upvalueCount);
+    release(vm, closure);
     break;
   }
   case OBJ_FUNCTION: {
     ObjFunction *function = (ObjFunction *)object;
     freeChunk(&function->chunk);
-    release(function);
+    release(vm, function);
     break;
   }
   case OBJ_INSTANCE: {
     ObjInstance *instance = (ObjInstance *)object;
-    freeArray(instance->fields, instance->fieldCapacity);
-    release(instance);
+    freeArray(vm, instance->fields, instance->fieldCapacity);
+    release(vm, instance);
     break;
   }
   case OBJ_NATIVE:
-    release(reinterpret_cast<ObjNative *>(object));
+    release(vm, reinterpret_cast<ObjNative *>(object));
     break;
   case OBJ_STRING: {
     ObjString *string = (ObjString *)object;
-    freeArray(string->chars, string->length + 1);
-    release(string);
+    freeArray(vm, string->chars, string->length + 1);
+    release(vm, string);
     break;
   }
   case OBJ_UPVALUE:
-    release(reinterpret_cast<ObjUpvalue *>(object));
+    release(vm, reinterpret_cast<ObjUpvalue *>(object));
     break;
   }
 }
-static void markRoots() {
-  Vm &vm = currentVm();
+static void markRoots(Vm &vm) {
   for (Value *slot = vm.stack.data(); slot < vm.stackTop; slot++) {
-    markValue(*slot);
+    markValue(vm, *slot);
   }
 
   for (int i = 0; i < vm.frameCount; i++) {
-    markObject((Obj *)vm.frames[i].closure);
+    markObject(vm, (Obj *)vm.frames[i].closure);
   }
 
   for (ObjUpvalue *upvalue = vm.openUpvalues; upvalue != nullptr;
        upvalue = upvalue->next) {
-    markObject((Obj *)upvalue);
+    markObject(vm, (Obj *)upvalue);
   }
 
-  vm.globals.mark();
+  vm.globals.mark(vm);
   vm.markCompilerRoots();
-  markObject((Obj *)vm.initString);
+  markObject(vm, (Obj *)vm.initString);
 }
-static void traceReferences() {
-  Vm &vm = currentVm();
+static void traceReferences(Vm &vm) {
   while (!vm.grayStack.empty()) {
     Obj *object = vm.grayStack.back();
     vm.grayStack.pop_back();
-    blackenObject(object);
+    blackenObject(vm, object);
   }
 }
-static void sweep() {
-  Vm &vm = currentVm();
+static void sweep(Vm &vm) {
   Obj *previous = nullptr;
   Obj *object = vm.objects;
   while (object != nullptr) {
@@ -221,21 +216,20 @@ static void sweep() {
         vm.objects = object;
       }
 
-      freeObject(unreached);
+      freeObject(vm, unreached);
     }
   }
 }
-void collectGarbage() {
-  Vm &vm = currentVm();
+void collectGarbage(Vm &vm) {
 #ifdef DEBUG_LOG_GC
   std::printf("-- gc begin\n");
   size_t before = vm.bytesAllocated;
 #endif
 
-  markRoots();
-  traceReferences();
+  markRoots(vm);
+  traceReferences(vm);
   vm.strings.removeWhite();
-  sweep();
+  sweep(vm);
 
   vm.nextGC = vm.bytesAllocated * GC_HEAP_GROW_FACTOR;
 
@@ -245,12 +239,11 @@ void collectGarbage() {
          before - vm.bytesAllocated, before, vm.bytesAllocated, vm.nextGC);
 #endif
 }
-void freeObjects() {
-  Vm &vm = currentVm();
+void freeObjects(Vm &vm) {
   Obj *object = vm.objects;
   while (object != nullptr) {
     Obj *next = object->next;
-    freeObject(object);
+    freeObject(vm, object);
     object = next;
   }
   vm.grayStack.clear();
