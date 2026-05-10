@@ -9,6 +9,7 @@
 #include "../lowering/AstLowerer.h"
 #include "../ir/LoxIRVerifier.h"
 #include "../ir/LoxPassManager.h"
+#include "../opt/LoxOptimizationPasses.h"
 #include "../runtime/RuntimeAPI.h"
 #include <fstream>
 #include <initializer_list>
@@ -557,6 +558,17 @@ int runFile(const std::string &filename) {
       }
     }
     eloxir::loxir::dumpModuleIfRequested(loxModule, "lowered");
+
+    auto passManager = eloxir::loxir::createDefaultLoxPassPipeline();
+    passManager.run(loxModule);
+    auto optimizedVerification = eloxir::loxir::verifyModule(loxModule);
+    if (!optimizedVerification.ok) {
+      std::cerr << "Optimized LoxIR verification warnings:\n";
+      for (const auto &message : optimizedVerification.errors) {
+        std::cerr << "  " << message << '\n';
+      }
+    }
+    eloxir::loxir::dumpModuleIfRequested(loxModule, "optimized");
   }
 
   // Clear any previous runtime errors

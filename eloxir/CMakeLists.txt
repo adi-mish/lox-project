@@ -67,19 +67,20 @@ add_subdirectory(runtime)
 add_subdirectory(frontend)
 add_subdirectory(ir)
 add_subdirectory(lowering)
+add_subdirectory(opt)
 add_subdirectory(codegen)
 add_subdirectory(jit)
 
 # 5) Define your executable
 add_executable(eloxir tools/repl.cpp)
 target_link_libraries(eloxir PRIVATE
-  Frontend LoxIR LoxLowering CodeGen Runtime EloxirJIT
+  Frontend LoxIR LoxLowering LoxOpt CodeGen Runtime EloxirJIT
   LLVMSupport LLVMOrcJIT LLVMAsmParser LLVMCore LLVMExecutionEngine
   LLVMPasses LLVMAnalysis LLVMTransformUtils LLVMScalarOpts LLVMTarget
   LLVMAsmPrinter LLVMX86Desc LLVMX86Info LLVMX86CodeGen LLVMX86AsmParser
 )
 
 # 6) Apply a consistent warning policy to all local targets.
-foreach(target_name IN ITEMS Runtime Frontend LoxIR LoxLowering CodeGen EloxirJIT eloxir)
+foreach(target_name IN ITEMS Runtime Frontend LoxIR LoxLowering LoxOpt CodeGen EloxirJIT eloxir)
   eloxir_enable_warnings(${target_name})
 endforeach()
