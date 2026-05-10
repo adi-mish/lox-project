@@ -343,9 +343,8 @@ static bool callValue(Value callee, int argCount) {
         vm.classCalls++;
 #endif
       vm.stackTop[-argCount - 1] = OBJ_VAL(newInstance(klass));
-      Value initializer;
-      if (tableGet(&klass->methods, vm.initString, &initializer)) {
-        return call(AS_CLOSURE(initializer), argCount);
+      if (klass->initializer != NULL) {
+        return call(klass->initializer, argCount);
       } else if (argCount != 0) {
         runtimeError("Expected 0 arguments but got %d.", argCount);
         return false;
@@ -566,6 +565,9 @@ static void defineMethod(ObjString *name) {
   Value method = peek(0);
   ObjClass *klass = AS_CLASS(peek(1));
   tableSet(&klass->methods, name, method);
+  if (name == vm.initString) {
+    klass->initializer = AS_CLOSURE(method);
+  }
   pop();
 }
 static bool isFalsey(Value value) {
@@ -1013,7 +1015,9 @@ static InterpretResult run() {
       }
 
       ObjClass *subclass = AS_CLASS(peek(0));
-      tableAddAll(&AS_CLASS(superclass)->methods, &subclass->methods);
+      ObjClass *superKlass = AS_CLASS(superclass);
+      tableAddAll(&superKlass->methods, &subclass->methods);
+      subclass->initializer = superKlass->initializer;
       vm.stackTop--;
       break;
     }

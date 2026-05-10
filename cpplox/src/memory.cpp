@@ -97,6 +97,7 @@ static void blackenObject(Obj *object) {
     ObjClass *klass = (ObjClass *)object;
     markObject((Obj *)klass->name);
     markTable(&klass->methods);
+    markObject((Obj *)klass->initializer);
     markTable(&klass->fieldSlots);
     break;
   }

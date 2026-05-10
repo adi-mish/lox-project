@@ -80,6 +80,7 @@ typedef struct {
   Obj obj;
   ObjString *name;
   Table methods;
+  ObjClosure *initializer;
   Table fieldSlots;
   int fieldSlotCount;
   uint32_t fieldVersion;
