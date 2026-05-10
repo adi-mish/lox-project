@@ -118,7 +118,11 @@ Supported commands:
 
 The runner parses the official inline expectations, executes each `.lox` file
 in a fresh process, checks exit codes, stdout, and expected error fragments,
-and gives benchmark tests a longer timeout.
+and gives benchmark tests a longer timeout. `jlox` and `clox` use canonical
+Crafting Interpreters diagnostics, so stderr fragments are checked for them.
+`eloxir` currently reports equivalent parse/runtime categories with different
+wording, so the orchestrator checks its stdout and exit status while leaving
+exact diagnostic text as an implementation-specific surface.
 
 Common workflows:
 

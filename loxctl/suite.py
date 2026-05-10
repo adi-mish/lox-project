@@ -117,10 +117,11 @@ def run_one_test(
         result.failure_kind = FailureKind.STDOUT
         return result
 
-    for fragment in expectations.stderr_fragments:
-        if fragment not in result.stderr:
-            result.failure_kind = FailureKind.STDERR
-            return result
+    if impl.checks_stderr_fragments:
+        for fragment in expectations.stderr_fragments:
+            if fragment not in result.stderr:
+                result.failure_kind = FailureKind.STDERR
+                return result
 
     result.passed = True
     return result

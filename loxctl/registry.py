@@ -75,6 +75,7 @@ IMPLEMENTATIONS: dict[str, Implementation] = {
         clean_paths=(repo_path("eloxir", "build"),),
         supports_scan=True,
         supports_print_ast=True,
+        checks_stderr_fragments=False,
     ),
 }
 

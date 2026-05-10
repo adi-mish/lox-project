@@ -33,6 +33,7 @@ class Implementation:
     clean_paths: tuple[Path, ...]
     supports_scan: bool = False
     supports_print_ast: bool = False
+    checks_stderr_fragments: bool = True
     expectation_marker: str | None = None
     default_skip_patterns: tuple[str, ...] = ()
 

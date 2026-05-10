@@ -31,6 +31,7 @@ def impl_to_dict(impl: Implementation) -> dict[str, object]:
         "name": impl.name,
         "description": impl.description,
         "capabilities": list(impl.capabilities),
+        "checks_stderr_fragments": impl.checks_stderr_fragments,
         "build_steps": [step.display() for step in impl.build_steps],
         "executables": [str(path.relative_to(REPO_ROOT)) for path in impl.executable_candidates],
         "clean_paths": [str(path.relative_to(REPO_ROOT)) for path in impl.clean_paths],
@@ -59,6 +60,7 @@ def cmd_info(args: argparse.Namespace) -> int:
     for impl in impls:
         print(f"\n{impl.name}: {impl.description}")
         print(f"  capabilities: {', '.join(impl.capabilities) or 'run'}")
+        print(f"  stderr fragments: {'checked' if impl.checks_stderr_fragments else 'exit-code only'}")
         print("  build:")
         for step in impl.build_steps:
             print(f"    ({step.cwd.relative_to(REPO_ROOT)}) $ {step.display()}")
