@@ -109,6 +109,27 @@ inline void appendOptionalPipeline(llvm::PassBuilder &passBuilder,
   mpm.addPass(std::move(custom));
 }
 
+inline void appendPipeline(llvm::PassBuilder &passBuilder,
+                           llvm::ModulePassManager &mpm,
+                           std::string_view label,
+                           std::string_view pipeline) {
+  llvm::ModulePassManager custom;
+  if (llvm::Error err = passBuilder.parsePassPipeline(custom, pipeline)) {
+    if (envFlag("ELOXIR_TRACE_OPT")) {
+      llvm::errs() << "eloxir: failed to parse built-in pipeline " << label
+                   << "='" << pipeline << "'\n";
+    }
+    llvm::consumeError(std::move(err));
+    return;
+  }
+
+  if (envFlag("ELOXIR_TRACE_OPT")) {
+    llvm::errs() << "eloxir: appended built-in pipeline " << label << "='"
+                 << pipeline << "'\n";
+  }
+  mpm.addPass(std::move(custom));
+}
+
 inline void runOptimisationPipeline(llvm::Module &module,
                                     llvm::TargetMachine *targetMachine) {
   dumpModuleIR(module, "preopt");
@@ -141,13 +162,15 @@ inline void runOptimisationPipeline(llvm::Module &module,
   llvm::ModulePassManager mpm =
       passBuilder.buildPerModuleDefaultPipeline(llvm::OptimizationLevel::O3);
   appendOptionalPipeline(passBuilder, mpm, "ELOXIR_PRE_CLEANUP_PIPELINE");
-  llvm::ModulePassManager lateCleanup;
-  if (llvm::Error err = passBuilder.parsePassPipeline(
-          lateCleanup,
-          "globalopt,function(instcombine,simplifycfg),globaldce")) {
-    llvm::consumeError(std::move(err));
-  } else {
-    mpm.addPass(std::move(lateCleanup));
+  if (envFlag("ELOXIR_AGGRESSIVE_CLEANUP") &&
+      !envFlag("ELOXIR_DISABLE_AGGRESSIVE_CLEANUP")) {
+    appendPipeline(passBuilder, mpm, "aggressive-cleanup",
+                   "inferattrs,function-attrs,globalopt,ipsccp,"
+                   "function(sroa,early-cse<memssa>,aggressive-instcombine,"
+                   "instcombine,simplifycfg<hoist-common-insts;"
+                   "sink-common-insts>,jump-threading,"
+                   "correlated-propagation,sccp,adce,gvn),"
+                   "globalopt,constmerge,globaldce");
   }
   appendOptionalPipeline(passBuilder, mpm, "ELOXIR_POST_OPT_PIPELINE");
   mpm.run(module, mam);
