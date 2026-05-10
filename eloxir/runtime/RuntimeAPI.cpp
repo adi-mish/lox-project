@@ -2532,7 +2532,8 @@ uint64_t elx_get_instance_class(uint64_t instance_bits) {
 static bool tryReadInstanceField(ObjInstance *instance, ObjShape *shape,
                                  ObjString *field_key,
                                  uint64_t *cached_shape_bits,
-                                 uint64_t *cached_slot, uint64_t *out_value) {
+                                 uint64_t *cached_slot, uint64_t *out_value,
+                                 size_t *out_slot = nullptr) {
   if (!instance || !field_key)
     return false;
 
@@ -2542,6 +2543,8 @@ static bool tryReadInstanceField(ObjInstance *instance, ObjShape *shape,
     size_t cachedSlot = loadCachedSlot(cached_slot);
     if (cachedSlot < instance->fieldCapacity &&
         instance->fieldInitialized[cachedSlot]) {
+      if (out_slot)
+        *out_slot = cachedSlot;
       if (out_value)
         *out_value = instance->fieldValues[cachedSlot];
       return true;
@@ -2560,6 +2563,8 @@ static bool tryReadInstanceField(ObjInstance *instance, ObjShape *shape,
 
   storeCachedShape(cached_shape_bits, shape);
   storeCachedSlot(cached_slot, slot);
+  if (out_slot)
+    *out_slot = slot;
   if (out_value)
     *out_value = instance->fieldValues[slot];
   return true;
@@ -2749,12 +2754,6 @@ uint64_t elx_get_property_slow(uint64_t instance_bits, uint64_t name_bits,
     return Value::nil().getBits();
   }
 
-  ObjString *field_key = extractStringKey(name_bits, nullptr);
-  if (!field_key) {
-    elx_runtime_error("Property name must be a string.");
-    return Value::nil().getBits();
-  }
-
   ObjShape *shape = ensureInstanceShape(instance);
   size_t cachedSlot = 0;
   if (propertyCacheLookup(cache, shape, capacity, &cachedSlot) &&
@@ -2770,13 +2769,17 @@ uint64_t elx_get_property_slow(uint64_t instance_bits, uint64_t name_bits,
 #if defined(ELOXIR_ENABLE_CACHE_STATS)
   elx_cache_stats_record_property_miss(0);
 #endif
+  ObjString *field_key = extractStringKey(name_bits, nullptr);
+  if (!field_key) {
+    elx_runtime_error("Property name must be a string.");
+    return Value::nil().getBits();
+  }
+
   uint64_t value_bits = Value::nil().getBits();
+  size_t slot = 0;
   if (tryReadInstanceField(instance, shape, field_key, nullptr, nullptr,
-                           &value_bits)) {
-    size_t slot = 0;
-    if (shapeTryGetSlot(shape, field_key, &slot)) {
-      propertyCacheUpdate(cache, shape, slot, capacity, false);
-    }
+                           &value_bits, &slot)) {
+    propertyCacheUpdate(cache, shape, slot, capacity, false);
     return value_bits;
   }
 
@@ -2809,7 +2812,6 @@ static bool ensureSlotForWrite(ObjInstance *instance, ObjString *field_key,
   if (shape && cachedShape == shape) {
     slot = loadCachedSlot(cached_slot);
   } else if (shapeTryGetSlot(shape, field_key, &slot)) {
-    // Slot already exists.
   } else {
     ObjShape *next = shapeEnsureTransition(shape, field_key);
     if (instance->klass && instance->klass->defaultShape == shape) {
