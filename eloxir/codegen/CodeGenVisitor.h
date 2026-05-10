@@ -4,11 +4,11 @@
 #include "../frontend/Visitor.h"
 #include "../runtime/RuntimeAPI.h"
 #include "../runtime/Value.h"
+#include <cstddef>
+#include <cstdint>
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/Module.h>
-#include <cstddef>
-#include <cstdint>
 #include <stack>
 #include <string>
 #include <unordered_map>
@@ -56,7 +56,8 @@ class CodeGenVisitor : public ExprVisitor, public StmtVisitor {
   // Track the last allocated stack slot per function so new allocas preserve
   // lexical order. This keeps pointer ordering consistent with Crafting
   // Interpreters' stack model for upvalue closing semantics.
-  std::unordered_map<llvm::Function *, llvm::Instruction *> lastAllocaForFunction;
+  std::unordered_map<llvm::Function *, llvm::Instruction *>
+      lastAllocaForFunction;
 
   struct PropertyCacheEntry {
     llvm::GlobalVariable *shapeBits;
@@ -119,6 +120,8 @@ public:
   // Track which variables are global (to distinguish from truly local
   // variables)
   std::unordered_set<std::string> globalVariables;
+  std::unordered_set<std::string> runtimeSyncedGlobals;
+  bool syncAllGlobals = true;
 
   // Helper for forward function declarations
   void declareFunctionSignature(Function *s);
@@ -163,6 +166,11 @@ public:
     resolver_locals = locals;
   }
 
+  void setRuntimeSyncedGlobals(std::unordered_set<std::string> globals) {
+    runtimeSyncedGlobals = std::move(globals);
+    syncAllGlobals = false;
+  }
+
   // Helper to create global function objects outside of function contexts
   void createGlobalFunctionObjects();
 
@@ -203,7 +211,8 @@ private:
                          llvm::Value *nameValue);
   void emitLegacySetExpr(Set *e, llvm::Value *objectValue);
   std::size_t estimateLoopBodyInstructions(Stmt *stmt) const;
-  std::size_t saturatingLoopAdd(std::size_t current, std::size_t increment) const;
+  std::size_t saturatingLoopAdd(std::size_t current,
+                                std::size_t increment) const;
   llvm::Value *tagOf(llvm::Value *v);
   llvm::Value *isNumber(llvm::Value *v);
   llvm::Value *isString(llvm::Value *v);
@@ -234,6 +243,7 @@ private:
   void ensureParameterLimit(size_t arity);
   void closeAllCapturedLocals();
   bool removeLocalSlot(llvm::Value *slot);
+  bool shouldSyncGlobal(const std::string &name) const;
 
   void enterLoop();
   void exitLoop();

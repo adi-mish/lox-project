@@ -81,6 +81,8 @@ typedef struct ClassCompiler {
 Parser parser;
 Compiler *current = NULL;
 ClassCompiler *currentClass = NULL;
+static ObjString *knownGlobals[UINT8_COUNT];
+static int knownGlobalCount = 0;
 
 static Chunk *currentChunk() { return &current->function->chunk; }
 static LoopStart currentLoopStart() {
@@ -280,6 +282,35 @@ static bool discardPureExpression(int start) {
       depth++;
       offset++;
       break;
+    case OP_GET_LOCAL:
+    case OP_GET_UPVALUE:
+      depth++;
+      offset += 2;
+      break;
+    case OP_GET_LOCAL_0:
+    case OP_GET_LOCAL_1:
+    case OP_GET_LOCAL_2:
+    case OP_GET_LOCAL_3:
+    case OP_GET_LOCAL_4:
+    case OP_GET_LOCAL_5:
+    case OP_GET_LOCAL_6:
+    case OP_GET_LOCAL_7:
+      depth++;
+      offset++;
+      break;
+    case OP_GET_GLOBAL: {
+      ObjString *name =
+          AS_STRING(chunk->constants.values[chunk->code[offset + 1]]);
+      bool known = name->length == 5 && memcmp(name->chars, "clock", 5) == 0;
+      for (int i = 0; !known && i < knownGlobalCount; i++) {
+        known = knownGlobals[i] == name;
+      }
+      if (!known)
+        return false;
+      depth++;
+      offset += 2;
+      break;
+    }
     case OP_EQUAL:
       if (depth < 2)
         return false;
@@ -300,6 +331,16 @@ static bool discardPureExpression(int start) {
     return true;
   }
   return false;
+}
+
+static void rememberGlobal(uint8_t constant) {
+  ObjString *name = AS_STRING(currentChunk()->constants.values[constant]);
+  for (int i = 0; i < knownGlobalCount; i++) {
+    if (knownGlobals[i] == name)
+      return;
+  }
+  if (knownGlobalCount < UINT8_COUNT)
+    knownGlobals[knownGlobalCount++] = name;
 }
 
 static uint8_t identifierConstant(Token *name) {
@@ -410,6 +451,7 @@ static void defineVariable(uint8_t global) {
   }
 
   emitBytes(OP_DEFINE_GLOBAL, global);
+  rememberGlobal(global);
 }
 static uint8_t argumentList() {
   uint8_t argCount = 0;
@@ -990,6 +1032,7 @@ static void statement() {
 
 ObjFunction *compile(const char *source) {
   initScanner(source);
+  knownGlobalCount = 0;
 
   Compiler compiler;
 

@@ -3,9 +3,9 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <llvm/ADT/DenseMap.h>
 #include <string>
 #include <unordered_map>
-#include <llvm/ADT/DenseMap.h>
 
 #include "ObjShape.h"
 
@@ -183,8 +183,7 @@ uint64_t elx_call_property(uint64_t instance_bits, uint64_t name_bits,
                            uint64_t *args, int arg_count);
 int elx_prepare_property_call(uint64_t instance_bits, uint64_t name_bits,
                               uint64_t *out_target);
-int elx_prepare_property_call_cached(uint64_t instance_bits,
-                                     uint64_t name_bits,
+int elx_prepare_property_call_cached(uint64_t instance_bits, uint64_t name_bits,
                                      eloxir::CallInlineCache *cache,
                                      uint64_t *out_target);
 uint64_t elx_call_prepared_property(int target_kind, uint64_t receiver_bits,
@@ -208,12 +207,10 @@ uint64_t elx_call_native_fast(uint64_t native_bits, uint64_t *args,
 uint64_t elx_call_bound_method_fast(uint64_t bound_bits, uint64_t *args,
                                     int arg_count, uint64_t method_bits,
                                     void *function_ptr, int expected_arity,
-                                    uint64_t expected_class_ptr,
-                                    int flags);
-uint64_t elx_call_class_fast(uint64_t class_bits, uint64_t *args,
-                             int arg_count, uint64_t initializer_bits,
-                             void *function_ptr, int expected_arity,
-                             int flags);
+                                    uint64_t expected_class_ptr, int flags);
+uint64_t elx_call_class_fast(uint64_t class_bits, uint64_t *args, int arg_count,
+                             uint64_t initializer_bits, void *function_ptr,
+                             int expected_arity, int flags);
 int elx_is_bound_method(uint64_t value_bits);
 int elx_bound_method_matches(uint64_t callee_bits, uint64_t method_bits,
                              uint64_t expected_class_ptr);
@@ -267,18 +264,15 @@ int elx_try_get_instance_field_cached(uint64_t instance_bits,
                                       uint64_t *cached_slot,
                                       uint64_t *out_value);
 uint64_t elx_set_instance_field_cached(uint64_t instance_bits,
-                                       uint64_t name_bits,
-                                       uint64_t value_bits,
+                                       uint64_t name_bits, uint64_t value_bits,
                                        uint64_t *cached_shape_bits,
                                        uint64_t *cached_slot);
 uint64_t elx_bind_method(uint64_t instance_bits, uint64_t method_bits);
 uint64_t elx_get_property_slow(uint64_t instance_bits, uint64_t name_bits,
-                               eloxir::PropertyCache *cache,
-                               uint32_t capacity);
+                               eloxir::PropertyCache *cache, uint32_t capacity);
 uint64_t elx_set_property_slow(uint64_t instance_bits, uint64_t name_bits,
                                uint64_t value_bits,
-                               eloxir::PropertyCache *cache,
-                               uint32_t capacity);
+                               eloxir::PropertyCache *cache, uint32_t capacity);
 eloxir::ObjShape *elx_instance_shape_ptr(uint64_t instance_bits);
 uint64_t *elx_instance_field_values_ptr(uint64_t instance_bits);
 uint8_t *elx_instance_field_presence_ptr(uint64_t instance_bits);

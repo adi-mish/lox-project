@@ -5,21 +5,74 @@
 #include <algorithm>
 #include <cstdint>
 #include <ctime>
+#include <iostream>
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/Function.h>
-#include <llvm/IR/Instructions.h>
 #include <llvm/IR/GlobalVariable.h>
-#include <llvm/Support/Alignment.h>
+#include <llvm/IR/Instructions.h>
 #include <llvm/IR/Type.h>
 #include <llvm/IR/Verifier.h>
+#include <llvm/Support/Alignment.h>
 #include <stdexcept>
-#include <iostream>
 
 namespace eloxir {
 
 // Constants mirrored from Value.h
 static constexpr uint64_t QNAN = 0x7ff8000000000000ULL;
 static constexpr uint64_t MASK_TAG = 0x7ULL << 48;
+
+static bool isDiscardablePureExpression(const Expr *expr) {
+  if (!expr)
+    return false;
+
+  if (dynamic_cast<const Literal *>(expr) != nullptr)
+    return true;
+
+  if (const auto *grouping = dynamic_cast<const Grouping *>(expr)) {
+    return isDiscardablePureExpression(grouping->expression.get());
+  }
+
+  if (const auto *unary = dynamic_cast<const Unary *>(expr)) {
+    return unary->op.getType() == TokenType::BANG &&
+           isDiscardablePureExpression(unary->right.get());
+  }
+
+  if (const auto *binary = dynamic_cast<const Binary *>(expr)) {
+    TokenType type = binary->op.getType();
+    return (type == TokenType::EQUAL_EQUAL || type == TokenType::BANG_EQUAL) &&
+           isDiscardablePureExpression(binary->left.get()) &&
+           isDiscardablePureExpression(binary->right.get());
+  }
+
+  return false;
+}
+
+static std::size_t countDiscardedConstants(const Expr *expr) {
+  if (!expr)
+    return 0;
+
+  if (const auto *literal = dynamic_cast<const Literal *>(expr)) {
+    return std::holds_alternative<double>(literal->value) ||
+                   std::holds_alternative<std::string>(literal->value)
+               ? 1
+               : 0;
+  }
+
+  if (const auto *grouping = dynamic_cast<const Grouping *>(expr)) {
+    return countDiscardedConstants(grouping->expression.get());
+  }
+
+  if (const auto *unary = dynamic_cast<const Unary *>(expr)) {
+    return countDiscardedConstants(unary->right.get());
+  }
+
+  if (const auto *binary = dynamic_cast<const Binary *>(expr)) {
+    return countDiscardedConstants(binary->left.get()) +
+           countDiscardedConstants(binary->right.get());
+  }
+
+  return 0;
+}
 
 CodeGenVisitor::CodeGenVisitor(llvm::Module &m)
     : builder(m.getContext()), ctx(m.getContext()), mod(m),
@@ -114,20 +167,17 @@ CodeGenVisitor::CodeGenVisitor(llvm::Module &m)
       llvm::FunctionType::get(llvmValueTy(), {llvmValueTy()}, false);
   mod.getOrInsertFunction("elx_validate_superclass", validateSuperTy);
 
-  llvm::FunctionType *allocateClassTy =
-      llvm::FunctionType::get(llvmValueTy(), {llvmValueTy(), llvmValueTy()},
-                              false);
+  llvm::FunctionType *allocateClassTy = llvm::FunctionType::get(
+      llvmValueTy(), {llvmValueTy(), llvmValueTy()}, false);
   mod.getOrInsertFunction("elx_allocate_class", allocateClassTy);
 
-  llvm::FunctionType *classAddMethodTy =
-      llvm::FunctionType::get(llvm::Type::getVoidTy(ctx),
-                              {llvmValueTy(), llvmValueTy(), llvmValueTy()},
-                              false);
+  llvm::FunctionType *classAddMethodTy = llvm::FunctionType::get(
+      llvm::Type::getVoidTy(ctx), {llvmValueTy(), llvmValueTy(), llvmValueTy()},
+      false);
   mod.getOrInsertFunction("elx_class_add_method", classAddMethodTy);
 
-  llvm::FunctionType *classFindMethodTy =
-      llvm::FunctionType::get(llvmValueTy(), {llvmValueTy(), llvmValueTy()},
-                              false);
+  llvm::FunctionType *classFindMethodTy = llvm::FunctionType::get(
+      llvmValueTy(), {llvmValueTy(), llvmValueTy()}, false);
   mod.getOrInsertFunction("elx_class_find_method", classFindMethodTy);
 
   llvm::FunctionType *instantiateClassTy =
@@ -138,15 +188,13 @@ CodeGenVisitor::CodeGenVisitor(llvm::Module &m)
       llvm::FunctionType::get(llvmValueTy(), {llvmValueTy()}, false);
   mod.getOrInsertFunction("elx_get_instance_class", getInstanceClassTy);
 
-  llvm::FunctionType *getInstanceFieldTy =
-      llvm::FunctionType::get(llvmValueTy(), {llvmValueTy(), llvmValueTy()},
-                              false);
+  llvm::FunctionType *getInstanceFieldTy = llvm::FunctionType::get(
+      llvmValueTy(), {llvmValueTy(), llvmValueTy()}, false);
   mod.getOrInsertFunction("elx_get_instance_field", getInstanceFieldTy);
 
   llvm::FunctionType *tryGetInstanceFieldTy = llvm::FunctionType::get(
       llvm::Type::getInt32Ty(ctx),
-      {llvmValueTy(), llvmValueTy(),
-       llvm::PointerType::get(llvmValueTy(), 0)},
+      {llvmValueTy(), llvmValueTy(), llvm::PointerType::get(llvmValueTy(), 0)},
       false);
   mod.getOrInsertFunction("elx_try_get_instance_field", tryGetInstanceFieldTy);
 
@@ -171,8 +219,8 @@ CodeGenVisitor::CodeGenVisitor(llvm::Module &m)
   auto callCacheTy = getCallCacheType();
   auto callCachePtrTy = llvm::PointerType::get(callCacheTy, 0);
 
-  llvm::FunctionType *callCacheUpdateTy = llvm::FunctionType::get(
-      voidTy, {callCachePtrTy, llvmValueTy()}, false);
+  llvm::FunctionType *callCacheUpdateTy =
+      llvm::FunctionType::get(voidTy, {callCachePtrTy, llvmValueTy()}, false);
   mod.getOrInsertFunction("elx_call_cache_update", callCacheUpdateTy);
 
 #ifdef ELOXIR_ENABLE_CACHE_STATS
@@ -182,14 +230,14 @@ CodeGenVisitor::CodeGenVisitor(llvm::Module &m)
 
   llvm::FunctionType *propertyMissTy =
       llvm::FunctionType::get(voidTy, {i32Ty}, false);
-  mod.getOrInsertFunction("elx_cache_stats_record_property_miss", propertyMissTy);
+  mod.getOrInsertFunction("elx_cache_stats_record_property_miss",
+                          propertyMissTy);
 
   llvm::FunctionType *callHitTy =
       llvm::FunctionType::get(voidTy, {i32Ty}, false);
   mod.getOrInsertFunction("elx_cache_stats_record_call_hit", callHitTy);
 
-  llvm::FunctionType *callMissTy =
-      llvm::FunctionType::get(voidTy, {}, false);
+  llvm::FunctionType *callMissTy = llvm::FunctionType::get(voidTy, {}, false);
   mod.getOrInsertFunction("elx_cache_stats_record_call_miss", callMissTy);
 #endif
 
@@ -206,25 +254,22 @@ CodeGenVisitor::CodeGenVisitor(llvm::Module &m)
   mod.getOrInsertFunction("elx_bound_method_matches", boundMatchesTy);
 
   llvm::FunctionType *callFunctionFastTy = llvm::FunctionType::get(
-      llvmValueTy(),
-      {llvmValueTy(), valuePtrTy, i32Ty, i8PtrTy, i32Ty}, false);
+      llvmValueTy(), {llvmValueTy(), valuePtrTy, i32Ty, i8PtrTy, i32Ty}, false);
   mod.getOrInsertFunction("elx_call_function_fast", callFunctionFastTy);
 
   llvm::FunctionType *callClosureFastTy = llvm::FunctionType::get(
-      llvmValueTy(),
-      {llvmValueTy(), valuePtrTy, i32Ty, i8PtrTy, i32Ty}, false);
+      llvmValueTy(), {llvmValueTy(), valuePtrTy, i32Ty, i8PtrTy, i32Ty}, false);
   mod.getOrInsertFunction("elx_call_closure_fast", callClosureFastTy);
 
   llvm::FunctionType *callNativeFastTy = llvm::FunctionType::get(
-      llvmValueTy(),
-      {llvmValueTy(), valuePtrTy, i32Ty, i8PtrTy, i32Ty}, false);
+      llvmValueTy(), {llvmValueTy(), valuePtrTy, i32Ty, i8PtrTy, i32Ty}, false);
   mod.getOrInsertFunction("elx_call_native_fast", callNativeFastTy);
 
-  llvm::FunctionType *callBoundFastTy = llvm::FunctionType::get(
-      llvmValueTy(),
-      {llvmValueTy(), valuePtrTy, i32Ty, llvmValueTy(), i8PtrTy, i32Ty,
-       llvmValueTy(), i32Ty},
-      false);
+  llvm::FunctionType *callBoundFastTy =
+      llvm::FunctionType::get(llvmValueTy(),
+                              {llvmValueTy(), valuePtrTy, i32Ty, llvmValueTy(),
+                               i8PtrTy, i32Ty, llvmValueTy(), i32Ty},
+                              false);
   mod.getOrInsertFunction("elx_call_bound_method_fast", callBoundFastTy);
 
   llvm::FunctionType *callClassFastTy = llvm::FunctionType::get(
@@ -239,8 +284,7 @@ CodeGenVisitor::CodeGenVisitor(llvm::Module &m)
 
   llvm::FunctionType *preparePropertyCallTy = llvm::FunctionType::get(
       i32Ty, {llvmValueTy(), llvmValueTy(), valuePtrTy}, false);
-  mod.getOrInsertFunction("elx_prepare_property_call",
-                          preparePropertyCallTy);
+  mod.getOrInsertFunction("elx_prepare_property_call", preparePropertyCallTy);
 
   llvm::FunctionType *preparePropertyCallCachedTy = llvm::FunctionType::get(
       i32Ty, {llvmValueTy(), llvmValueTy(), callCachePtrTy, valuePtrTy}, false);
@@ -250,8 +294,7 @@ CodeGenVisitor::CodeGenVisitor(llvm::Module &m)
   llvm::FunctionType *callPreparedPropertyTy = llvm::FunctionType::get(
       llvmValueTy(), {i32Ty, llvmValueTy(), llvmValueTy(), valuePtrTy, i32Ty},
       false);
-  mod.getOrInsertFunction("elx_call_prepared_property",
-                          callPreparedPropertyTy);
+  mod.getOrInsertFunction("elx_call_prepared_property", callPreparedPropertyTy);
 
   llvm::FunctionType *instanceShapePtrTy =
       llvm::FunctionType::get(shapePtrTy, {llvmValueTy()}, false);
@@ -259,8 +302,7 @@ CodeGenVisitor::CodeGenVisitor(llvm::Module &m)
 
   llvm::FunctionType *instanceFieldsPtrTy =
       llvm::FunctionType::get(valuePtrTy, {llvmValueTy()}, false);
-  mod.getOrInsertFunction("elx_instance_field_values_ptr",
-                          instanceFieldsPtrTy);
+  mod.getOrInsertFunction("elx_instance_field_values_ptr", instanceFieldsPtrTy);
 
   llvm::FunctionType *instancePresencePtrTy =
       llvm::FunctionType::get(presencePtrTy, {llvmValueTy()}, false);
@@ -273,11 +315,11 @@ CodeGenVisitor::CodeGenVisitor(llvm::Module &m)
       false);
   mod.getOrInsertFunction("elx_get_property_slow", getPropertySlowTy);
 
-  llvm::FunctionType *setPropertySlowTy = llvm::FunctionType::get(
-      llvmValueTy(),
-      {llvmValueTy(), llvmValueTy(), llvmValueTy(), cachePtrTy,
-       llvm::Type::getInt32Ty(ctx)},
-      false);
+  llvm::FunctionType *setPropertySlowTy =
+      llvm::FunctionType::get(llvmValueTy(),
+                              {llvmValueTy(), llvmValueTy(), llvmValueTy(),
+                               cachePtrTy, llvm::Type::getInt32Ty(ctx)},
+                              false);
   mod.getOrInsertFunction("elx_set_property_slow", setPropertySlowTy);
 
   llvm::FunctionType *hasGlobalVarTy =
@@ -373,20 +415,20 @@ llvm::StructType *CodeGenVisitor::getPropertyCacheType() {
   auto slotTy = llvm::Type::getInt32Ty(ctx);
   static llvm::StructType *entryTy = nullptr;
   if (!entryTy) {
-    entryTy = llvm::StructType::create(
-        ctx, {shapePtrTy, slotTy}, "struct.elx.PropertyCacheEntry");
+    entryTy = llvm::StructType::create(ctx, {shapePtrTy, slotTy},
+                                       "struct.elx.PropertyCacheEntry");
   }
-  auto entriesArrayTy =
-      llvm::ArrayType::get(entryTy, PROPERTY_CACHE_MAX_SIZE);
+  auto entriesArrayTy = llvm::ArrayType::get(entryTy, PROPERTY_CACHE_MAX_SIZE);
   std::vector<llvm::Type *> elements = {llvm::Type::getInt32Ty(ctx),
                                         entriesArrayTy};
-  propertyCacheTy = llvm::StructType::create(ctx, elements,
-                                             "struct.elx.PropertyCache");
+  propertyCacheTy =
+      llvm::StructType::create(ctx, elements, "struct.elx.PropertyCache");
   return propertyCacheTy;
 }
 
-llvm::GlobalVariable *CodeGenVisitor::getPropertyCacheGlobal(
-    const std::string &prefix, const Expr *expr) {
+llvm::GlobalVariable *
+CodeGenVisitor::getPropertyCacheGlobal(const std::string &prefix,
+                                       const Expr *expr) {
   auto it = propertyCacheGlobals.find(expr);
   if (it != propertyCacheGlobals.end()) {
     return it->second;
@@ -394,8 +436,8 @@ llvm::GlobalVariable *CodeGenVisitor::getPropertyCacheGlobal(
 
   auto cacheTy = getPropertyCacheType();
   auto zeroInit = llvm::Constant::getNullValue(cacheTy);
-  std::string name = prefix + ".cache." +
-                     std::to_string(reinterpret_cast<uintptr_t>(expr));
+  std::string name =
+      prefix + ".cache." + std::to_string(reinterpret_cast<uintptr_t>(expr));
 
   auto *global = new llvm::GlobalVariable(
       mod, cacheTy, false, llvm::GlobalValue::InternalLinkage, zeroInit, name);
@@ -417,8 +459,9 @@ llvm::StructType *CodeGenVisitor::getCallCacheType() {
   return callCacheTy;
 }
 
-llvm::GlobalVariable *CodeGenVisitor::getCallCacheGlobal(
-    const std::string &prefix, const Expr *expr) {
+llvm::GlobalVariable *
+CodeGenVisitor::getCallCacheGlobal(const std::string &prefix,
+                                   const Expr *expr) {
   auto it = callCacheGlobals.find(expr);
   if (it != callCacheGlobals.end()) {
     return it->second;
@@ -462,8 +505,8 @@ std::size_t CodeGenVisitor::estimateLoopBodyInstructions(Stmt *stmt) const {
   if (auto *block = dynamic_cast<Block *>(stmt)) {
     std::size_t total = 0;
     for (const auto &inner : block->statements) {
-      total = saturatingLoopAdd(total,
-                                estimateLoopBodyInstructions(inner.get()));
+      total =
+          saturatingLoopAdd(total, estimateLoopBodyInstructions(inner.get()));
       if (total > MAX_LOOP_BODY_INSTRUCTIONS) {
         return total;
       }
@@ -479,8 +522,10 @@ std::size_t CodeGenVisitor::estimateLoopBodyInstructions(Stmt *stmt) const {
   }
 
   if (auto *ifStmt = dynamic_cast<If *>(stmt)) {
-    std::size_t thenCount = estimateLoopBodyInstructions(ifStmt->thenBranch.get());
-    std::size_t elseCount = estimateLoopBodyInstructions(ifStmt->elseBranch.get());
+    std::size_t thenCount =
+        estimateLoopBodyInstructions(ifStmt->thenBranch.get());
+    std::size_t elseCount =
+        estimateLoopBodyInstructions(ifStmt->elseBranch.get());
     return saturatingLoopAdd(1, std::max(thenCount, elseCount));
   }
 
@@ -684,14 +729,15 @@ CodeGenVisitor::ensurePropertyCache(const Expr *expr) {
     return it->second;
   }
 
-  std::string baseName = "elx.prop.cache." + std::to_string(propertyCacheCounter++);
+  std::string baseName =
+      "elx.prop.cache." + std::to_string(propertyCacheCounter++);
   auto initial = llvm::ConstantInt::get(llvmValueTy(), 0);
-  auto *shapeBits = new llvm::GlobalVariable(
-      mod, llvmValueTy(), false, llvm::GlobalValue::PrivateLinkage, initial,
-      baseName + ".shape");
-  auto *slotIndex = new llvm::GlobalVariable(
-      mod, llvmValueTy(), false, llvm::GlobalValue::PrivateLinkage, initial,
-      baseName + ".slot");
+  auto *shapeBits = new llvm::GlobalVariable(mod, llvmValueTy(), false,
+                                             llvm::GlobalValue::PrivateLinkage,
+                                             initial, baseName + ".shape");
+  auto *slotIndex = new llvm::GlobalVariable(mod, llvmValueTy(), false,
+                                             llvm::GlobalValue::PrivateLinkage,
+                                             initial, baseName + ".slot");
   shapeBits->setAlignment(llvm::Align(alignof(void *)));
   slotIndex->setAlignment(llvm::Align(sizeof(uint64_t)));
   auto [insertedIt, _] =
@@ -1094,8 +1140,22 @@ void CodeGenVisitor::visitVariableExpr(Variable *e) {
     return;
   }
 
-  // For global variables, check the persistent global system AFTER local stacks
+  // Top-level globals in the current generated function can use their LLVM
+  // storage directly. Nested functions still use the persistent environment
+  // because their globals outlive the caller's stack frame.
   if (globalVariables.count(varName)) {
+    auto localIt = locals.find(varName);
+    if (!shouldSyncGlobal(varName) && localIt != locals.end()) {
+      if (auto *alloca = llvm::dyn_cast<llvm::AllocaInst>(localIt->second)) {
+        auto *activeFn = builder.GetInsertBlock()->getParent();
+        if (alloca->getFunction() == activeFn) {
+          value = builder.CreateLoad(llvmValueTy(), localIt->second,
+                                     varName.c_str());
+          return;
+        }
+      }
+    }
+
     auto getGlobalVarFn = mod.getFunction("elx_get_global_variable");
     if (getGlobalVarFn) {
       auto nameStr = builder.CreateGlobalStringPtr(varName, "var_name");
@@ -1156,6 +1216,18 @@ void CodeGenVisitor::visitVariableExpr(Variable *e) {
 
   // For global variables, check the persistent global system after locals.
   if (globalVariables.count(varName)) {
+    auto localIt = locals.find(varName);
+    if (!shouldSyncGlobal(varName) && localIt != locals.end()) {
+      if (auto *alloca = llvm::dyn_cast<llvm::AllocaInst>(localIt->second)) {
+        auto *activeFn = builder.GetInsertBlock()->getParent();
+        if (alloca->getFunction() == activeFn) {
+          value = builder.CreateLoad(llvmValueTy(), localIt->second,
+                                     varName.c_str());
+          return;
+        }
+      }
+    }
+
     auto getGlobalVarFn = mod.getFunction("elx_get_global_variable");
     if (getGlobalVarFn) {
       auto nameStr = builder.CreateGlobalStringPtr(varName, "var_name");
@@ -1353,7 +1425,7 @@ void CodeGenVisitor::visitAssignExpr(Assign *e) {
     }
 
     auto setGlobalVarFn = mod.getFunction("elx_set_global_variable");
-    if (setGlobalVarFn) {
+    if (setGlobalVarFn && shouldSyncGlobal(varName)) {
       auto nameStr = builder.CreateGlobalStringPtr(varName, "var_name");
       builder.CreateCall(setGlobalVarFn, {nameStr, assignValue});
     }
@@ -1526,8 +1598,7 @@ void CodeGenVisitor::visitCallExpr(Call *e) {
       llvm::Value *hasErrorBool = builder.CreateICmpNE(
           hasError, llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0),
           "property_call_prepare_failed");
-      auto errorBB =
-          llvm::BasicBlock::Create(ctx, "property.call.error", fn);
+      auto errorBB = llvm::BasicBlock::Create(ctx, "property.call.error", fn);
       auto argsBB = llvm::BasicBlock::Create(ctx, "property.call.args", fn);
       auto contBB = llvm::BasicBlock::Create(ctx, "property.call.cont", fn);
       builder.CreateCondBr(hasErrorBool, errorBB, argsBB);
@@ -1558,7 +1629,8 @@ void CodeGenVisitor::visitCallExpr(Call *e) {
         for (size_t i = 0; i < args.size(); ++i) {
           llvm::Value *idx =
               llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), i);
-          llvm::Value *elemPtr = builder.CreateGEP(llvmValueTy(), argArray, idx);
+          llvm::Value *elemPtr =
+              builder.CreateGEP(llvmValueTy(), argArray, idx);
           builder.CreateStore(args[i], elemPtr);
         }
       } else {
@@ -1596,15 +1668,15 @@ void CodeGenVisitor::visitCallExpr(Call *e) {
   }
 
   llvm::Function *callValueFn = mod.getFunction("elx_call_value");
-  llvm::Function *callFunctionFastFn = mod.getFunction("elx_call_function_fast");
+  llvm::Function *callFunctionFastFn =
+      mod.getFunction("elx_call_function_fast");
   llvm::Function *callClosureFastFn = mod.getFunction("elx_call_closure_fast");
   llvm::Function *callNativeFastFn = mod.getFunction("elx_call_native_fast");
   llvm::Function *callBoundFastFn =
       mod.getFunction("elx_call_bound_method_fast");
   llvm::Function *callClassFastFn = mod.getFunction("elx_call_class_fast");
   llvm::Function *callCacheUpdateFn = mod.getFunction("elx_call_cache_update");
-  llvm::Function *boundMatchesFn =
-      mod.getFunction("elx_bound_method_matches");
+  llvm::Function *boundMatchesFn = mod.getFunction("elx_bound_method_matches");
 
   llvm::Value *argArray = nullptr;
   llvm::Value *argCount =
@@ -1617,8 +1689,7 @@ void CodeGenVisitor::visitCallExpr(Call *e) {
         "args");
 
     for (size_t i = 0; i < args.size(); ++i) {
-      llvm::Value *idx =
-          llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), i);
+      llvm::Value *idx = llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), i);
       llvm::Value *elemPtr = builder.CreateGEP(llvmValueTy(), argArray, idx);
       builder.CreateStore(args[i], elemPtr);
     }
@@ -1655,49 +1726,43 @@ void CodeGenVisitor::visitCallExpr(Call *e) {
   auto slowBB = llvm::BasicBlock::Create(ctx, "call.cache.slow", fn);
   auto exitBB = llvm::BasicBlock::Create(ctx, "call.cache.exit", fn);
 
-  auto kindPtr = builder.CreateStructGEP(cacheTy, cacheGV, 5,
-                                         "call_cache_kind_ptr");
+  auto kindPtr =
+      builder.CreateStructGEP(cacheTy, cacheGV, 5, "call_cache_kind_ptr");
   auto cachedKind = builder.CreateLoad(int32Ty, kindPtr, "call_cache_kind");
-  auto cachedCalleePtr = builder.CreateStructGEP(cacheTy, cacheGV, 0,
-                                                 "call_cache_callee_ptr");
-  auto cachedCallee = builder.CreateLoad(llvmValueTy(), cachedCalleePtr,
-                                        "call_cache_callee");
-  auto guard0Ptr = builder.CreateStructGEP(cacheTy, cacheGV, 1,
-                                           "call_cache_guard0_ptr");
-  auto guard0 = builder.CreateLoad(llvmValueTy(), guard0Ptr,
-                                   "call_cache_guard0");
-  auto guard1Ptr = builder.CreateStructGEP(cacheTy, cacheGV, 2,
-                                           "call_cache_guard1_ptr");
-  auto guard1 = builder.CreateLoad(llvmValueTy(), guard1Ptr,
-                                   "call_cache_guard1");
-  auto targetPtr = builder.CreateStructGEP(cacheTy, cacheGV, 3,
-                                           "call_cache_target_ptr");
-  auto cachedTarget = builder.CreateLoad(i8PtrTy, targetPtr,
-                                         "call_cache_target");
-  auto expectedPtr = builder.CreateStructGEP(cacheTy, cacheGV, 4,
-                                             "call_cache_expected_ptr");
-  auto cachedExpected = builder.CreateLoad(int32Ty, expectedPtr,
-                                           "call_cache_expected");
-  auto flagsPtr = builder.CreateStructGEP(cacheTy, cacheGV, 6,
-                                          "call_cache_flags_ptr");
-  auto cachedFlags = builder.CreateLoad(int32Ty, flagsPtr,
-                                        "call_cache_flags");
+  auto cachedCalleePtr =
+      builder.CreateStructGEP(cacheTy, cacheGV, 0, "call_cache_callee_ptr");
+  auto cachedCallee =
+      builder.CreateLoad(llvmValueTy(), cachedCalleePtr, "call_cache_callee");
+  auto guard0Ptr =
+      builder.CreateStructGEP(cacheTy, cacheGV, 1, "call_cache_guard0_ptr");
+  auto guard0 =
+      builder.CreateLoad(llvmValueTy(), guard0Ptr, "call_cache_guard0");
+  auto guard1Ptr =
+      builder.CreateStructGEP(cacheTy, cacheGV, 2, "call_cache_guard1_ptr");
+  auto guard1 =
+      builder.CreateLoad(llvmValueTy(), guard1Ptr, "call_cache_guard1");
+  auto targetPtr =
+      builder.CreateStructGEP(cacheTy, cacheGV, 3, "call_cache_target_ptr");
+  auto cachedTarget =
+      builder.CreateLoad(i8PtrTy, targetPtr, "call_cache_target");
+  auto expectedPtr =
+      builder.CreateStructGEP(cacheTy, cacheGV, 4, "call_cache_expected_ptr");
+  auto cachedExpected =
+      builder.CreateLoad(int32Ty, expectedPtr, "call_cache_expected");
+  auto flagsPtr =
+      builder.CreateStructGEP(cacheTy, cacheGV, 6, "call_cache_flags_ptr");
+  auto cachedFlags = builder.CreateLoad(int32Ty, flagsPtr, "call_cache_flags");
 
-  auto expectedNonNeg = builder.CreateICmpSGE(cachedExpected, zero32,
-                                              "call_cache_expected_ge0");
-  auto arityMatches = builder.CreateICmpEQ(cachedExpected, argCount,
-                                           "call_cache_arity_match");
+  auto expectedNonNeg =
+      builder.CreateICmpSGE(cachedExpected, zero32, "call_cache_expected_ge0");
+  auto arityMatches =
+      builder.CreateICmpEQ(cachedExpected, argCount, "call_cache_arity_match");
 
-  auto functionBB =
-      llvm::BasicBlock::Create(ctx, "call.cache.function", fn);
-  auto closureBB =
-      llvm::BasicBlock::Create(ctx, "call.cache.closure", fn);
-  auto nativeBB =
-      llvm::BasicBlock::Create(ctx, "call.cache.native", fn);
-  auto boundBB =
-      llvm::BasicBlock::Create(ctx, "call.cache.bound", fn);
-  auto classBB =
-      llvm::BasicBlock::Create(ctx, "call.cache.class", fn);
+  auto functionBB = llvm::BasicBlock::Create(ctx, "call.cache.function", fn);
+  auto closureBB = llvm::BasicBlock::Create(ctx, "call.cache.closure", fn);
+  auto nativeBB = llvm::BasicBlock::Create(ctx, "call.cache.native", fn);
+  auto boundBB = llvm::BasicBlock::Create(ctx, "call.cache.bound", fn);
+  auto classBB = llvm::BasicBlock::Create(ctx, "call.cache.class", fn);
 
   builder.CreateBr(functionBB);
 
@@ -1707,24 +1772,24 @@ void CodeGenVisitor::visitCallExpr(Call *e) {
   builder.SetInsertPoint(functionBB);
   auto functionKindConst = llvm::ConstantInt::get(
       int32Ty, static_cast<int>(eloxir::CallInlineCacheKind::FUNCTION));
-  auto isFunctionKind = builder.CreateICmpEQ(
-      cachedKind, functionKindConst, "call_cache_function_kind");
+  auto isFunctionKind = builder.CreateICmpEQ(cachedKind, functionKindConst,
+                                             "call_cache_function_kind");
   auto functionGuardBB =
       llvm::BasicBlock::Create(ctx, "call.cache.function.guard", fn);
   builder.CreateCondBr(isFunctionKind, functionGuardBB, closureBB);
 
   builder.SetInsertPoint(functionGuardBB);
-  auto functionMatch = builder.CreateICmpEQ(
-      callee, cachedCallee, "call_cache_function_match");
+  auto functionMatch =
+      builder.CreateICmpEQ(callee, cachedCallee, "call_cache_function_match");
   auto functionTargetValid = builder.CreateICmpNE(
       cachedTarget, nullI8Ptr, "call_cache_function_target_valid");
-  auto functionReadyBase = builder.CreateAnd(
-      functionMatch, functionTargetValid, "call_cache_function_ready_base");
+  auto functionReadyBase = builder.CreateAnd(functionMatch, functionTargetValid,
+                                             "call_cache_function_ready_base");
   auto functionReadyWithArity = builder.CreateAnd(
       functionReadyBase, arityMatches, "call_cache_function_ready_arity");
-  auto functionReady = builder.CreateSelect(
-      expectedNonNeg, functionReadyWithArity, functionReadyBase,
-      "call_cache_function_ready");
+  auto functionReady =
+      builder.CreateSelect(expectedNonNeg, functionReadyWithArity,
+                           functionReadyBase, "call_cache_function_ready");
   auto functionFastBB =
       llvm::BasicBlock::Create(ctx, "call.cache.function.fast", fn);
   builder.CreateCondBr(functionReady, functionFastBB, closureBB);
@@ -1746,24 +1811,24 @@ void CodeGenVisitor::visitCallExpr(Call *e) {
   builder.SetInsertPoint(closureBB);
   auto closureKindConst = llvm::ConstantInt::get(
       int32Ty, static_cast<int>(eloxir::CallInlineCacheKind::CLOSURE));
-  auto isClosureKind = builder.CreateICmpEQ(
-      cachedKind, closureKindConst, "call_cache_closure_kind");
+  auto isClosureKind = builder.CreateICmpEQ(cachedKind, closureKindConst,
+                                            "call_cache_closure_kind");
   auto closureGuardBB =
       llvm::BasicBlock::Create(ctx, "call.cache.closure.guard", fn);
   builder.CreateCondBr(isClosureKind, closureGuardBB, nativeBB);
 
   builder.SetInsertPoint(closureGuardBB);
-  auto closureMatch = builder.CreateICmpEQ(
-      callee, cachedCallee, "call_cache_closure_match");
+  auto closureMatch =
+      builder.CreateICmpEQ(callee, cachedCallee, "call_cache_closure_match");
   auto closureTargetValid = builder.CreateICmpNE(
       cachedTarget, nullI8Ptr, "call_cache_closure_target_valid");
-  auto closureReadyBase = builder.CreateAnd(
-      closureMatch, closureTargetValid, "call_cache_closure_ready_base");
+  auto closureReadyBase = builder.CreateAnd(closureMatch, closureTargetValid,
+                                            "call_cache_closure_ready_base");
   auto closureReadyWithArity = builder.CreateAnd(
       closureReadyBase, arityMatches, "call_cache_closure_ready_arity");
-  auto closureReady = builder.CreateSelect(
-      expectedNonNeg, closureReadyWithArity, closureReadyBase,
-      "call_cache_closure_ready");
+  auto closureReady =
+      builder.CreateSelect(expectedNonNeg, closureReadyWithArity,
+                           closureReadyBase, "call_cache_closure_ready");
   auto closureFastBB =
       llvm::BasicBlock::Create(ctx, "call.cache.closure.fast", fn);
   builder.CreateCondBr(closureReady, closureFastBB, nativeBB);
@@ -1785,24 +1850,24 @@ void CodeGenVisitor::visitCallExpr(Call *e) {
   builder.SetInsertPoint(nativeBB);
   auto nativeKindConst = llvm::ConstantInt::get(
       int32Ty, static_cast<int>(eloxir::CallInlineCacheKind::NATIVE));
-  auto isNativeKind = builder.CreateICmpEQ(
-      cachedKind, nativeKindConst, "call_cache_native_kind");
+  auto isNativeKind = builder.CreateICmpEQ(cachedKind, nativeKindConst,
+                                           "call_cache_native_kind");
   auto nativeGuardBB =
       llvm::BasicBlock::Create(ctx, "call.cache.native.guard", fn);
   builder.CreateCondBr(isNativeKind, nativeGuardBB, boundBB);
 
   builder.SetInsertPoint(nativeGuardBB);
-  auto nativeMatch = builder.CreateICmpEQ(
-      callee, cachedCallee, "call_cache_native_match");
+  auto nativeMatch =
+      builder.CreateICmpEQ(callee, cachedCallee, "call_cache_native_match");
   auto nativeTargetValid = builder.CreateICmpNE(
       cachedTarget, nullI8Ptr, "call_cache_native_target_valid");
-  auto nativeReadyBase = builder.CreateAnd(
-      nativeMatch, nativeTargetValid, "call_cache_native_ready_base");
+  auto nativeReadyBase = builder.CreateAnd(nativeMatch, nativeTargetValid,
+                                           "call_cache_native_ready_base");
   auto nativeReadyWithArity = builder.CreateAnd(
       nativeReadyBase, arityMatches, "call_cache_native_ready_arity");
-  auto nativeReady = builder.CreateSelect(
-      expectedNonNeg, nativeReadyWithArity, nativeReadyBase,
-      "call_cache_native_ready");
+  auto nativeReady =
+      builder.CreateSelect(expectedNonNeg, nativeReadyWithArity,
+                           nativeReadyBase, "call_cache_native_ready");
   auto nativeFastBB =
       llvm::BasicBlock::Create(ctx, "call.cache.native.fast", fn);
   builder.CreateCondBr(nativeReady, nativeFastBB, boundBB);
@@ -1824,44 +1889,43 @@ void CodeGenVisitor::visitCallExpr(Call *e) {
   builder.SetInsertPoint(boundBB);
   auto boundKindConst = llvm::ConstantInt::get(
       int32Ty, static_cast<int>(eloxir::CallInlineCacheKind::BOUND_METHOD));
-  auto isBoundKind = builder.CreateICmpEQ(
-      cachedKind, boundKindConst, "call_cache_bound_kind");
+  auto isBoundKind =
+      builder.CreateICmpEQ(cachedKind, boundKindConst, "call_cache_bound_kind");
   auto boundGuardBB =
       llvm::BasicBlock::Create(ctx, "call.cache.bound.guard", fn);
   builder.CreateCondBr(isBoundKind, boundGuardBB, classBB);
 
   builder.SetInsertPoint(boundGuardBB);
-  auto boundMethodReady = builder.CreateICmpNE(
-      guard0, zero64, "call_cache_bound_has_method");
-  auto boundTargetValid = builder.CreateICmpNE(
-      cachedTarget, nullI8Ptr, "call_cache_bound_target_valid");
-  auto boundFlagsReady = builder.CreateICmpNE(
-      cachedFlags, zero32, "call_cache_bound_has_flags");
+  auto boundMethodReady =
+      builder.CreateICmpNE(guard0, zero64, "call_cache_bound_has_method");
+  auto boundTargetValid = builder.CreateICmpNE(cachedTarget, nullI8Ptr,
+                                               "call_cache_bound_target_valid");
+  auto boundFlagsReady =
+      builder.CreateICmpNE(cachedFlags, zero32, "call_cache_bound_has_flags");
   auto boundMatchesCall = builder.CreateCall(
       boundMatchesFn, {callee, guard0, guard1}, "call_cache_bound_matches");
-  auto boundMatches = builder.CreateICmpNE(
-      boundMatchesCall, zero32, "call_cache_bound_matches_bool");
-  auto boundReadyBase = builder.CreateAnd(
-      boundMethodReady, boundMatches, "call_cache_bound_ready_base");
+  auto boundMatches = builder.CreateICmpNE(boundMatchesCall, zero32,
+                                           "call_cache_bound_matches_bool");
+  auto boundReadyBase = builder.CreateAnd(boundMethodReady, boundMatches,
+                                          "call_cache_bound_ready_base");
   boundReadyBase = builder.CreateAnd(boundReadyBase, boundTargetValid,
                                      "call_cache_bound_ready_target");
   boundReadyBase = builder.CreateAnd(boundReadyBase, boundFlagsReady,
                                      "call_cache_bound_ready_flags");
-  auto boundReadyWithArity = builder.CreateAnd(
-      boundReadyBase, arityMatches, "call_cache_bound_ready_arity");
-  auto boundReady = builder.CreateSelect(expectedNonNeg, boundReadyWithArity,
-                                         boundReadyBase,
-                                         "call_cache_bound_ready");
-  auto boundFastBB =
-      llvm::BasicBlock::Create(ctx, "call.cache.bound.fast", fn);
+  auto boundReadyWithArity = builder.CreateAnd(boundReadyBase, arityMatches,
+                                               "call_cache_bound_ready_arity");
+  auto boundReady =
+      builder.CreateSelect(expectedNonNeg, boundReadyWithArity, boundReadyBase,
+                           "call_cache_bound_ready");
+  auto boundFastBB = llvm::BasicBlock::Create(ctx, "call.cache.bound.fast", fn);
   builder.CreateCondBr(boundReady, boundFastBB, classBB);
 
   builder.SetInsertPoint(boundFastBB);
-  auto boundResult = builder.CreateCall(
-      callBoundFastFn,
-      {callee, argArray, argCount, guard0, cachedTarget, cachedExpected,
-       guard1, cachedFlags},
-      "call_bound_fast");
+  auto boundResult =
+      builder.CreateCall(callBoundFastFn,
+                         {callee, argArray, argCount, guard0, cachedTarget,
+                          cachedExpected, guard1, cachedFlags},
+                         "call_bound_fast");
 #ifdef ELOXIR_ENABLE_CACHE_STATS
   if (auto *callHitFn = mod.getFunction("elx_cache_stats_record_call_hit")) {
     builder.CreateCall(callHitFn, {boundKindConst});
@@ -1874,49 +1938,48 @@ void CodeGenVisitor::visitCallExpr(Call *e) {
   builder.SetInsertPoint(classBB);
   auto classKindConst = llvm::ConstantInt::get(
       int32Ty, static_cast<int>(eloxir::CallInlineCacheKind::CLASS));
-  auto isClassKind = builder.CreateICmpEQ(
-      cachedKind, classKindConst, "call_cache_class_kind");
+  auto isClassKind =
+      builder.CreateICmpEQ(cachedKind, classKindConst, "call_cache_class_kind");
   auto classGuardBB =
       llvm::BasicBlock::Create(ctx, "call.cache.class.guard", fn);
   builder.CreateCondBr(isClassKind, classGuardBB, slowBB);
 
   builder.SetInsertPoint(classGuardBB);
-  auto classMatch = builder.CreateICmpEQ(
-      callee, cachedCallee, "call_cache_class_match");
+  auto classMatch =
+      builder.CreateICmpEQ(callee, cachedCallee, "call_cache_class_match");
   auto classFlagsHasInit = builder.CreateAnd(
       cachedFlags,
       llvm::ConstantInt::get(int32Ty,
                              eloxir::CALL_CACHE_FLAG_CLASS_HAS_INITIALIZER),
       "call_cache_class_init_flag");
-  auto classHasInitializer = builder.CreateICmpNE(
-      classFlagsHasInit, zero32, "call_cache_class_has_init");
-  auto classTargetValid = builder.CreateICmpNE(
-      cachedTarget, nullI8Ptr, "call_cache_class_target_valid");
-  auto classInitBitsReady = builder.CreateICmpNE(
-      guard0, zero64, "call_cache_class_init_bits_ready");
-  auto classInitializerReadyBase = builder.CreateAnd(
-      classInitBitsReady, classTargetValid,
-      "call_cache_class_initializer_ready_base");
-  auto classInitializerReady = builder.CreateSelect(
-      classHasInitializer, classInitializerReadyBase, trueConst,
-      "call_cache_class_initializer_ready");
-  auto classReadyBase = builder.CreateAnd(
-      classMatch, classInitializerReady, "call_cache_class_ready_base");
-  auto classReadyWithArity = builder.CreateAnd(
-      classReadyBase, arityMatches, "call_cache_class_ready_arity");
-  auto classReady = builder.CreateSelect(expectedNonNeg, classReadyWithArity,
-                                         classReadyBase,
-                                         "call_cache_class_ready");
-  auto classFastBB =
-      llvm::BasicBlock::Create(ctx, "call.cache.class.fast", fn);
+  auto classHasInitializer = builder.CreateICmpNE(classFlagsHasInit, zero32,
+                                                  "call_cache_class_has_init");
+  auto classTargetValid = builder.CreateICmpNE(cachedTarget, nullI8Ptr,
+                                               "call_cache_class_target_valid");
+  auto classInitBitsReady =
+      builder.CreateICmpNE(guard0, zero64, "call_cache_class_init_bits_ready");
+  auto classInitializerReadyBase =
+      builder.CreateAnd(classInitBitsReady, classTargetValid,
+                        "call_cache_class_initializer_ready_base");
+  auto classInitializerReady =
+      builder.CreateSelect(classHasInitializer, classInitializerReadyBase,
+                           trueConst, "call_cache_class_initializer_ready");
+  auto classReadyBase = builder.CreateAnd(classMatch, classInitializerReady,
+                                          "call_cache_class_ready_base");
+  auto classReadyWithArity = builder.CreateAnd(classReadyBase, arityMatches,
+                                               "call_cache_class_ready_arity");
+  auto classReady =
+      builder.CreateSelect(expectedNonNeg, classReadyWithArity, classReadyBase,
+                           "call_cache_class_ready");
+  auto classFastBB = llvm::BasicBlock::Create(ctx, "call.cache.class.fast", fn);
   builder.CreateCondBr(classReady, classFastBB, slowBB);
 
   builder.SetInsertPoint(classFastBB);
-  auto classResult = builder.CreateCall(
-      callClassFastFn,
-      {callee, argArray, argCount, guard0, cachedTarget, cachedExpected,
-       cachedFlags},
-      "call_class_fast");
+  auto classResult =
+      builder.CreateCall(callClassFastFn,
+                         {callee, argArray, argCount, guard0, cachedTarget,
+                          cachedExpected, cachedFlags},
+                         "call_class_fast");
 #ifdef ELOXIR_ENABLE_CACHE_STATS
   if (auto *callHitFn = mod.getFunction("elx_cache_stats_record_call_hit")) {
     builder.CreateCall(callHitFn, {classKindConst});
@@ -1931,9 +1994,8 @@ void CodeGenVisitor::visitCallExpr(Call *e) {
     builder.CreateCall(callMissFn, {});
   }
 #endif
-  auto slowResult =
-      builder.CreateCall(callValueFn, {callee, argArray, argCount},
-                         "call_slow");
+  auto slowResult = builder.CreateCall(
+      callValueFn, {callee, argArray, argCount}, "call_slow");
   builder.CreateCall(callCacheUpdateFn, {cacheGV, callee});
   builder.CreateBr(exitBB);
   results.emplace_back(builder.GetInsertBlock(), slowResult);
@@ -1943,8 +2005,7 @@ void CodeGenVisitor::visitCallExpr(Call *e) {
   if (results.size() == 1) {
     resultValue = results[0].second;
   } else {
-    auto phi =
-        builder.CreatePHI(llvmValueTy(), results.size(), "call.result");
+    auto phi = builder.CreatePHI(llvmValueTy(), results.size(), "call.result");
     for (auto &entry : results) {
       phi->addIncoming(entry.second, entry.first);
     }
@@ -1957,6 +2018,16 @@ void CodeGenVisitor::visitCallExpr(Call *e) {
 
 // --------- Stmt visitors -------------------------------------------------
 void CodeGenVisitor::visitExpressionStmt(Expression *s) {
+  if (isDiscardablePureExpression(s->expression.get())) {
+    for (std::size_t i = 0; i < countDiscardedConstants(s->expression.get());
+         ++i) {
+      recordConstant();
+    }
+    addLoopInstructions(2);
+    value = nilConst();
+    return;
+  }
+
   s->expression->accept(this);
   addLoopInstructions(2);
 }
@@ -1968,9 +2039,7 @@ void CodeGenVisitor::visitPrintStmt(Print *s) {
   addLoopInstructions(2);
 }
 
-void CodeGenVisitor::visitVarStmt(Var *s) {
-  visitVarStmtWithExecution(s);
-}
+void CodeGenVisitor::visitVarStmt(Var *s) { visitVarStmtWithExecution(s); }
 
 void CodeGenVisitor::visitVarStmtWithExecution(Var *s) {
   // Evaluate initializer or use nil
@@ -2003,7 +2072,7 @@ void CodeGenVisitor::visitVarStmtWithExecution(Var *s) {
 
     // Also store in persistent global environment for cross-line access
     auto setGlobalVarFn = mod.getFunction("elx_set_global_variable");
-    if (setGlobalVarFn) {
+    if (setGlobalVarFn && shouldSyncGlobal(varName)) {
       auto nameStr = builder.CreateGlobalStringPtr(varName, "var_name");
       builder.CreateCall(setGlobalVarFn, {nameStr, initValue});
     }
@@ -2012,8 +2081,7 @@ void CodeGenVisitor::visitVarStmtWithExecution(Var *s) {
 
     if (!function_stack.empty()) {
       FunctionContext &ctx = function_stack.top();
-      if (ctx.local_slots.size() >=
-          static_cast<size_t>(MAX_USER_LOCAL_SLOTS)) {
+      if (ctx.local_slots.size() >= static_cast<size_t>(MAX_USER_LOCAL_SLOTS)) {
         throw CompileError("Too many local variables in function.");
       }
     }
@@ -2028,8 +2096,7 @@ void CodeGenVisitor::visitVarStmtWithExecution(Var *s) {
                                "#" + std::to_string(variableCounter);
     variableCounter++;
 
-    auto slot =
-        createStackAlloca(fn, llvmValueTy(), allocaName);
+    auto slot = createStackAlloca(fn, llvmValueTy(), allocaName);
     builder.CreateStore(initValue, slot);
 
     // Store with the unique key for internal tracking
@@ -2221,8 +2288,9 @@ void CodeGenVisitor::visitWhileStmt(While *s) {
 void CodeGenVisitor::declareFunctionSignature(Function *s) {
   const std::string &baseFuncName = s->name.getLexeme();
 
-  std::string mapKey =
-      function_map_key_override.empty() ? baseFuncName : function_map_key_override;
+  std::string mapKey = function_map_key_override.empty()
+                           ? baseFuncName
+                           : function_map_key_override;
 
   // Check if function is already declared
   if (functions.find(mapKey) != functions.end()) {
@@ -2321,8 +2389,7 @@ llvm::Value *CodeGenVisitor::createFunctionObjectImmediate(
     return nilConst();
   }
 
-  return builder.CreateCall(allocFn, {nameStr, arityConst, funcPtr},
-                            "funcobj");
+  return builder.CreateCall(allocFn, {nameStr, arityConst, funcPtr}, "funcobj");
 }
 
 void CodeGenVisitor::createGlobalFunctionObjects() {
@@ -2385,8 +2452,9 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
   MethodContext methodContext = method_context_override;
   method_context_override = MethodContext::NONE;
 
-  std::string mapKey =
-      function_map_key_override.empty() ? baseFuncName : function_map_key_override;
+  std::string mapKey = function_map_key_override.empty()
+                           ? baseFuncName
+                           : function_map_key_override;
   function_map_key_override.clear();
 
   bool isMethod = (methodContext != MethodContext::NONE);
@@ -2474,8 +2542,8 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
     if (isMethod) {
       int methodArity = static_cast<int>(totalParamCount);
       if (upvalues.empty()) {
-        value = createFunctionObjectImmediate(baseFuncName, llvmFunc,
-                                              methodArity);
+        value =
+            createFunctionObjectImmediate(baseFuncName, llvmFunc, methodArity);
       } else {
         value = createDeferredClosure(llvmFunc, upvalues, methodArity,
                                       baseFuncName);
@@ -2510,8 +2578,8 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
     }
 
     if (enclosingFn) {
-      std::string slotName = baseFuncName + "_func_slot_" +
-                             std::to_string(variableCounter++);
+      std::string slotName =
+          baseFuncName + "_func_slot_" + std::to_string(variableCounter++);
       nestedFunctionSlot =
           createStackAlloca(enclosingFn, llvmValueTy(), slotName);
       builder.CreateStore(nilConst(), nestedFunctionSlot);
@@ -2573,7 +2641,8 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
     directValues.insert("this");
     ++argIt;
   }
-  for (size_t i = 0; i < userParamCount && argIt != llvmFunc->arg_end(); ++i, ++argIt) {
+  for (size_t i = 0; i < userParamCount && argIt != llvmFunc->arg_end();
+       ++i, ++argIt) {
     const std::string &paramName = s->params[i].getLexeme();
     argIt->setName(paramName);
     locals[paramName] = &*argIt;
@@ -2596,9 +2665,8 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
   // Create closure while we still have access to outer scope
   llvm::Value *closureValue = nullptr;
   if (!upvalues.empty() && !isMethod) {
-    closureValue = createDeferredClosure(llvmFunc, upvalues,
-                                         static_cast<int>(userParamCount),
-                                         baseFuncName);
+    closureValue = createDeferredClosure(
+        llvmFunc, upvalues, static_cast<int>(userParamCount), baseFuncName);
   }
 
   // Now fully switch to function context
@@ -2627,7 +2695,8 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
     paramSlots.push_back(thisSlot);
     ++argIt;
   }
-  for (size_t i = 0; i < userParamCount && argIt != llvmFunc->arg_end(); ++i, ++argIt) {
+  for (size_t i = 0; i < userParamCount && argIt != llvmFunc->arg_end();
+       ++i, ++argIt) {
     const std::string &paramName = s->params[i].getLexeme();
     argIt->setName(paramName);
     auto slotName = paramName + "_param";
@@ -2678,8 +2747,7 @@ void CodeGenVisitor::visitFunctionStmt(Function *s) {
         }
 
         if (thisSlot) {
-          implicitReturn =
-              builder.CreateLoad(llvmValueTy(), thisSlot, "this");
+          implicitReturn = builder.CreateLoad(llvmValueTy(), thisSlot, "this");
         }
       }
 
@@ -2877,7 +2945,7 @@ void CodeGenVisitor::visitReturnStmt(Return *s) {
 }
 
 void CodeGenVisitor::emitLegacyGetExpr(Get *e, llvm::Value *objectValue,
-                                      llvm::Value *nameValue) {
+                                       llvm::Value *nameValue) {
   llvm::Function *fn = builder.GetInsertBlock()->getParent();
   auto outPtr = createStackAlloca(fn, llvmValueTy(), "get_field_out");
   builder.CreateStore(nilConst(), outPtr);
@@ -2886,13 +2954,12 @@ void CodeGenVisitor::emitLegacyGetExpr(Get *e, llvm::Value *objectValue,
   if (auto tryGetCachedFn =
           mod.getFunction("elx_try_get_instance_field_cached")) {
     auto &cache = ensurePropertyCache(e);
-    status = builder.CreateCall(tryGetCachedFn,
-                                {objectValue, nameValue, cache.shapeBits,
-                                 cache.slotIndex, outPtr},
-                                "get_field_status");
+    status = builder.CreateCall(
+        tryGetCachedFn,
+        {objectValue, nameValue, cache.shapeBits, cache.slotIndex, outPtr},
+        "get_field_status");
   } else if (auto tryGetFn = mod.getFunction("elx_try_get_instance_field")) {
-    status = builder.CreateCall(tryGetFn,
-                                {objectValue, nameValue, outPtr},
+    status = builder.CreateCall(tryGetFn, {objectValue, nameValue, outPtr},
                                 "get_field_status");
   } else {
     value = nilConst();
@@ -2944,8 +3011,7 @@ void CodeGenVisitor::emitLegacyGetExpr(Get *e, llvm::Value *objectValue,
     if (emitErrorFn) {
       builder.CreateCall(emitErrorFn, {});
     } else {
-      std::string message =
-          "Undefined property '" + e->name.getLexeme() + "'.";
+      std::string message = "Undefined property '" + e->name.getLexeme() + "'.";
       emitRuntimeError(message);
     }
     builder.CreateBr(contBB);
@@ -2964,14 +3030,13 @@ void CodeGenVisitor::emitLegacyGetExpr(Get *e, llvm::Value *objectValue,
     builder.CreateCondBr(methodIsNil, methodMissingBB, methodFoundBB);
 
     builder.SetInsertPoint(methodFoundBB);
-    methodResult = builder.CreateCall(bindMethodFn,
-                                      {objectValue, methodValue}, "bound_method");
+    methodResult = builder.CreateCall(bindMethodFn, {objectValue, methodValue},
+                                      "bound_method");
     builder.CreateBr(contBB);
     methodFoundBB = builder.GetInsertBlock();
 
     builder.SetInsertPoint(methodMissingBB);
-    std::string message =
-        "Undefined property '" + e->name.getLexeme() + "'.";
+    std::string message = "Undefined property '" + e->name.getLexeme() + "'.";
     if (runtimeErrorSilentFn) {
       auto msgPtr =
           builder.CreateGlobalStringPtr(message, "missing_property_msg");
@@ -3017,11 +3082,11 @@ void CodeGenVisitor::emitLegacySetExpr(Set *e, llvm::Value *objectValue) {
       auto nameValue = stringConst(e->name.getLexeme(), true);
       llvm::Value *callResult = nullptr;
       if (cacheEntry) {
-        callResult = builder.CreateCall(
-            setFieldFn,
-            {objectValue, nameValue, assignedValue, cacheEntry->shapeBits,
-             cacheEntry->slotIndex},
-            "set_field");
+        callResult =
+            builder.CreateCall(setFieldFn,
+                               {objectValue, nameValue, assignedValue,
+                                cacheEntry->shapeBits, cacheEntry->slotIndex},
+                               "set_field");
       } else {
         callResult = builder.CreateCall(
             setFieldFn, {objectValue, nameValue, assignedValue}, "set_field");
@@ -3052,11 +3117,11 @@ void CodeGenVisitor::emitLegacySetExpr(Set *e, llvm::Value *objectValue) {
   auto nameValue = stringConst(e->name.getLexeme(), true);
   llvm::Value *setResult = nullptr;
   if (cacheEntry) {
-    setResult = builder.CreateCall(
-        setFieldFn,
-        {objectValue, nameValue, assignedValue, cacheEntry->shapeBits,
-         cacheEntry->slotIndex},
-        "set_field");
+    setResult =
+        builder.CreateCall(setFieldFn,
+                           {objectValue, nameValue, assignedValue,
+                            cacheEntry->shapeBits, cacheEntry->slotIndex},
+                           "set_field");
   } else {
     setResult = builder.CreateCall(
         setFieldFn, {objectValue, nameValue, assignedValue}, "set_field");
@@ -3102,16 +3167,16 @@ void CodeGenVisitor::visitGetExpr(Get *e) {
   auto slowBB = llvm::BasicBlock::Create(ctx, "get.slow", fn);
   auto contBB = llvm::BasicBlock::Create(ctx, "get.cont", fn);
 
-  auto shapeValue = builder.CreateCall(shapeFn, {objectValue}, "instance_shape");
+  auto shapeValue =
+      builder.CreateCall(shapeFn, {objectValue}, "instance_shape");
 
   auto int32Ty = llvm::Type::getInt32Ty(ctx);
-  auto sizePtr = builder.CreateStructGEP(cacheTy, cachePtr, 0, "cache_size_ptr");
+  auto sizePtr =
+      builder.CreateStructGEP(cacheTy, cachePtr, 0, "cache_size_ptr");
   auto entriesPtr =
       builder.CreateStructGEP(cacheTy, cachePtr, 1, "cache_entries_ptr");
-  auto entriesArrayTy =
-      llvm::cast<llvm::ArrayType>(cacheTy->getElementType(1));
-  auto entryTy =
-      llvm::cast<llvm::StructType>(entriesArrayTy->getElementType());
+  auto entriesArrayTy = llvm::cast<llvm::ArrayType>(cacheTy->getElementType(1));
+  auto entryTy = llvm::cast<llvm::StructType>(entriesArrayTy->getElementType());
   auto shapePtrTy = llvm::PointerType::get(llvm::Type::getInt8Ty(ctx), 0);
 
   auto shapeNull = builder.CreateIsNull(shapeValue, "shape_null");
@@ -3125,13 +3190,14 @@ void CodeGenVisitor::visitGetExpr(Get *e) {
   std::vector<std::pair<llvm::BasicBlock *, llvm::Value *>> phiIncoming;
   llvm::BasicBlock *fallback = slowBB;
 
-  for (int idx = static_cast<int>(PROPERTY_CACHE_MAX_SIZE) - 1; idx >= 0; --idx) {
-    auto checkBB =
-        llvm::BasicBlock::Create(ctx, "get.cache." + std::to_string(idx) + ".check", fn);
-    auto shapeCheckBB =
-        llvm::BasicBlock::Create(ctx, "get.cache." + std::to_string(idx) + ".shape", fn);
-    auto fastBB =
-        llvm::BasicBlock::Create(ctx, "get.cache." + std::to_string(idx) + ".fast", fn);
+  for (int idx = static_cast<int>(PROPERTY_CACHE_MAX_SIZE) - 1; idx >= 0;
+       --idx) {
+    auto checkBB = llvm::BasicBlock::Create(
+        ctx, "get.cache." + std::to_string(idx) + ".check", fn);
+    auto shapeCheckBB = llvm::BasicBlock::Create(
+        ctx, "get.cache." + std::to_string(idx) + ".shape", fn);
+    auto fastBB = llvm::BasicBlock::Create(
+        ctx, "get.cache." + std::to_string(idx) + ".fast", fn);
     auto idxConst = builder.getInt32(idx);
 
     builder.SetInsertPoint(checkBB);
@@ -3139,11 +3205,11 @@ void CodeGenVisitor::visitGetExpr(Get *e) {
     builder.CreateCondBr(hasEntry, shapeCheckBB, fallback);
 
     builder.SetInsertPoint(shapeCheckBB);
-    auto entryPtr = builder.CreateInBoundsGEP(
-        entriesArrayTy, entriesPtr, {builder.getInt32(0), idxConst},
-        "cache_entry_ptr");
-    auto shapeElemPtr = builder.CreateStructGEP(entryTy, entryPtr, 0,
-                                                "cache_shape_ptr");
+    auto entryPtr = builder.CreateInBoundsGEP(entriesArrayTy, entriesPtr,
+                                              {builder.getInt32(0), idxConst},
+                                              "cache_entry_ptr");
+    auto shapeElemPtr =
+        builder.CreateStructGEP(entryTy, entryPtr, 0, "cache_shape_ptr");
     auto cachedShape =
         builder.CreateLoad(shapePtrTy, shapeElemPtr, "cached_shape");
     auto shapeMatch =
@@ -3151,11 +3217,10 @@ void CodeGenVisitor::visitGetExpr(Get *e) {
     builder.CreateCondBr(shapeMatch, fastBB, fallback);
 
     builder.SetInsertPoint(fastBB);
-    auto slotElemPtr = builder.CreateStructGEP(entryTy, entryPtr, 1,
-                                               "cache_slot_ptr");
+    auto slotElemPtr =
+        builder.CreateStructGEP(entryTy, entryPtr, 1, "cache_slot_ptr");
     auto slotVal = builder.CreateLoad(int32Ty, slotElemPtr, "cached_slot");
-    auto fieldsPtr =
-        builder.CreateCall(fieldsFn, {objectValue}, "fields_ptr");
+    auto fieldsPtr = builder.CreateCall(fieldsFn, {objectValue}, "fields_ptr");
     auto fieldsNull = builder.CreateIsNull(fieldsPtr, "fields_null");
     auto fieldsBB = llvm::BasicBlock::Create(
         ctx, "get.cache." + std::to_string(idx) + ".fields", fn);
@@ -3164,8 +3229,8 @@ void CodeGenVisitor::visitGetExpr(Get *e) {
     builder.SetInsertPoint(fieldsBB);
     auto slotIdx64 =
         builder.CreateZExt(slotVal, builder.getInt64Ty(), "slot_idx64");
-    auto fieldPtr =
-        builder.CreateInBoundsGEP(llvmValueTy(), fieldsPtr, slotIdx64, "field_ptr");
+    auto fieldPtr = builder.CreateInBoundsGEP(llvmValueTy(), fieldsPtr,
+                                              slotIdx64, "field_ptr");
     auto presencePtr =
         builder.CreateCall(presenceFn, {objectValue}, "presence_ptr");
     auto presenceNull = builder.CreateIsNull(presencePtr, "presence_null");
@@ -3174,9 +3239,9 @@ void CodeGenVisitor::visitGetExpr(Get *e) {
     builder.CreateCondBr(presenceNull, fallback, presenceBB);
 
     builder.SetInsertPoint(presenceBB);
-    auto presenceElemPtr = builder.CreateInBoundsGEP(
-        llvm::Type::getInt8Ty(ctx), presencePtr, slotIdx64,
-        "presence_elem_ptr");
+    auto presenceElemPtr =
+        builder.CreateInBoundsGEP(llvm::Type::getInt8Ty(ctx), presencePtr,
+                                  slotIdx64, "presence_elem_ptr");
     auto presenceVal = builder.CreateLoad(llvm::Type::getInt8Ty(ctx),
                                           presenceElemPtr, "presence_val");
     auto isPresent =
@@ -3260,16 +3325,16 @@ void CodeGenVisitor::visitSetExpr(Set *e) {
   auto slowBB = llvm::BasicBlock::Create(ctx, "set.slow", fn);
   auto valueContBB = llvm::BasicBlock::Create(ctx, "set.value.cont", fn);
 
-  auto shapeValue = builder.CreateCall(shapeFn, {objectValue}, "instance_shape");
+  auto shapeValue =
+      builder.CreateCall(shapeFn, {objectValue}, "instance_shape");
 
   auto int32Ty = llvm::Type::getInt32Ty(ctx);
-  auto sizePtr = builder.CreateStructGEP(cacheTy, cachePtr, 0, "cache_size_ptr");
+  auto sizePtr =
+      builder.CreateStructGEP(cacheTy, cachePtr, 0, "cache_size_ptr");
   auto entriesPtr =
       builder.CreateStructGEP(cacheTy, cachePtr, 1, "cache_entries_ptr");
-  auto entriesArrayTy =
-      llvm::cast<llvm::ArrayType>(cacheTy->getElementType(1));
-  auto entryTy =
-      llvm::cast<llvm::StructType>(entriesArrayTy->getElementType());
+  auto entriesArrayTy = llvm::cast<llvm::ArrayType>(cacheTy->getElementType(1));
+  auto entryTy = llvm::cast<llvm::StructType>(entriesArrayTy->getElementType());
   auto shapePtrTy = llvm::PointerType::get(llvm::Type::getInt8Ty(ctx), 0);
 
   auto shapeNull = builder.CreateIsNull(shapeValue, "shape_null");
@@ -3283,13 +3348,14 @@ void CodeGenVisitor::visitSetExpr(Set *e) {
   std::vector<std::pair<llvm::BasicBlock *, llvm::Value *>> valuePhi;
   llvm::BasicBlock *fallback = slowBB;
 
-  for (int idx = static_cast<int>(PROPERTY_CACHE_MAX_SIZE) - 1; idx >= 0; --idx) {
-    auto checkBB =
-        llvm::BasicBlock::Create(ctx, "set.cache." + std::to_string(idx) + ".check", fn);
-    auto shapeCheckBB =
-        llvm::BasicBlock::Create(ctx, "set.cache." + std::to_string(idx) + ".shape", fn);
-    auto fastBB =
-        llvm::BasicBlock::Create(ctx, "set.cache." + std::to_string(idx) + ".fast", fn);
+  for (int idx = static_cast<int>(PROPERTY_CACHE_MAX_SIZE) - 1; idx >= 0;
+       --idx) {
+    auto checkBB = llvm::BasicBlock::Create(
+        ctx, "set.cache." + std::to_string(idx) + ".check", fn);
+    auto shapeCheckBB = llvm::BasicBlock::Create(
+        ctx, "set.cache." + std::to_string(idx) + ".shape", fn);
+    auto fastBB = llvm::BasicBlock::Create(
+        ctx, "set.cache." + std::to_string(idx) + ".fast", fn);
     auto idxConst = builder.getInt32(idx);
 
     builder.SetInsertPoint(checkBB);
@@ -3297,11 +3363,11 @@ void CodeGenVisitor::visitSetExpr(Set *e) {
     builder.CreateCondBr(hasEntry, shapeCheckBB, fallback);
 
     builder.SetInsertPoint(shapeCheckBB);
-    auto entryPtr = builder.CreateInBoundsGEP(
-        entriesArrayTy, entriesPtr, {builder.getInt32(0), idxConst},
-        "cache_entry_ptr");
-    auto shapeElemPtr = builder.CreateStructGEP(entryTy, entryPtr, 0,
-                                                "cache_shape_ptr");
+    auto entryPtr = builder.CreateInBoundsGEP(entriesArrayTy, entriesPtr,
+                                              {builder.getInt32(0), idxConst},
+                                              "cache_entry_ptr");
+    auto shapeElemPtr =
+        builder.CreateStructGEP(entryTy, entryPtr, 0, "cache_shape_ptr");
     auto cachedShape =
         builder.CreateLoad(shapePtrTy, shapeElemPtr, "cached_shape");
     auto shapeMatch =
@@ -3309,11 +3375,10 @@ void CodeGenVisitor::visitSetExpr(Set *e) {
     builder.CreateCondBr(shapeMatch, fastBB, fallback);
 
     builder.SetInsertPoint(fastBB);
-    auto slotElemPtr = builder.CreateStructGEP(entryTy, entryPtr, 1,
-                                               "cache_slot_ptr");
+    auto slotElemPtr =
+        builder.CreateStructGEP(entryTy, entryPtr, 1, "cache_slot_ptr");
     auto slotVal = builder.CreateLoad(int32Ty, slotElemPtr, "cached_slot");
-    auto fieldsPtr =
-        builder.CreateCall(fieldsFn, {objectValue}, "fields_ptr");
+    auto fieldsPtr = builder.CreateCall(fieldsFn, {objectValue}, "fields_ptr");
     auto fieldsNull = builder.CreateIsNull(fieldsPtr, "fields_null");
     auto fieldsBB = llvm::BasicBlock::Create(
         ctx, "set.cache." + std::to_string(idx) + ".fields", fn);
@@ -3322,8 +3387,8 @@ void CodeGenVisitor::visitSetExpr(Set *e) {
     builder.SetInsertPoint(fieldsBB);
     auto slotIdx64 =
         builder.CreateZExt(slotVal, builder.getInt64Ty(), "slot_idx64");
-    auto fieldPtr =
-        builder.CreateInBoundsGEP(llvmValueTy(), fieldsPtr, slotIdx64, "field_ptr");
+    auto fieldPtr = builder.CreateInBoundsGEP(llvmValueTy(), fieldsPtr,
+                                              slotIdx64, "field_ptr");
     auto presencePtr =
         builder.CreateCall(presenceFn, {objectValue}, "presence_ptr");
     auto presenceNull = builder.CreateIsNull(presencePtr, "presence_null");
@@ -3332,9 +3397,9 @@ void CodeGenVisitor::visitSetExpr(Set *e) {
     builder.CreateCondBr(presenceNull, fallback, presenceBB);
 
     builder.SetInsertPoint(presenceBB);
-    auto presenceElemPtr = builder.CreateInBoundsGEP(
-        llvm::Type::getInt8Ty(ctx), presencePtr, slotIdx64,
-        "presence_elem_ptr");
+    auto presenceElemPtr =
+        builder.CreateInBoundsGEP(llvm::Type::getInt8Ty(ctx), presencePtr,
+                                  slotIdx64, "presence_elem_ptr");
     builder.CreateStore(assignedValue, fieldPtr);
     builder.CreateStore(builder.getInt8(1), presenceElemPtr);
 #ifdef ELOXIR_ENABLE_CACHE_STATS
@@ -3420,12 +3485,11 @@ void CodeGenVisitor::visitSuperExpr(Super *e) {
   }
 
   auto methodName = stringConst(e->method.getLexeme(), true);
-  auto methodValue = builder.CreateCall(findMethodFn,
-                                        {superClassValue, methodName},
-                                        "super_method");
+  auto methodValue = builder.CreateCall(
+      findMethodFn, {superClassValue, methodName}, "super_method");
 
-  value = builder.CreateCall(bindMethodFn, {thisValue, methodValue},
-                             "bound_super");
+  value =
+      builder.CreateCall(bindMethodFn, {thisValue, methodValue}, "bound_super");
   checkRuntimeError(value);
 }
 
@@ -3450,8 +3514,8 @@ void CodeGenVisitor::visitClassStmt(Class *s) {
 
     auto validateSuperFn = mod.getFunction("elx_validate_superclass");
     if (validateSuperFn) {
-      auto validated = builder.CreateCall(validateSuperFn, {superValue},
-                                          "validated_super");
+      auto validated =
+          builder.CreateCall(validateSuperFn, {superValue}, "validated_super");
       checkRuntimeError(validated);
       superValue = value;
     }
@@ -3471,8 +3535,7 @@ void CodeGenVisitor::visitClassStmt(Class *s) {
   };
 
   int slotId = variableCounter++;
-  std::string slotName =
-      className + "_class_slot_" + std::to_string(slotId);
+  std::string slotName = className + "_class_slot_" + std::to_string(slotId);
   llvm::Value *classSlot = makeAllocaInEntry(slotName);
   builder.CreateStore(nilConst(), classSlot);
 
@@ -3501,8 +3564,8 @@ void CodeGenVisitor::visitClassStmt(Class *s) {
 
   auto pushSyntheticBinding = [&](const std::string &name,
                                   llvm::Value *initialValue) {
-    SyntheticBindingState state{name, variableStacks[name].size(),
-                                false, nullptr, false, nullptr};
+    SyntheticBindingState state{
+        name, variableStacks[name].size(), false, nullptr, false, nullptr};
 
     auto itLocal = locals.find(name);
     if (itLocal != locals.end()) {
@@ -3516,8 +3579,7 @@ void CodeGenVisitor::visitClassStmt(Class *s) {
     }
 
     int bindingId = variableCounter++;
-    std::string bindingName =
-        name + "_binding_" + std::to_string(bindingId);
+    std::string bindingName = name + "_binding_" + std::to_string(bindingId);
     llvm::Value *slot = makeAllocaInEntry(bindingName);
     builder.CreateStore(initialValue, slot);
     locals[name] = slot;
@@ -3538,9 +3600,9 @@ void CodeGenVisitor::visitClassStmt(Class *s) {
   methodTable.reserve(s->methods.size());
 
   for (auto &method : s->methods) {
-    MethodContext methodCtx =
-        (method->name.getLexeme() == "init") ? MethodContext::INITIALIZER
-                                               : MethodContext::METHOD;
+    MethodContext methodCtx = (method->name.getLexeme() == "init")
+                                  ? MethodContext::INITIALIZER
+                                  : MethodContext::METHOD;
 
     auto previousOverride = method_context_override;
     auto previousKeyOverride = function_map_key_override;
@@ -3575,8 +3637,8 @@ void CodeGenVisitor::visitClassStmt(Class *s) {
   }
 
   llvm::Value *classValue = builder.CreateCall(
-      allocateClassFn,
-      {classNameValue, hasSuper ? superValue : nilConst()}, "klass");
+      allocateClassFn, {classNameValue, hasSuper ? superValue : nilConst()},
+      "klass");
   checkRuntimeError(classValue);
 
   builder.CreateStore(classValue, classSlot);
@@ -3584,7 +3646,7 @@ void CodeGenVisitor::visitClassStmt(Class *s) {
 
   if (isGlobal) {
     auto setGlobalVarFn = mod.getFunction("elx_set_global_variable");
-    if (setGlobalVarFn) {
+    if (setGlobalVarFn && shouldSyncGlobal(className)) {
       auto nameStr = builder.CreateGlobalStringPtr(className, "class_name");
       builder.CreateCall(setGlobalVarFn, {nameStr, classValue});
     }
@@ -3660,7 +3722,8 @@ bool CodeGenVisitor::removeLocalSlot(llvm::Value *slot) {
   if (!function_stack.empty()) {
     FunctionContext &ctx = function_stack.top();
     if (!ctx.local_slots.empty()) {
-      auto it = std::find(ctx.local_slots.rbegin(), ctx.local_slots.rend(), slot);
+      auto it =
+          std::find(ctx.local_slots.rbegin(), ctx.local_slots.rend(), slot);
       if (it != ctx.local_slots.rend()) {
         ctx.local_slots.erase(std::next(it).base());
         removedFromContext = true;
@@ -3673,7 +3736,8 @@ bool CodeGenVisitor::removeLocalSlot(llvm::Value *slot) {
   }
 
   if (!global_local_slots.empty()) {
-    auto it = std::find(global_local_slots.rbegin(), global_local_slots.rend(), slot);
+    auto it =
+        std::find(global_local_slots.rbegin(), global_local_slots.rend(), slot);
     if (it != global_local_slots.rend()) {
       global_local_slots.erase(std::next(it).base());
     }
@@ -3684,6 +3748,10 @@ bool CodeGenVisitor::removeLocalSlot(llvm::Value *slot) {
   }
 
   return captured;
+}
+
+bool CodeGenVisitor::shouldSyncGlobal(const std::string &name) const {
+  return syncAllGlobals || runtimeSyncedGlobals.count(name) > 0;
 }
 
 void CodeGenVisitor::enterLoop() { loopInstructionCounts.push_back(0); }
@@ -3847,9 +3915,10 @@ llvm::Value *CodeGenVisitor::createDeferredClosureWithCapturedUpvalues(
   return closure_obj;
 }
 
-llvm::Value *CodeGenVisitor::createDeferredClosure(
-    llvm::Function *func, const std::vector<std::string> &upvalues, int arity,
-    const std::string &funcName) {
+llvm::Value *
+CodeGenVisitor::createDeferredClosure(llvm::Function *func,
+                                      const std::vector<std::string> &upvalues,
+                                      int arity, const std::string &funcName) {
   // Create the function object using the original Lox arity
   // The upvalue array parameter is an implementation detail
   auto nameStr = builder.CreateGlobalStringPtr(funcName, "fname");
@@ -3934,7 +4003,8 @@ llvm::Value *CodeGenVisitor::captureUpvalue(const std::string &name) {
     // captured
     auto directValue = slot;
     auto fn = builder.GetInsertBlock()->getParent();
-    std::string slotName = name + "_captured" + std::to_string(variableCounter++);
+    std::string slotName =
+        name + "_captured" + std::to_string(variableCounter++);
     auto storage = createStackAlloca(fn, llvmValueTy(), slotName);
     builder.CreateStore(directValue, storage);
     slot = storage;
@@ -3951,7 +4021,8 @@ llvm::Value *CodeGenVisitor::captureUpvalue(const std::string &name) {
 
     if (!function_stack.empty()) {
       FunctionContext &ctx = function_stack.top();
-      auto it = std::find(ctx.local_slots.begin(), ctx.local_slots.end(), directValue);
+      auto it = std::find(ctx.local_slots.begin(), ctx.local_slots.end(),
+                          directValue);
       if (it != ctx.local_slots.end()) {
         *it = slot;
       } else {
@@ -3983,8 +4054,8 @@ llvm::Value *CodeGenVisitor::captureUpvalue(const std::string &name) {
         ctx.localCount = static_cast<int>(ctx.local_slots.size());
       } else {
         global_captured_slots.insert(slot);
-        if (std::find(global_local_slots.begin(), global_local_slots.end(), slot) ==
-            global_local_slots.end()) {
+        if (std::find(global_local_slots.begin(), global_local_slots.end(),
+                      slot) == global_local_slots.end()) {
           global_local_slots.push_back(slot);
         }
       }
@@ -3998,10 +4069,10 @@ llvm::Value *CodeGenVisitor::captureUpvalue(const std::string &name) {
     auto upvalue_it = current_ctx.upvalue_indices.find(name);
     if (upvalue_it != current_ctx.upvalue_indices.end() &&
         current_ctx.upvalue_array) {
-      auto index_val =
-          llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), upvalue_it->second);
-      auto upvalue_ptr = builder.CreateGEP(llvmValueTy(), current_ctx.upvalue_array,
-                                           index_val);
+      auto index_val = llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx),
+                                              upvalue_it->second);
+      auto upvalue_ptr = builder.CreateGEP(
+          llvmValueTy(), current_ctx.upvalue_array, index_val);
       return builder.CreateLoad(llvmValueTy(), upvalue_ptr);
     }
   }
@@ -4016,7 +4087,8 @@ llvm::Value *CodeGenVisitor::captureUpvalue(const std::string &name) {
         mallocType, llvm::Function::ExternalLinkage, "malloc", &mod);
   }
 
-  auto size = llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx), sizeof(uint64_t));
+  auto size =
+      llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx), sizeof(uint64_t));
   auto heap_ptr = builder.CreateCall(mallocFn, {size});
   auto value_ptr =
       builder.CreateBitCast(heap_ptr, llvm::PointerType::get(llvmValueTy(), 0));

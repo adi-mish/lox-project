@@ -1,21 +1,23 @@
 #include "../codegen/CodeGenVisitor.h"
+#include "../frontend/CompileError.h"
 #include "../frontend/Parser.h"
 #include "../frontend/Resolver.h"
-#include "../frontend/CompileError.h"
 #include "../frontend/Scanner.h"
 #include "../jit/EloxirJIT.h"
 #include "../jit/OptimisationPipeline.h"
 #include "../runtime/RuntimeAPI.h"
 #include <fstream>
+#include <initializer_list>
 #include <iostream>
-#include <llvm/IR/Verifier.h>
 #include <llvm/IR/PassManager.h>
+#include <llvm/IR/Verifier.h>
 #include <llvm/Support/TargetSelect.h>
 #include <llvm/Transforms/Utils/Cloning.h>
-#include <initializer_list>
 #include <memory>
 #include <sstream>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <variant>
 
 using namespace llvm;
@@ -141,9 +143,9 @@ private:
     builder += print(expr);
   }
 
-  void appendPart(
-      std::string &builder,
-      const std::vector<std::unique_ptr<eloxir::Expr>> &expressions) {
+  void
+  appendPart(std::string &builder,
+             const std::vector<std::unique_ptr<eloxir::Expr>> &expressions) {
     for (const auto &expr : expressions) {
       appendPart(builder, expr.get());
     }
@@ -157,6 +159,140 @@ private:
   void appendPart(std::string &builder, const std::string &text) {
     builder.push_back(' ');
     builder += text;
+  }
+};
+
+class GlobalSyncCollector : public eloxir::ExprVisitor,
+                            public eloxir::StmtVisitor {
+public:
+  explicit GlobalSyncCollector(
+      const std::unordered_map<const eloxir::Expr *, int> &resolvedLocals)
+      : resolvedLocals(resolvedLocals) {}
+
+  std::unordered_set<std::string>
+  collect(const std::vector<std::unique_ptr<eloxir::Stmt>> &statements) {
+    for (const auto &stmt : statements) {
+      visit(stmt.get());
+    }
+    return globals;
+  }
+
+  void visitBinaryExpr(eloxir::Binary *expr) override {
+    visit(expr->left.get());
+    visit(expr->right.get());
+  }
+
+  void visitGroupingExpr(eloxir::Grouping *expr) override {
+    visit(expr->expression.get());
+  }
+
+  void visitLiteralExpr(eloxir::Literal *) override {}
+
+  void visitUnaryExpr(eloxir::Unary *expr) override {
+    visit(expr->right.get());
+  }
+
+  void visitVariableExpr(eloxir::Variable *expr) override {
+    if (functionDepth > 0 &&
+        resolvedLocals.find(expr) == resolvedLocals.end()) {
+      const auto &name = expr->name.getLexeme();
+      if (name != "clock" && name != "readLine") {
+        globals.insert(name);
+      }
+    }
+  }
+
+  void visitAssignExpr(eloxir::Assign *expr) override {
+    visit(expr->value.get());
+    if (functionDepth > 0 &&
+        resolvedLocals.find(expr) == resolvedLocals.end()) {
+      globals.insert(expr->name.getLexeme());
+    }
+  }
+
+  void visitLogicalExpr(eloxir::Logical *expr) override {
+    visit(expr->left.get());
+    visit(expr->right.get());
+  }
+
+  void visitCallExpr(eloxir::Call *expr) override {
+    visit(expr->callee.get());
+    for (const auto &arg : expr->arguments) {
+      visit(arg.get());
+    }
+  }
+
+  void visitGetExpr(eloxir::Get *expr) override { visit(expr->object.get()); }
+
+  void visitSetExpr(eloxir::Set *expr) override {
+    visit(expr->object.get());
+    visit(expr->value.get());
+  }
+
+  void visitThisExpr(eloxir::This *) override {}
+  void visitSuperExpr(eloxir::Super *) override {}
+
+  void visitExpressionStmt(eloxir::Expression *stmt) override {
+    visit(stmt->expression.get());
+  }
+
+  void visitPrintStmt(eloxir::Print *stmt) override {
+    visit(stmt->expression.get());
+  }
+
+  void visitVarStmt(eloxir::Var *stmt) override {
+    visit(stmt->initializer.get());
+  }
+
+  void visitBlockStmt(eloxir::Block *stmt) override {
+    for (const auto &inner : stmt->statements) {
+      visit(inner.get());
+    }
+  }
+
+  void visitIfStmt(eloxir::If *stmt) override {
+    visit(stmt->condition.get());
+    visit(stmt->thenBranch.get());
+    visit(stmt->elseBranch.get());
+  }
+
+  void visitWhileStmt(eloxir::While *stmt) override {
+    visit(stmt->condition.get());
+    visit(stmt->body.get());
+  }
+
+  void visitFunctionStmt(eloxir::Function *stmt) override {
+    ++functionDepth;
+    if (stmt->body) {
+      visitBlockStmt(stmt->body.get());
+    }
+    --functionDepth;
+  }
+
+  void visitReturnStmt(eloxir::Return *stmt) override {
+    visit(stmt->value.get());
+  }
+
+  void visitClassStmt(eloxir::Class *stmt) override {
+    visit(stmt->superclass.get());
+    for (const auto &method : stmt->methods) {
+      visitFunctionStmt(method.get());
+    }
+  }
+
+private:
+  const std::unordered_map<const eloxir::Expr *, int> &resolvedLocals;
+  std::unordered_set<std::string> globals;
+  int functionDepth = 0;
+
+  void visit(eloxir::Expr *expr) {
+    if (expr)
+      expr->accept(this);
+  }
+
+  void visit(eloxir::Stmt *stmt) {
+    if (stmt)
+      stmt->accept(this);
   }
 };
 
@@ -250,7 +386,8 @@ std::string formatNumber(double value) {
   out.precision(15);
   out << value;
   auto text = out.str();
-  if (text.find('e') == std::string::npos && text.find('E') == std::string::npos &&
+  if (text.find('e') == std::string::npos &&
+      text.find('E') == std::string::npos &&
       text.find('.') == std::string::npos) {
     text += ".0";
   }
@@ -398,6 +535,8 @@ int runFile(const std::string &filename) {
     std::cerr << "Resolution error: " << e.what() << '\n';
     return static_cast<int>(ExitCode::kCompileError);
   }
+  auto runtimeSyncedGlobals =
+      GlobalSyncCollector(resolver.locals).collect(stmts);
 
   // Clear any previous runtime errors
   elx_clear_runtime_error();
@@ -415,6 +554,7 @@ int runFile(const std::string &filename) {
     // Pass resolver upvalue information to code generator
     fileCG.setResolverUpvalues(&resolver.function_upvalues);
     fileCG.setResolverLocals(&resolver.locals);
+    fileCG.setRuntimeSyncedGlobals(std::move(runtimeSyncedGlobals));
 
     // Create main function
     auto fnTy = FunctionType::get(fileCG.llvmValueTy(), {}, false);
@@ -663,7 +803,8 @@ int main(int argc, char *argv[]) {
   std::cerr << "  No arguments: Start REPL\n";
   std::cerr << "  --scan <file>: Print tokens produced by scanner\n";
   std::cerr << "  --print-ast <file>: Print canonical AST for expression\n";
-  std::cerr << "  --cache-stats <file>: Execute file and dump cache statistics\n";
+  std::cerr
+      << "  --cache-stats <file>: Execute file and dump cache statistics\n";
   std::cerr << "  <file>: Execute file\n";
   return static_cast<int>(ExitCode::kRuntimeError);
 }

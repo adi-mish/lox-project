@@ -1,14 +1,14 @@
 #include "EloxirJIT.h"
 #include "../runtime/RuntimeAPI.h"
 #include "OptimisationPipeline.h"
+#include <algorithm>
+#include <llvm/ADT/StringMap.h>
 #include <llvm/ExecutionEngine/Orc/JITTargetMachineBuilder.h>
 #include <llvm/ExecutionEngine/Orc/LLJIT.h>
 #include <llvm/ExecutionEngine/Orc/ThreadSafeModule.h>
-#include <llvm/ADT/StringMap.h>
 #include <llvm/Support/CodeGen.h>
 #include <llvm/Support/Error.h>
 #include <llvm/TargetParser/Host.h>
-#include <algorithm>
 #include <thread>
 
 namespace eloxir {
@@ -96,10 +96,9 @@ llvm::Expected<std::unique_ptr<EloxirJIT>> EloxirJIT::Create() {
       llvm::orc::ExecutorSymbolDef(
           llvm::orc::ExecutorAddr::fromPtr(&elx_strings_equal_interned),
           llvm::JITSymbolFlags::Exported);
-  runtimeSymbols[mangle("elx_value_is_string")] =
-      llvm::orc::ExecutorSymbolDef(
-          llvm::orc::ExecutorAddr::fromPtr(&elx_value_is_string),
-          llvm::JITSymbolFlags::Exported);
+  runtimeSymbols[mangle("elx_value_is_string")] = llvm::orc::ExecutorSymbolDef(
+      llvm::orc::ExecutorAddr::fromPtr(&elx_value_is_string),
+      llvm::JITSymbolFlags::Exported);
 
   // Function functions
   runtimeSymbols[mangle("elx_allocate_function")] =
@@ -142,10 +141,9 @@ llvm::Expected<std::unique_ptr<EloxirJIT>> EloxirJIT::Create() {
   runtimeSymbols[mangle("elx_call_value")] = llvm::orc::ExecutorSymbolDef(
       llvm::orc::ExecutorAddr::fromPtr(&elx_call_value),
       llvm::JITSymbolFlags::Exported);
-  runtimeSymbols[mangle("elx_call_property")] =
-      llvm::orc::ExecutorSymbolDef(
-          llvm::orc::ExecutorAddr::fromPtr(&elx_call_property),
-          llvm::JITSymbolFlags::Exported);
+  runtimeSymbols[mangle("elx_call_property")] = llvm::orc::ExecutorSymbolDef(
+      llvm::orc::ExecutorAddr::fromPtr(&elx_call_property),
+      llvm::JITSymbolFlags::Exported);
   runtimeSymbols[mangle("elx_prepare_property_call")] =
       llvm::orc::ExecutorSymbolDef(
           llvm::orc::ExecutorAddr::fromPtr(&elx_prepare_property_call),
@@ -170,10 +168,9 @@ llvm::Expected<std::unique_ptr<EloxirJIT>> EloxirJIT::Create() {
   runtimeSymbols[mangle("elx_is_class")] = llvm::orc::ExecutorSymbolDef(
       llvm::orc::ExecutorAddr::fromPtr(&elx_is_class),
       llvm::JITSymbolFlags::Exported);
-  runtimeSymbols[mangle("elx_is_bound_method")] =
-      llvm::orc::ExecutorSymbolDef(
-          llvm::orc::ExecutorAddr::fromPtr(&elx_is_bound_method),
-          llvm::JITSymbolFlags::Exported);
+  runtimeSymbols[mangle("elx_is_bound_method")] = llvm::orc::ExecutorSymbolDef(
+      llvm::orc::ExecutorAddr::fromPtr(&elx_is_bound_method),
+      llvm::JITSymbolFlags::Exported);
   runtimeSymbols[mangle("elx_bound_method_matches")] =
       llvm::orc::ExecutorSymbolDef(
           llvm::orc::ExecutorAddr::fromPtr(&elx_bound_method_matches),
@@ -186,18 +183,16 @@ llvm::Expected<std::unique_ptr<EloxirJIT>> EloxirJIT::Create() {
       llvm::orc::ExecutorSymbolDef(
           llvm::orc::ExecutorAddr::fromPtr(&elx_call_closure_fast),
           llvm::JITSymbolFlags::Exported);
-  runtimeSymbols[mangle("elx_call_native_fast")] =
-      llvm::orc::ExecutorSymbolDef(
-          llvm::orc::ExecutorAddr::fromPtr(&elx_call_native_fast),
-          llvm::JITSymbolFlags::Exported);
+  runtimeSymbols[mangle("elx_call_native_fast")] = llvm::orc::ExecutorSymbolDef(
+      llvm::orc::ExecutorAddr::fromPtr(&elx_call_native_fast),
+      llvm::JITSymbolFlags::Exported);
   runtimeSymbols[mangle("elx_call_bound_method_fast")] =
       llvm::orc::ExecutorSymbolDef(
           llvm::orc::ExecutorAddr::fromPtr(&elx_call_bound_method_fast),
           llvm::JITSymbolFlags::Exported);
-  runtimeSymbols[mangle("elx_call_class_fast")] =
-      llvm::orc::ExecutorSymbolDef(
-          llvm::orc::ExecutorAddr::fromPtr(&elx_call_class_fast),
-          llvm::JITSymbolFlags::Exported);
+  runtimeSymbols[mangle("elx_call_class_fast")] = llvm::orc::ExecutorSymbolDef(
+      llvm::orc::ExecutorAddr::fromPtr(&elx_call_class_fast),
+      llvm::JITSymbolFlags::Exported);
   runtimeSymbols[mangle("elx_call_cache_update")] =
       llvm::orc::ExecutorSymbolDef(
           llvm::orc::ExecutorAddr::fromPtr(&elx_call_cache_update),
@@ -330,15 +325,14 @@ llvm::Expected<std::unique_ptr<EloxirJIT>> EloxirJIT::Create() {
 
 #if defined(ELOXIR_ENABLE_CACHE_STATS)
   runtimeSymbols[mangle("elx_cache_stats_record_property_hit")] =
-      llvm::orc::ExecutorSymbolDef(
-          llvm::orc::ExecutorAddr::fromPtr(&elx_cache_stats_record_property_hit),
-          llvm::JITSymbolFlags::Exported);
+      llvm::orc::ExecutorSymbolDef(llvm::orc::ExecutorAddr::fromPtr(
+                                       &elx_cache_stats_record_property_hit),
+                                   llvm::JITSymbolFlags::Exported);
   runtimeSymbols[mangle("elx_cache_stats_record_property_miss")] =
-      llvm::orc::ExecutorSymbolDef(
-          llvm::orc::ExecutorAddr::fromPtr(&elx_cache_stats_record_property_miss),
-          llvm::JITSymbolFlags::Exported);
-  runtimeSymbols[mangle(
-      "elx_cache_stats_record_property_shape_transition")] =
+      llvm::orc::ExecutorSymbolDef(llvm::orc::ExecutorAddr::fromPtr(
+                                       &elx_cache_stats_record_property_miss),
+                                   llvm::JITSymbolFlags::Exported);
+  runtimeSymbols[mangle("elx_cache_stats_record_property_shape_transition")] =
       llvm::orc::ExecutorSymbolDef(
           llvm::orc::ExecutorAddr::fromPtr(
               &elx_cache_stats_record_property_shape_transition),
@@ -352,10 +346,9 @@ llvm::Expected<std::unique_ptr<EloxirJIT>> EloxirJIT::Create() {
           llvm::orc::ExecutorAddr::fromPtr(&elx_cache_stats_record_call_miss),
           llvm::JITSymbolFlags::Exported);
   runtimeSymbols[mangle("elx_cache_stats_record_call_transition")] =
-      llvm::orc::ExecutorSymbolDef(
-          llvm::orc::ExecutorAddr::fromPtr(
-              &elx_cache_stats_record_call_transition),
-          llvm::JITSymbolFlags::Exported);
+      llvm::orc::ExecutorSymbolDef(llvm::orc::ExecutorAddr::fromPtr(
+                                       &elx_cache_stats_record_call_transition),
+                                   llvm::JITSymbolFlags::Exported);
 #endif
 
   llvm::cantFail(j->jit->getMainJITDylib().define(
@@ -363,8 +356,9 @@ llvm::Expected<std::unique_ptr<EloxirJIT>> EloxirJIT::Create() {
 
   // Optional: optimisation layer intercept
   j->jit->getIRTransformLayer().setTransform(
-      [tmPtr = j->targetMachine.get()](llvm::orc::ThreadSafeModule tsm,
-                                       const llvm::orc::MaterializationResponsibility &) {
+      [tmPtr = j->targetMachine.get()](
+          llvm::orc::ThreadSafeModule tsm,
+          const llvm::orc::MaterializationResponsibility &) {
         optimise(tsm, tmPtr); // see OptimisationPipeline.h
         return tsm;
       });
@@ -390,9 +384,7 @@ const llvm::DataLayout &EloxirJIT::getDataLayout() const {
   return jit->getDataLayout();
 }
 
-const llvm::Triple &EloxirJIT::getTargetTriple() const {
-  return targetTriple;
-}
+const llvm::Triple &EloxirJIT::getTargetTriple() const { return targetTriple; }
 
 llvm::TargetMachine *EloxirJIT::getTargetMachine() const {
   return targetMachine.get();
