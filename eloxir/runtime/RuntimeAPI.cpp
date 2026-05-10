@@ -15,10 +15,18 @@
 using namespace eloxir;
 
 static std::vector<void *> allocated_objects;
+static bool object_tracking_enabled = true;
 
-static void trackObject(void *object) { allocated_objects.push_back(object); }
+static void trackObject(void *object) {
+  if (object_tracking_enabled) {
+    allocated_objects.push_back(object);
+  }
+}
 
 static void untrackObject(void *object) {
+  if (!object_tracking_enabled)
+    return;
+
   auto it =
       std::find(allocated_objects.begin(), allocated_objects.end(), object);
   if (it == allocated_objects.end())
@@ -2957,7 +2965,14 @@ uint64_t elx_bind_method(uint64_t instance_bits, uint64_t method_bits) {
   return Value::object(bound).getBits();
 }
 
+void elx_set_object_tracking_enabled(int enabled) {
+  object_tracking_enabled = enabled != 0;
+}
+
 void elx_cleanup_all_objects() {
+  if (!object_tracking_enabled)
+    return;
+
   // Free all tracked objects except global built-ins and interned strings
   std::unordered_set<void *> persistent_objects;
 

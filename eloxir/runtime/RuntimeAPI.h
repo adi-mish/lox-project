@@ -278,6 +278,7 @@ uint64_t *elx_instance_field_values_ptr(uint64_t instance_bits);
 uint8_t *elx_instance_field_presence_ptr(uint64_t instance_bits);
 
 // Memory management
+void elx_set_object_tracking_enabled(int enabled);
 void elx_cleanup_all_objects(); // Clean up all tracked objects
 
 // Global built-ins management

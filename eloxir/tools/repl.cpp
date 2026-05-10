@@ -500,6 +500,7 @@ int runFile(const std::string &filename) {
 
   // Initialize runtime global state
   elx_initialize_global_builtins();
+  elx_set_object_tracking_enabled(0);
 
   // Read file
   std::ifstream file(filename);

@@ -269,6 +269,25 @@ Cache-stat instrumentation is disabled by default for optimized normal builds.
 Enable it explicitly with `-DELOXIR_ENABLE_CACHE_STATS=ON` when testing cache
 counters.
 
+LLVM IR and pass instrumentation can be enabled at runtime:
+
+```bash
+ELOXIR_PRINT_IR=1 ./eloxir/build/eloxir path/to/script.lox
+ELOXIR_DUMP_IR_DIR=/tmp/eloxir-ir ./eloxir/build/eloxir path/to/script.lox
+ELOXIR_TRACE_OPT=1 \
+  ELOXIR_POST_OPT_PIPELINE='globalopt,function(instcombine,simplifycfg),globaldce' \
+  ./eloxir/build/eloxir path/to/script.lox
+```
+
+Useful knobs:
+
+- `ELOXIR_DISABLE_OPT=1` bypasses the LLVM optimization pipeline.
+- `ELOXIR_DUMP_IR=1` writes `.preopt.ll` and `.postopt.ll` files to
+  `eloxir-ir/`.
+- `ELOXIR_PRE_CLEANUP_PIPELINE` appends an LLVM pass pipeline after default
+  `-O3` and before eloxir's cleanup passes.
+- `ELOXIR_POST_OPT_PIPELINE` appends an LLVM pass pipeline after cleanup.
+
 ## Current Verification
 
 Recent verification from the root orchestrator:
