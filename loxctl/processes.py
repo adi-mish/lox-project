@@ -11,7 +11,7 @@ from .models import Command, Implementation
 
 
 def run_checked(command: Command) -> None:
-    print(f"$ {command.display()}")
+    print(f"$ {command.display()}", flush=True)
     completed = subprocess.run(
         [str(part) for part in command.argv],
         cwd=command.cwd,
@@ -20,16 +20,24 @@ def run_checked(command: Command) -> None:
         raise SystemExit(completed.returncode)
 
 
-def build_impl(impl: Implementation) -> None:
-    for step in impl.build_steps:
+def build_impl(impl: Implementation, *, stats: bool = False) -> None:
+    if stats and not impl.supports_stats:
+        raise SystemExit(f"{impl.name} does not support stats builds")
+    steps = impl.stats_build_steps if stats else impl.build_steps
+    for step in steps:
         run_checked(step)
 
 
-def resolve_executable(impl: Implementation) -> Path:
-    for candidate in impl.executable_candidates:
+def resolve_executable(impl: Implementation, *, stats: bool = False) -> Path:
+    if stats and not impl.supports_stats:
+        raise SystemExit(f"{impl.name} does not support --stats")
+    candidates_to_try = (
+        impl.stats_executable_candidates if stats else impl.executable_candidates
+    )
+    for candidate in candidates_to_try:
         if candidate.exists() and os.access(candidate, os.X_OK):
             return candidate
-    candidates = ", ".join(str(path) for path in impl.executable_candidates)
+    candidates = ", ".join(str(path) for path in candidates_to_try)
     raise SystemExit(f"No executable found for {impl.name}. Tried: {candidates}")
 
 

@@ -59,12 +59,29 @@ IMPLEMENTATIONS: dict[str, Implementation] = {
             command("cmake", "-S", "cpplox", "-B", "cpplox/build", "-DCMAKE_BUILD_TYPE=Release"),
             command("cmake", "--build", "cpplox/build", "-j", max_parallel_jobs()),
         ),
+        stats_build_steps=(
+            command(
+                "cmake",
+                "-S",
+                "cpplox",
+                "-B",
+                "cpplox/build-stats",
+                "-DCMAKE_BUILD_TYPE=Release",
+                "-DCPPLOX_ENABLE_VM_STATS=ON",
+            ),
+            command("cmake", "--build", "cpplox/build-stats", "-j", max_parallel_jobs()),
+        ),
         executable_candidates=(
             repo_path("cpplox", "build", "Release", "cpplox"),
             repo_path("cpplox", "build", "cpplox"),
         ),
-        clean_paths=(repo_path("cpplox", "build"),),
+        stats_executable_candidates=(
+            repo_path("cpplox", "build-stats", "Release", "cpplox"),
+            repo_path("cpplox", "build-stats", "cpplox"),
+        ),
+        clean_paths=(repo_path("cpplox", "build"), repo_path("cpplox", "build-stats")),
         supports_scan=True,
+        supports_stats=True,
         expectation_marker="c",
     ),
     "eloxir": Implementation(

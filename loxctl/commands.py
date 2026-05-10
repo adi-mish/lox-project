@@ -33,7 +33,11 @@ def impl_to_dict(impl: Implementation) -> dict[str, object]:
         "capabilities": list(impl.capabilities),
         "checks_stderr_fragments": impl.checks_stderr_fragments,
         "build_steps": [step.display() for step in impl.build_steps],
+        "stats_build_steps": [step.display() for step in impl.stats_build_steps],
         "executables": [str(path.relative_to(REPO_ROOT)) for path in impl.executable_candidates],
+        "stats_executables": [
+            str(path.relative_to(REPO_ROOT)) for path in impl.stats_executable_candidates
+        ],
         "clean_paths": [str(path.relative_to(REPO_ROOT)) for path in impl.clean_paths],
         "default_skips": list(impl.default_skip_patterns),
     }
@@ -64,10 +68,19 @@ def cmd_info(args: argparse.Namespace) -> int:
         print("  build:")
         for step in impl.build_steps:
             print(f"    ({step.cwd.relative_to(REPO_ROOT)}) $ {step.display()}")
+        if impl.stats_build_steps:
+            print("  stats build:")
+            for step in impl.stats_build_steps:
+                print(f"    ({step.cwd.relative_to(REPO_ROOT)}) $ {step.display()}")
         print("  executables:")
         for path in impl.executable_candidates:
             exists = "exists" if path.exists() else "missing"
             print(f"    {path.relative_to(REPO_ROOT)} [{exists}]")
+        if impl.stats_executable_candidates:
+            print("  stats executables:")
+            for path in impl.stats_executable_candidates:
+                exists = "exists" if path.exists() else "missing"
+                print(f"    {path.relative_to(REPO_ROOT)} [{exists}]")
         if impl.default_skip_patterns:
             print("  default skips:")
             for pattern in impl.default_skip_patterns:
@@ -89,7 +102,7 @@ def cmd_paths(_args: argparse.Namespace) -> int:
 
 def cmd_build(args: argparse.Namespace) -> int:
     for impl in selected_implementations(args.impls):
-        build_impl(impl)
+        build_impl(impl, stats=args.stats)
     return 0
 
 
@@ -99,19 +112,29 @@ def cmd_clean(args: argparse.Namespace) -> int:
     return 0
 
 
-def run_impl(impl: Implementation, script: str | None, scan: bool, print_ast: bool) -> int:
+def run_impl(
+    impl: Implementation,
+    script: str | None,
+    scan: bool,
+    print_ast: bool,
+    stats: bool = False,
+) -> int:
     if scan and print_ast:
         raise SystemExit("Choose only one of --scan or --print-ast.")
     if scan and not impl.supports_scan:
         raise SystemExit(f"{impl.name} does not support --scan")
     if print_ast and not impl.supports_print_ast:
         raise SystemExit(f"{impl.name} does not support --print-ast")
+    if stats and not impl.supports_stats:
+        raise SystemExit(f"{impl.name} does not support --stats")
 
-    command = [str(resolve_executable(impl))]
+    command = [str(resolve_executable(impl, stats=stats))]
     if scan:
         command.append("--scan")
     if print_ast:
         command.append("--print-ast")
+    if stats:
+        command.append("--stats")
     if script:
         command.append(str(Path(script)))
     completed = subprocess.run(command, cwd=REPO_ROOT)
@@ -124,6 +147,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         script=args.script,
         scan=args.scan,
         print_ast=args.print_ast,
+        stats=args.stats,
     )
 
 

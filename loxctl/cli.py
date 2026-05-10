@@ -46,6 +46,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     build_parser_ = subparsers.add_parser("build", help="Build implementations.")
     build_parser_.add_argument("impls", nargs="*", choices=sorted(IMPLEMENTATIONS))
+    build_parser_.add_argument(
+        "--stats",
+        action="store_true",
+        help="Build an instrumented stats variant where supported.",
+    )
     build_parser_.set_defaults(func=cmd_build)
 
     clean_parser = subparsers.add_parser("clean", help="Remove build artifacts.")
@@ -59,6 +64,11 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--scan", action="store_true", help="Dump scanner tokens.")
     run_parser.add_argument(
         "--print-ast", action="store_true", help="Print the canonical AST."
+    )
+    run_parser.add_argument(
+        "--stats",
+        action="store_true",
+        help="Use an instrumented binary and print VM stats where supported.",
     )
     run_parser.set_defaults(func=cmd_run)
 

@@ -31,8 +31,11 @@ class Implementation:
     build_steps: tuple[Command, ...]
     executable_candidates: tuple[Path, ...]
     clean_paths: tuple[Path, ...]
+    stats_build_steps: tuple[Command, ...] = ()
+    stats_executable_candidates: tuple[Path, ...] = ()
     supports_scan: bool = False
     supports_print_ast: bool = False
+    supports_stats: bool = False
     checks_stderr_fragments: bool = True
     expectation_marker: str | None = None
     default_skip_patterns: tuple[str, ...] = ()
@@ -44,6 +47,8 @@ class Implementation:
             values.append("scan")
         if self.supports_print_ast:
             values.append("print-ast")
+        if self.supports_stats:
+            values.append("stats")
         return tuple(values)
 
 

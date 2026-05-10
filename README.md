@@ -1,11 +1,13 @@
 # Lox Implementations
 
-This repository contains three implementations of the Lox language from
+This repository contains four implementations of the Lox language from
 Robert Nystrom's *Crafting Interpreters*:
 
 - `jlox`: Java tree-walking interpreter.
 - `clox`: C bytecode VM, based on the final reference implementation from
   `munificent/craftinginterpreters`.
+- `cpplox`: C++20 bytecode VM focused on fast execution and optional VM
+  instrumentation.
 - `eloxir`: C++17 LLVM ORC JIT implementation.
 
 The official Lox tests live in `test/`. Use the root `lox.py` command, or the
@@ -38,6 +40,7 @@ Run a script:
 ```bash
 ./lox.py run jlox test/benchmark/fib.lox
 ./lox.py run clox test/benchmark/fib.lox
+./lox.py run cpplox test/benchmark/fib.lox
 ./lox.py run eloxir test/benchmark/fib.lox
 ```
 
@@ -53,6 +56,7 @@ Useful test options:
 ./lox.py test jlox clox --filter inheritance
 ./lox.py test eloxir --skip-build --timeout 10
 ./lox.py test --show-skips
+./lox.py bench clox cpplox --skip-build --timings 12
 ```
 
 ## Python Orchestrator Project
@@ -103,17 +107,18 @@ Supported commands:
 
 ```bash
 ./lox.py list
-./lox.py info [jlox|clox|eloxir ...]
+./lox.py info [jlox|clox|cpplox|eloxir ...]
 ./lox.py paths
-./lox.py build [jlox|clox|eloxir ...]
-./lox.py clean [jlox|clox|eloxir ...]
+./lox.py build [--stats] [jlox|clox|cpplox|eloxir ...]
+./lox.py clean [jlox|clox|cpplox|eloxir ...]
 ./lox.py run <impl> [--scan|--print-ast] [script]
+./lox.py run cpplox --stats [script]
 ./lox.py scan <impl> <script>
 ./lox.py ast <impl> <script>
-./lox.py test [jlox|clox|eloxir ...]
-./lox.py smoke [jlox|clox|eloxir ...]
-./lox.py bench [jlox|clox|eloxir ...]
-./lox.py doctor [jlox|clox|eloxir ...]
+./lox.py test [jlox|clox|cpplox|eloxir ...]
+./lox.py smoke [jlox|clox|cpplox|eloxir ...]
+./lox.py bench [jlox|clox|cpplox|eloxir ...]
+./lox.py doctor [jlox|clox|cpplox|eloxir ...]
 ```
 
 The runner parses the official inline expectations, executes each `.lox` file
@@ -136,8 +141,8 @@ Common workflows:
 # Run a quick representative test set.
 ./lox.py smoke
 
-# Run only benchmark programs.
-./lox.py bench clox eloxir --skip-build
+# Run only benchmark programs and print the slowest cases.
+./lox.py bench clox cpplox eloxir --skip-build --timings 10
 ./lox.py bench clox --filter string_equality --skip-build
 
 # Force implementation-specific skipped tests to run as failures.
@@ -207,6 +212,39 @@ The root orchestrator also uses a scanner dump mode:
 Expected official-suite skips: expression AST-printer chapter tests, because
 final `clox` is a bytecode VM and does not expose the Java AST printer.
 
+## cpplox
+
+`cpplox` is a C++20 bytecode VM under `cpplox/`. It keeps Lox semantics aligned
+with `clox`, but uses a cleaner C++ build, nan-boxed values, local-slot
+single-byte opcodes, direct stack hot paths, and a per-constant global inline
+cache.
+
+Build directly:
+
+```bash
+cmake -S cpplox -B cpplox/build -DCMAKE_BUILD_TYPE=Release
+cmake --build cpplox/build
+```
+
+Run directly:
+
+```bash
+./cpplox/build/Release/cpplox path/to/script.lox
+```
+
+Build and run the instrumented VM through the orchestrator:
+
+```bash
+./lox.py build --stats cpplox
+./lox.py run cpplox --stats test/benchmark/fib.lox
+```
+
+The stats build reports instruction counts, max stack depth, allocation bytes,
+call counts, opcode histograms, and global-cache hit/miss counts on stderr.
+
+Expected official-suite skips: expression AST-printer chapter tests, because
+`cpplox` is a bytecode VM and does not expose the Java AST printer.
+
 ## eloxir
 
 `eloxir` is a C++17 implementation backed by LLVM ORC JIT. It has its own
@@ -238,11 +276,19 @@ Recent verification from the root orchestrator:
 ```text
 jlox: 259 passed, 0 failed, 6 skipped, 265 total
 clox: 263 passed, 0 failed, 2 skipped, 265 total
+cpplox: 263 passed, 0 failed, 2 skipped, 265 total
 eloxir: 265 passed, 0 failed, 265 total
 ```
 
 The skips are implementation-surface differences described above, not known
 semantic failures.
+
+Recent benchmark comparison:
+
+```text
+clox: 11 passed, 0 failed, 0 skipped, 11 total (20.638s)
+cpplox: 11 passed, 0 failed, 0 skipped, 11 total (19.998s)
+```
 
 ## Acknowledgements
 
