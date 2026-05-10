@@ -18,7 +18,6 @@ void freeValueArray(ValueArray *array) {
   array->swap(empty);
 }
 void printValue(Value value) {
-#ifdef NAN_BOXING
   if (isBool(value)) {
     std::printf(asBool(value) ? "true" : "false");
   } else if (isNil(value)) {
@@ -27,27 +26,9 @@ void printValue(Value value) {
     std::printf("%g", asNumber(value));
   } else if (isObj(value)) {
     printObject(value);
-  }
-#else
-
-  switch (value.type) {
-  case VAL_BOOL:
-    std::printf(asBool(value) ? "true" : "false");
-    break;
-  case VAL_NIL:
-    std::printf("nil");
-    break;
-  case VAL_NUMBER:
-    std::printf("%g", asNumber(value));
-    break;
-  case VAL_OBJ:
-    printObject(value);
-    break;
-  case VAL_UNINITIALIZED:
+  } else if (isUninitialized(value)) {
     std::printf("<uninitialized>");
-    break;
   }
-#endif
 }
 
 } // namespace cpplox

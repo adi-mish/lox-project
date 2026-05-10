@@ -70,9 +70,9 @@ struct FunctionCompiler {
   ObjFunction *function;
   FunctionType type;
 
-  std::array<Local, UINT8_COUNT> locals;
+  std::array<Local, kUint8Count> locals;
   int localCount;
-  std::array<Upvalue, UINT8_COUNT> upvalues;
+  std::array<Upvalue, kUint8Count> upvalues;
   int scopeDepth;
   int logicalByteCount;
 };
@@ -92,7 +92,7 @@ static Scanner scanner;
 FunctionCompiler *current = nullptr;
 ClassCompiler *currentClass = nullptr;
 static Vm *compilingVm = nullptr;
-static std::array<ObjString *, UINT8_COUNT> knownGlobals;
+static std::array<ObjString *, kUint8Count> knownGlobals;
 static int knownGlobalCount = 0;
 
 static Chunk *currentChunk() { return &current->function->chunk; }
@@ -371,7 +371,7 @@ static void rememberGlobal(uint8_t constant) {
     if (knownGlobals[i] == name)
       return;
   }
-  if (knownGlobalCount < UINT8_COUNT)
+  if (knownGlobalCount < kUint8Count)
     knownGlobals[knownGlobalCount++] = name;
 }
 
@@ -407,7 +407,7 @@ static int addUpvalue(FunctionCompiler *compiler, uint8_t index, bool isLocal) {
     }
   }
 
-  if (upvalueCount == UINT8_COUNT) {
+  if (upvalueCount == kUint8Count) {
     error("Too many closure variables in function.");
     return 0;
   }
@@ -434,7 +434,7 @@ static int resolveUpvalue(FunctionCompiler *compiler, Token *name) {
   return -1;
 }
 static void addLocal(Token name) {
-  if (current->localCount == UINT8_COUNT) {
+  if (current->localCount == kUint8Count) {
     error("Too many local variables in function.");
     return;
   }

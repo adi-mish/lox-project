@@ -1,10 +1,10 @@
-#include <assert.h>
+#include <cassert>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
 #ifdef CPPLOX_ENABLE_VM_STATS
-#include <inttypes.h>
+#include <cinttypes>
 #endif
 
 #include "common.h"
@@ -173,8 +173,7 @@ void Vm::resetStats() {
   statsEnabled = enabled;
 }
 
-static void recordInstruction(uint8_t opcode) {
-  Vm &vm = currentVm();
+static void recordInstruction(Vm &vm, uint8_t opcode) {
   if (!vm.statsEnabled)
     return;
   vm.instructionsExecuted++;
@@ -209,47 +208,41 @@ void Vm::printStats() const {
   }
 }
 #else
-#define recordInstruction(opcode) ((void)0)
+static void recordInstruction(Vm &, uint8_t) {}
 #endif
 
 #ifdef CPPLOX_ENABLE_VM_STATS
-#define RECORD_GLOBAL_CACHE_HIT()                                              \
-  do {                                                                         \
-    if (vm.statsEnabled)                                                       \
-      vm.globalCacheHits++;                                                    \
-  } while (false)
-#define RECORD_GLOBAL_CACHE_MISS()                                             \
-  do {                                                                         \
-    if (vm.statsEnabled)                                                       \
-      vm.globalCacheMisses++;                                                  \
-  } while (false)
-#define RECORD_METHOD_CACHE_HIT()                                              \
-  do {                                                                         \
-    if (vm.statsEnabled)                                                       \
-      vm.methodCacheHits++;                                                    \
-  } while (false)
-#define RECORD_METHOD_CACHE_MISS()                                             \
-  do {                                                                         \
-    if (vm.statsEnabled)                                                       \
-      vm.methodCacheMisses++;                                                  \
-  } while (false)
-#define RECORD_FIELD_CACHE_HIT()                                               \
-  do {                                                                         \
-    if (vm.statsEnabled)                                                       \
-      vm.fieldCacheHits++;                                                     \
-  } while (false)
-#define RECORD_FIELD_CACHE_MISS()                                              \
-  do {                                                                         \
-    if (vm.statsEnabled)                                                       \
-      vm.fieldCacheMisses++;                                                   \
-  } while (false)
+static void recordGlobalCacheHit(Vm &vm) {
+  if (vm.statsEnabled)
+    vm.globalCacheHits++;
+}
+static void recordGlobalCacheMiss(Vm &vm) {
+  if (vm.statsEnabled)
+    vm.globalCacheMisses++;
+}
+static void recordMethodCacheHit(Vm &vm) {
+  if (vm.statsEnabled)
+    vm.methodCacheHits++;
+}
+static void recordMethodCacheMiss(Vm &vm) {
+  if (vm.statsEnabled)
+    vm.methodCacheMisses++;
+}
+static void recordFieldCacheHit(Vm &vm) {
+  if (vm.statsEnabled)
+    vm.fieldCacheHits++;
+}
+static void recordFieldCacheMiss(Vm &vm) {
+  if (vm.statsEnabled)
+    vm.fieldCacheMisses++;
+}
 #else
-#define RECORD_GLOBAL_CACHE_HIT() ((void)0)
-#define RECORD_GLOBAL_CACHE_MISS() ((void)0)
-#define RECORD_METHOD_CACHE_HIT() ((void)0)
-#define RECORD_METHOD_CACHE_MISS() ((void)0)
-#define RECORD_FIELD_CACHE_HIT() ((void)0)
-#define RECORD_FIELD_CACHE_MISS() ((void)0)
+static void recordGlobalCacheHit(Vm &) {}
+static void recordGlobalCacheMiss(Vm &) {}
+static void recordMethodCacheHit(Vm &) {}
+static void recordMethodCacheMiss(Vm &) {}
+static void recordFieldCacheHit(Vm &) {}
+static void recordFieldCacheMiss(Vm &) {}
 #endif
 
 static Value clockNative(int argCount, Value *args) {
@@ -359,7 +352,7 @@ static bool call(ObjClosure *closure, int argCount) {
     return false;
   }
 
-  if (vm.frameCount == FRAMES_MAX) {
+  if (vm.frameCount == kMaxFrames) {
     runtimeError("Stack overflow.");
     return false;
   }
@@ -477,18 +470,16 @@ static void writeInstanceField(ObjInstance *instance, int slot, Value value) {
 
 static bool findMethodCached(ObjClass *klass, ObjString *name,
                              InlineCache *cache, Value *method) {
-#ifdef CPPLOX_ENABLE_VM_STATS
   Vm &vm = currentVm();
-#endif
   if (cache != nullptr && cache->kind == CACHE_METHOD && cache->key == name &&
       cache->owner == klass &&
       cache->tableVersion == klass->methods.version()) {
-    RECORD_METHOD_CACHE_HIT();
+    recordMethodCacheHit(vm);
     *method = cache->value;
     return true;
   }
 
-  RECORD_METHOD_CACHE_MISS();
+  recordMethodCacheMiss(vm);
   if (!klass->methods.get(name, method)) {
     runtimeError("Undefined property '%s'.", name->chars);
     return false;
@@ -535,13 +526,13 @@ static bool invoke(ObjString *name, int argCount, InlineCache *cache) {
       cache->tableVersion == instance->klass->methods.version() &&
       cache->secondaryVersion == instance->klass->fieldVersion) {
     if (cache->entryIndex == -1) {
-      RECORD_METHOD_CACHE_HIT();
+      recordMethodCacheHit(vm);
       return call(asClosure(cache->value), argCount);
     }
     if (cache->entryIndex >= 0) {
       Value ignored;
       if (!readInstanceField(instance, cache->entryIndex, &ignored)) {
-        RECORD_METHOD_CACHE_HIT();
+        recordMethodCacheHit(vm);
         return call(asClosure(cache->value), argCount);
       }
     }
@@ -644,33 +635,28 @@ static InterpretResult run() {
   Vm &vm = currentVm();
   CallFrame *frame = &vm.frames[vm.frameCount - 1];
 
-#define READ_BYTE() (*frame->ip++)
-
-#define READ_SHORT()                                                           \
-  (frame->ip += 2, (uint16_t)((frame->ip[-2] << 8) | frame->ip[-1]))
-
-#define READ_CONSTANT()                                                        \
-  (frame->closure->function->chunk.constantAt(READ_BYTE()))
-
-#define READ_STRING() asString(READ_CONSTANT())
-#define PUSH_VALUE(value)                                                      \
-  do {                                                                         \
-    *vm.stackTop = (value);                                                    \
-    vm.stackTop++;                                                             \
-  } while (false)
-#define POP_VALUE() (*--vm.stackTop)
-
-#define BINARY_OP(valueType, op)                                               \
-  do {                                                                         \
-    Value bValue = vm.stackTop[-1];                                            \
-    Value aValue = vm.stackTop[-2];                                            \
-    if (!isNumber(bValue) || !isNumber(aValue)) {                            \
-      runtimeError("Operands must be numbers.");                               \
-      return INTERPRET_RUNTIME_ERROR;                                          \
-    }                                                                          \
-    vm.stackTop[-2] = valueType(asNumber(aValue) op asNumber(bValue));       \
-    vm.stackTop--;                                                             \
-  } while (false)
+  auto readByte = [&]() -> uint8_t { return *frame->ip++; };
+  auto readShort = [&]() -> uint16_t {
+    frame->ip += 2;
+    return static_cast<uint16_t>((frame->ip[-2] << 8) | frame->ip[-1]);
+  };
+  auto readConstant = [&]() -> Value {
+    return frame->closure->function->chunk.constantAt(readByte());
+  };
+  auto readString = [&]() -> ObjString * { return asString(readConstant()); };
+  auto pushValue = [&](Value value) { *vm.stackTop++ = value; };
+  auto popValue = [&]() -> Value { return *--vm.stackTop; };
+  auto binaryOp = [&](auto makeValue, auto op) -> bool {
+    Value bValue = vm.stackTop[-1];
+    Value aValue = vm.stackTop[-2];
+    if (!isNumber(bValue) || !isNumber(aValue)) {
+      runtimeError("Operands must be numbers.");
+      return false;
+    }
+    vm.stackTop[-2] = makeValue(op(asNumber(aValue), asNumber(bValue)));
+    vm.stackTop--;
+    return true;
+  };
 
   for (;;) {
 #ifdef DEBUG_TRACE_EXECUTION
@@ -687,13 +673,13 @@ static InterpretResult run() {
         (int)(frame->ip - frame->closure->function->chunk.codeData()));
 #endif
 
-    uint8_t instruction = READ_BYTE();
-    recordInstruction(instruction);
+    uint8_t instruction = readByte();
+    recordInstruction(vm, instruction);
     switch (instruction) {
     case OP_CONSTANT: {
-      Value constant = READ_CONSTANT();
+      Value constant = readConstant();
 
-      PUSH_VALUE(constant);
+      pushValue(constant);
       break;
     }
     case OP_CONSTANT_0:
@@ -705,53 +691,53 @@ static InterpretResult run() {
     case OP_CONSTANT_6:
     case OP_CONSTANT_7: {
       Value *constants = frame->closure->function->chunk.constantsData();
-      PUSH_VALUE(constants[instruction - OP_CONSTANT_0]);
+      pushValue(constants[instruction - OP_CONSTANT_0]);
       break;
     }
     case OP_NIL:
-      PUSH_VALUE(nilValue());
+      pushValue(nilValue());
       break;
     case OP_TRUE:
-      PUSH_VALUE(boolValue(true));
+      pushValue(boolValue(true));
       break;
     case OP_FALSE:
-      PUSH_VALUE(boolValue(false));
+      pushValue(boolValue(false));
       break;
     case OP_POP:
       vm.stackTop--;
       break;
     case OP_GET_LOCAL: {
-      uint8_t slot = READ_BYTE();
+      uint8_t slot = readByte();
 
-      PUSH_VALUE(frame->slots[slot]);
+      pushValue(frame->slots[slot]);
       break;
     }
     case OP_GET_LOCAL_0:
-      PUSH_VALUE(frame->slots[0]);
+      pushValue(frame->slots[0]);
       break;
     case OP_GET_LOCAL_1:
-      PUSH_VALUE(frame->slots[1]);
+      pushValue(frame->slots[1]);
       break;
     case OP_GET_LOCAL_2:
-      PUSH_VALUE(frame->slots[2]);
+      pushValue(frame->slots[2]);
       break;
     case OP_GET_LOCAL_3:
-      PUSH_VALUE(frame->slots[3]);
+      pushValue(frame->slots[3]);
       break;
     case OP_GET_LOCAL_4:
-      PUSH_VALUE(frame->slots[4]);
+      pushValue(frame->slots[4]);
       break;
     case OP_GET_LOCAL_5:
-      PUSH_VALUE(frame->slots[5]);
+      pushValue(frame->slots[5]);
       break;
     case OP_GET_LOCAL_6:
-      PUSH_VALUE(frame->slots[6]);
+      pushValue(frame->slots[6]);
       break;
     case OP_GET_LOCAL_7:
-      PUSH_VALUE(frame->slots[7]);
+      pushValue(frame->slots[7]);
       break;
     case OP_SET_LOCAL: {
-      uint8_t slot = READ_BYTE();
+      uint8_t slot = readByte();
 
       frame->slots[slot] = peek(0);
       break;
@@ -781,7 +767,7 @@ static InterpretResult run() {
       frame->slots[7] = vm.stackTop[-1];
       break;
     case OP_GET_GLOBAL: {
-      uint8_t constant = READ_BYTE();
+      uint8_t constant = readByte();
       Chunk *chunk = &frame->closure->function->chunk;
       ObjString *name = asString(chunk->constantAt(constant));
       InlineCache *cache = &chunk->inlineCache(constant);
@@ -789,12 +775,12 @@ static InterpretResult run() {
       Entry *entry = cache->entry;
       if (cache->kind == CACHE_GLOBAL && cache->key == name &&
           cache->tableVersion == vm.globals.version() && entry != nullptr) {
-        RECORD_GLOBAL_CACHE_HIT();
-        PUSH_VALUE(entry->value);
+        recordGlobalCacheHit(vm);
+        pushValue(entry->value);
         break;
       }
 
-      RECORD_GLOBAL_CACHE_MISS();
+      recordGlobalCacheMiss(vm);
       entry = vm.globals.getEntry(name);
       if (entry == nullptr) {
         runtimeError("Undefined variable '%s'.", name->chars);
@@ -805,11 +791,11 @@ static InterpretResult run() {
       cache->entry = entry;
       cache->tableVersion = vm.globals.version();
       cache->kind = CACHE_GLOBAL;
-      PUSH_VALUE(entry->value);
+      pushValue(entry->value);
       break;
     }
     case OP_DEFINE_GLOBAL: {
-      uint8_t constant = READ_BYTE();
+      uint8_t constant = readByte();
       Chunk *chunk = &frame->closure->function->chunk;
       ObjString *name = asString(chunk->constantAt(constant));
       vm.globals.set(name, vm.stackTop[-1]);
@@ -822,7 +808,7 @@ static InterpretResult run() {
       break;
     }
     case OP_SET_GLOBAL: {
-      uint8_t constant = READ_BYTE();
+      uint8_t constant = readByte();
       Chunk *chunk = &frame->closure->function->chunk;
       ObjString *name = asString(chunk->constantAt(constant));
       InlineCache *cache = &chunk->inlineCache(constant);
@@ -830,7 +816,7 @@ static InterpretResult run() {
       Entry *entry = cache->entry;
       if (!(cache->kind == CACHE_GLOBAL && cache->key == name &&
             cache->tableVersion == vm.globals.version() && entry != nullptr)) {
-        RECORD_GLOBAL_CACHE_MISS();
+        recordGlobalCacheMiss(vm);
         entry = vm.globals.getEntry(name);
         if (entry == nullptr) {
           runtimeError("Undefined variable '%s'.", name->chars);
@@ -841,19 +827,19 @@ static InterpretResult run() {
         cache->entry = entry;
         cache->tableVersion = vm.globals.version();
       } else {
-        RECORD_GLOBAL_CACHE_HIT();
+        recordGlobalCacheHit(vm);
       }
 
       entry->value = vm.stackTop[-1];
       break;
     }
     case OP_GET_UPVALUE: {
-      uint8_t slot = READ_BYTE();
-      PUSH_VALUE(*frame->closure->upvalues[slot]->location);
+      uint8_t slot = readByte();
+      pushValue(*frame->closure->upvalues[slot]->location);
       break;
     }
     case OP_SET_UPVALUE: {
-      uint8_t slot = READ_BYTE();
+      uint8_t slot = readByte();
       *frame->closure->upvalues[slot]->location = vm.stackTop[-1];
       break;
     }
@@ -864,7 +850,7 @@ static InterpretResult run() {
       }
 
       ObjInstance *instance = asInstance(peek(0));
-      uint8_t constant = READ_BYTE();
+      uint8_t constant = readByte();
       Chunk *chunk = &frame->closure->function->chunk;
       ObjString *name = asString(chunk->constantAt(constant));
       InlineCache *cache = &chunk->inlineCache(constant);
@@ -875,13 +861,13 @@ static InterpretResult run() {
           cache->entryIndex >= 0) {
         Value fieldValue;
         if (readInstanceField(instance, cache->entryIndex, &fieldValue)) {
-          RECORD_FIELD_CACHE_HIT();
+          recordFieldCacheHit(vm);
           vm.stackTop[-1] = fieldValue;
           break;
         }
       }
 
-      RECORD_FIELD_CACHE_MISS();
+      recordFieldCacheMiss(vm);
       int fieldSlot = -1;
       Value fieldValue;
       if (getFieldSlot(instance->klass, name, &fieldSlot) &&
@@ -910,16 +896,16 @@ static InterpretResult run() {
       }
 
       ObjInstance *instance = asInstance(peek(1));
-      int fieldSlot = ensureFieldSlot(instance->klass, READ_STRING());
+      int fieldSlot = ensureFieldSlot(instance->klass, readString());
       writeInstanceField(instance, fieldSlot, peek(0));
-      Value value = POP_VALUE();
-      POP_VALUE();
-      PUSH_VALUE(value);
+      Value value = popValue();
+      popValue();
+      pushValue(value);
       break;
     }
     case OP_GET_SUPER: {
-      ObjString *name = READ_STRING();
-      ObjClass *superclass = asClass(POP_VALUE());
+      ObjString *name = readString();
+      ObjClass *superclass = asClass(popValue());
 
       if (!bindMethod(superclass, name)) {
         return INTERPRET_RUNTIME_ERROR;
@@ -933,10 +919,12 @@ static InterpretResult run() {
       break;
     }
     case OP_GREATER:
-      BINARY_OP(boolValue, >);
+      if (!binaryOp(boolValue, [](double a, double b) { return a > b; }))
+        return INTERPRET_RUNTIME_ERROR;
       break;
     case OP_LESS:
-      BINARY_OP(boolValue, <);
+      if (!binaryOp(boolValue, [](double a, double b) { return a < b; }))
+        return INTERPRET_RUNTIME_ERROR;
       break;
 
     case OP_ADD: {
@@ -954,13 +942,16 @@ static InterpretResult run() {
       break;
     }
     case OP_SUBTRACT:
-      BINARY_OP(numberValue, -);
+      if (!binaryOp(numberValue, [](double a, double b) { return a - b; }))
+        return INTERPRET_RUNTIME_ERROR;
       break;
     case OP_MULTIPLY:
-      BINARY_OP(numberValue, *);
+      if (!binaryOp(numberValue, [](double a, double b) { return a * b; }))
+        return INTERPRET_RUNTIME_ERROR;
       break;
     case OP_DIVIDE:
-      BINARY_OP(numberValue, /);
+      if (!binaryOp(numberValue, [](double a, double b) { return a / b; }))
+        return INTERPRET_RUNTIME_ERROR;
       break;
     case OP_NOT:
       vm.stackTop[-1] = boolValue(isFalsey(vm.stackTop[-1]));
@@ -973,31 +964,31 @@ static InterpretResult run() {
       vm.stackTop[-1] = numberValue(-asNumber(vm.stackTop[-1]));
       break;
     case OP_PRINT: {
-      printValue(POP_VALUE());
+      printValue(popValue());
       std::printf("\n");
       break;
     }
     case OP_JUMP: {
-      uint16_t offset = READ_SHORT();
+      uint16_t offset = readShort();
 
       frame->ip += offset;
       break;
     }
     case OP_JUMP_IF_FALSE: {
-      uint16_t offset = READ_SHORT();
+      uint16_t offset = readShort();
 
       if (isFalsey(peek(0)))
         frame->ip += offset;
       break;
     }
     case OP_LOOP: {
-      uint16_t offset = READ_SHORT();
+      uint16_t offset = readShort();
 
       frame->ip -= offset;
       break;
     }
     case OP_CALL: {
-      int argCount = READ_BYTE();
+      int argCount = readByte();
       if (!callValue(peek(argCount), argCount)) {
         return INTERPRET_RUNTIME_ERROR;
       }
@@ -1005,10 +996,10 @@ static InterpretResult run() {
       break;
     }
     case OP_INVOKE: {
-      uint8_t constant = READ_BYTE();
+      uint8_t constant = readByte();
       Chunk *chunk = &frame->closure->function->chunk;
       ObjString *method = asString(chunk->constantAt(constant));
-      int argCount = READ_BYTE();
+      int argCount = readByte();
       if (!invoke(method, argCount, &chunk->inlineCache(constant))) {
         return INTERPRET_RUNTIME_ERROR;
       }
@@ -1016,11 +1007,11 @@ static InterpretResult run() {
       break;
     }
     case OP_SUPER_INVOKE: {
-      uint8_t constant = READ_BYTE();
+      uint8_t constant = readByte();
       Chunk *chunk = &frame->closure->function->chunk;
       ObjString *method = asString(chunk->constantAt(constant));
-      int argCount = READ_BYTE();
-      ObjClass *superclass = asClass(POP_VALUE());
+      int argCount = readByte();
+      ObjClass *superclass = asClass(popValue());
       if (!invokeFromClass(superclass, method, argCount,
                            &chunk->inlineCache(constant))) {
         return INTERPRET_RUNTIME_ERROR;
@@ -1029,12 +1020,12 @@ static InterpretResult run() {
       break;
     }
     case OP_CLOSURE: {
-      ObjFunction *function = asFunction(READ_CONSTANT());
+      ObjFunction *function = asFunction(readConstant());
       ObjClosure *closure = vm.newClosure(function);
-      PUSH_VALUE(objectValue(closure));
+      pushValue(objectValue(closure));
       for (int i = 0; i < closure->upvalueCount; i++) {
-        uint8_t isLocal = READ_BYTE();
-        uint8_t index = READ_BYTE();
+        uint8_t isLocal = readByte();
+        uint8_t index = readByte();
         if (isLocal) {
           closure->upvalues[i] = captureUpvalue(frame->slots + index);
         } else {
@@ -1049,21 +1040,21 @@ static InterpretResult run() {
       break;
     case OP_RETURN: {
 
-      Value result = POP_VALUE();
+      Value result = popValue();
       closeUpvalues(frame->slots);
       vm.frameCount--;
       if (vm.frameCount == 0) {
-        POP_VALUE();
+        popValue();
         return INTERPRET_OK;
       }
 
       vm.stackTop = frame->slots;
-      PUSH_VALUE(result);
+      pushValue(result);
       frame = &vm.frames[vm.frameCount - 1];
       break;
     }
     case OP_CLASS:
-      PUSH_VALUE(objectValue(vm.newClass(READ_STRING())));
+      pushValue(objectValue(vm.newClass(readString())));
       break;
     case OP_INHERIT: {
       Value superclass = peek(1);
@@ -1080,18 +1071,10 @@ static InterpretResult run() {
       break;
     }
     case OP_METHOD:
-      defineMethod(READ_STRING());
+      defineMethod(readString());
       break;
     }
   }
-
-#undef READ_BYTE
-#undef READ_SHORT
-#undef READ_CONSTANT
-#undef READ_STRING
-#undef PUSH_VALUE
-#undef POP_VALUE
-#undef BINARY_OP
 }
 
 InterpretResult Vm::interpret(const char *source) {

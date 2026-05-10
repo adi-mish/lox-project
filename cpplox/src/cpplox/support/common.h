@@ -1,11 +1,12 @@
-#ifndef clox_common_h
-#define clox_common_h
+#pragma once
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 
-#define NAN_BOXING
+namespace cpplox {
 
-#define UINT8_COUNT (UINT8_MAX + 1)
+inline constexpr int kUint8Count =
+    static_cast<int>(std::numeric_limits<uint8_t>::max()) + 1;
 
-#endif
+} // namespace cpplox

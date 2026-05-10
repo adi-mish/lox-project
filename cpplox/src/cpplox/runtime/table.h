@@ -1,5 +1,4 @@
-#ifndef clox_table_h
-#define clox_table_h
+#pragma once
 
 #include <vector>
 
@@ -48,4 +47,3 @@ private:
 
 } // namespace cpplox
 
-#endif

@@ -1,5 +1,4 @@
-#ifndef clox_chunk_h
-#define clox_chunk_h
+#pragma once
 
 #include <vector>
 
@@ -206,4 +205,3 @@ int addConstant(Chunk *chunk, Value value);
 
 } // namespace cpplox
 
-#endif

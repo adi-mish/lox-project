@@ -1,5 +1,4 @@
-#ifndef clox_object_h
-#define clox_object_h
+#pragma once
 
 #include "chunk.h"
 #include "common.h"
@@ -137,4 +136,3 @@ inline char *asCString(Value value) { return asString(value)->chars; }
 
 } // namespace cpplox
 
-#endif

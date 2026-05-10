@@ -1,5 +1,4 @@
-#ifndef clox_compiler_h
-#define clox_compiler_h
+#pragma once
 
 #include "object.h"
 #include "vm.h"
@@ -10,4 +9,3 @@ ObjFunction *compile(Vm &vm, const char *source);
 
 } // namespace cpplox
 
-#endif

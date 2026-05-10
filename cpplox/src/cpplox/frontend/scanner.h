@@ -1,5 +1,4 @@
-#ifndef clox_scanner_h
-#define clox_scanner_h
+#pragma once
 
 #include <cstdint>
 
@@ -138,4 +137,3 @@ private:
 
 } // namespace cpplox
 
-#endif

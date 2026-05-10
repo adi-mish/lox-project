@@ -1,5 +1,4 @@
-#ifndef clox_vm_h
-#define clox_vm_h
+#pragma once
 
 #include <array>
 #include <vector>
@@ -10,8 +9,8 @@
 
 namespace cpplox {
 
-#define FRAMES_MAX 64
-#define STACK_MAX (FRAMES_MAX * UINT8_COUNT)
+inline constexpr int kMaxFrames = 64;
+inline constexpr int kMaxStack = kMaxFrames * kUint8Count;
 
 enum class InterpretResult : uint8_t {
   Ok,
@@ -59,10 +58,10 @@ public:
   void printStats() const;
 #endif
 
-  std::array<CallFrame, FRAMES_MAX> frames;
+  std::array<CallFrame, kMaxFrames> frames;
   int frameCount;
 
-  std::array<Value, STACK_MAX> stack;
+  std::array<Value, kMaxStack> stack;
   Value *stackTop;
   Table globals;
   Table strings;
@@ -96,5 +95,3 @@ public:
 Vm &currentVm();
 
 } // namespace cpplox
-
-#endif

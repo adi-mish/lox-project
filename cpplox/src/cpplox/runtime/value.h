@@ -1,5 +1,4 @@
-#ifndef clox_value_h
-#define clox_value_h
+#pragma once
 
 #include <cstring>
 #include <vector>
@@ -11,46 +10,47 @@ namespace cpplox {
 struct Obj;
 struct ObjString;
 
-#ifdef NAN_BOXING
-
-#define SIGN_BIT ((uint64_t)0x8000000000000000)
-#define QNAN ((uint64_t)0x7ffc000000000000)
-
-#define TAG_NIL 1
-#define TAG_FALSE 2
-#define TAG_TRUE 3
-#define TAG_UNINITIALIZED 4
+inline constexpr uint64_t kSignBit = 0x8000000000000000ull;
+inline constexpr uint64_t kQNaN = 0x7ffc000000000000ull;
+inline constexpr uint64_t kTagNil = 1;
+inline constexpr uint64_t kTagFalse = 2;
+inline constexpr uint64_t kTagTrue = 3;
+inline constexpr uint64_t kTagUninitialized = 4;
 
 class Value {
 public:
-  constexpr Value() : bits_(QNAN | TAG_NIL) {}
+  constexpr Value() : bits_(kQNaN | kTagNil) {}
 
   static constexpr Value fromBits(uint64_t bits) { return Value(bits); }
   static constexpr Value boolean(bool value) {
-    return fromBits(QNAN | (value ? TAG_TRUE : TAG_FALSE));
+    return fromBits(kQNaN | (value ? kTagTrue : kTagFalse));
   }
-  static constexpr Value nil() { return fromBits(QNAN | TAG_NIL); }
+  static constexpr Value nil() { return fromBits(kQNaN | kTagNil); }
   static constexpr Value uninitialized() {
-    return fromBits(QNAN | TAG_UNINITIALIZED);
+    return fromBits(kQNaN | kTagUninitialized);
   }
-  static constexpr Value object(Obj *object) {
-    return fromBits(SIGN_BIT | QNAN | (uint64_t)(uintptr_t)(object));
+  static Value object(Obj *object) {
+    return fromBits(kSignBit | kQNaN |
+                    static_cast<uint64_t>(reinterpret_cast<uintptr_t>(object)));
   }
 
   constexpr uint64_t bits() const { return bits_; }
 
-  constexpr bool isBool() const { return (bits_ | 1) == (QNAN | TAG_TRUE); }
-  constexpr bool isNil() const { return bits_ == (QNAN | TAG_NIL); }
-  constexpr bool isNumber() const { return (bits_ & QNAN) != QNAN; }
+  constexpr bool isBool() const { return (bits_ | 1) == (kQNaN | kTagTrue); }
+  constexpr bool isNil() const { return bits_ == (kQNaN | kTagNil); }
+  constexpr bool isNumber() const { return (bits_ & kQNaN) != kQNaN; }
   constexpr bool isObj() const {
-    return (bits_ & (QNAN | SIGN_BIT)) == (QNAN | SIGN_BIT);
+    return (bits_ & (kQNaN | kSignBit)) == (kQNaN | kSignBit);
   }
   constexpr bool isUninitialized() const {
-    return bits_ == (QNAN | TAG_UNINITIALIZED);
+    return bits_ == (kQNaN | kTagUninitialized);
   }
 
-  constexpr bool asBool() const { return bits_ == (QNAN | TAG_TRUE); }
-  Obj *asObj() const { return (Obj *)(uintptr_t)(bits_ & ~(SIGN_BIT | QNAN)); }
+  constexpr bool asBool() const { return bits_ == (kQNaN | kTagTrue); }
+  Obj *asObj() const {
+    return reinterpret_cast<Obj *>(
+        static_cast<uintptr_t>(bits_ & ~(kSignBit | kQNaN)));
+  }
 
 private:
   explicit constexpr Value(uint64_t bits) : bits_(bits) {}
@@ -74,8 +74,8 @@ inline bool asBool(Value value) { return value.asBool(); }
 inline Obj *asObj(Value value) { return value.asObj(); }
 
 inline Value boolValue(bool value) { return Value::boolean(value); }
-inline Value falseValue() { return Value::fromBits(QNAN | TAG_FALSE); }
-inline Value trueValue() { return Value::fromBits(QNAN | TAG_TRUE); }
+inline Value falseValue() { return Value::fromBits(kQNaN | kTagFalse); }
+inline Value trueValue() { return Value::fromBits(kQNaN | kTagTrue); }
 inline Value nilValue() { return Value::nil(); }
 inline Value uninitializedValue() { return Value::uninitialized(); }
 inline Value objectValue(Obj *object) { return Value::object(object); }
@@ -99,109 +99,13 @@ static inline Value numToValue(double num) {
 inline double asNumber(Value value) { return valueToNum(value); }
 inline Value numberValue(double value) { return numToValue(value); }
 
-#else
-
-enum class ValueType : uint8_t {
-  Bool,
-  Nil,
-  Number,
-  Obj,
-  Uninitialized
-};
-
-inline constexpr ValueType VAL_BOOL = ValueType::Bool;
-inline constexpr ValueType VAL_NIL = ValueType::Nil;
-inline constexpr ValueType VAL_NUMBER = ValueType::Number;
-inline constexpr ValueType VAL_OBJ = ValueType::Obj;
-inline constexpr ValueType VAL_UNINITIALIZED = ValueType::Uninitialized;
-
-struct Value {
-  ValueType type;
-  union {
-    bool boolean;
-    double number;
-    Obj *obj;
-  } as;
-};
-
-inline Value boolValue(bool value) {
-  Value result;
-  result.type = VAL_BOOL;
-  result.as.boolean = value;
-  return result;
-}
-
-inline Value nilValue() {
-  Value result;
-  result.type = VAL_NIL;
-  result.as.number = 0;
-  return result;
-}
-
-inline Value uninitializedValue() {
-  Value result;
-  result.type = VAL_UNINITIALIZED;
-  result.as.number = 0;
-  return result;
-}
-
-inline Value numberValue(double value) {
-  Value result;
-  result.type = VAL_NUMBER;
-  result.as.number = value;
-  return result;
-}
-
-inline Value objectValue(Obj *object) {
-  Value result;
-  result.type = VAL_OBJ;
-  result.as.obj = object;
-  return result;
-}
-template <typename Object> inline Value objectValue(Object *object) {
-  return objectValue(&object->obj);
-}
-
-inline bool isBool(Value value) { return value.type == VAL_BOOL; }
-inline bool isNil(Value value) { return value.type == VAL_NIL; }
-inline bool isNumber(Value value) { return value.type == VAL_NUMBER; }
-inline bool isObj(Value value) { return value.type == VAL_OBJ; }
-inline bool isUninitialized(Value value) {
-  return value.type == VAL_UNINITIALIZED;
-}
-
-inline Obj *asObj(Value value) { return value.as.obj; }
-inline bool asBool(Value value) { return value.as.boolean; }
-inline double asNumber(Value value) { return value.as.number; }
-
-#endif
-
 using ValueArray = std::vector<Value>;
 
 static inline bool valuesEqual(Value a, Value b) {
-#ifdef NAN_BOXING
   if (isNumber(a) && isNumber(b)) {
     return asNumber(a) == asNumber(b);
   }
   return a == b;
-#else
-  if (a.type != b.type)
-    return false;
-  switch (a.type) {
-  case VAL_BOOL:
-    return asBool(a) == asBool(b);
-  case VAL_NIL:
-    return true;
-  case VAL_NUMBER:
-    return asNumber(a) == asNumber(b);
-  case VAL_OBJ:
-    return asObj(a) == asObj(b);
-  case VAL_UNINITIALIZED:
-    return true;
-  default:
-    return false;
-  }
-#endif
 }
 
 void initValueArray(ValueArray *array);
@@ -210,5 +114,3 @@ void freeValueArray(ValueArray *array);
 void printValue(Value value);
 
 } // namespace cpplox
-
-#endif

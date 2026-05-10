@@ -1,5 +1,4 @@
-#ifndef clox_debug_h
-#define clox_debug_h
+#pragma once
 
 #include "chunk.h"
 
@@ -10,4 +9,3 @@ int disassembleInstruction(Chunk *chunk, int offset);
 
 } // namespace cpplox
 
-#endif
