@@ -304,6 +304,8 @@ void elx_runtime_error_silent(const char *message);
 void elx_emit_runtime_error();
 int elx_has_runtime_error();
 void elx_clear_runtime_error();
+int elx_enter_call_frame();
+void elx_leave_call_frame();
 
 // Safe arithmetic operations
 uint64_t elx_safe_divide(uint64_t a_bits, uint64_t b_bits);

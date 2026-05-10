@@ -195,6 +195,8 @@ const char *toString(InstructionKind kind) {
     return "function";
   case InstructionKind::Call:
     return "call";
+  case InstructionKind::DirectCall:
+    return "direct.call";
   case InstructionKind::PreparePropertyCall:
     return "prepare.property.call";
   case InstructionKind::CallPreparedProperty:

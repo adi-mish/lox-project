@@ -165,6 +165,8 @@ const RuntimeFunctionDescriptor kRuntimeFunctions[] = {
     ELX_RUNTIME_FUNCTION(elx_emit_runtime_error, Void_None, RuntimeNoUnwind),
     ELX_RUNTIME_FUNCTION(elx_has_runtime_error, I32_None, RuntimeReadOnly),
     ELX_RUNTIME_FUNCTION(elx_clear_runtime_error, Void_None, RuntimeNoUnwind),
+    ELX_RUNTIME_FUNCTION(elx_enter_call_frame, I32_None, RuntimeNoUnwind),
+    ELX_RUNTIME_FUNCTION(elx_leave_call_frame, Void_None, RuntimeNoUnwind),
     ELX_RUNTIME_FUNCTION(elx_safe_divide, Value_Value_Value, RuntimeNoUnwind),
     ELX_RUNTIME_FUNCTION(elx_add_values, Value_Value_Value, RuntimeNoFlags),
     ELX_RUNTIME_FUNCTION(elx_subtract_values, Value_Value_Value,

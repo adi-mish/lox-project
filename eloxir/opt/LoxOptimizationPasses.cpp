@@ -735,6 +735,141 @@ public:
   }
 };
 
+struct StableFunctionTarget {
+  std::string functionName;
+  int arity = 0;
+};
+
+class DirectCallPass final : public LoxPass {
+public:
+  std::string name() const override { return "direct-call-specialization"; }
+
+  bool run(LoxModule &module) override {
+    if (module.functions().empty()) {
+      return false;
+    }
+
+    const LoxFunction &main = module.functions().front();
+    std::unordered_map<uint32_t, std::string> definedFunctionByValue;
+    std::unordered_map<std::string, std::string> globalToFunction;
+    std::unordered_map<std::string, uint32_t> declarationCounts;
+    std::unordered_set<std::string> assignedGlobals;
+
+    for (const auto &block : main.blocks()) {
+      for (const auto &instruction : block.instructions()) {
+        if (instruction.kind == InstructionKind::DefineFunction &&
+            instruction.result && !instruction.symbol.empty()) {
+          definedFunctionByValue[instruction.result->id] = instruction.symbol;
+          continue;
+        }
+        if (instruction.kind != InstructionKind::StoreGlobal ||
+            instruction.symbol.empty()) {
+          continue;
+        }
+        if (!instruction.declaresSymbol) {
+          assignedGlobals.insert(instruction.symbol);
+          continue;
+        }
+        ++declarationCounts[instruction.symbol];
+        if (instruction.operands.size() == 1) {
+          auto defIt = definedFunctionByValue.find(instruction.operands[0].id);
+          if (defIt != definedFunctionByValue.end()) {
+            globalToFunction[instruction.symbol] = defIt->second;
+          }
+        }
+      }
+    }
+
+    for (const auto &function : module.functions()) {
+      for (const auto &block : function.blocks()) {
+        for (const auto &instruction : block.instructions()) {
+          if (instruction.kind == InstructionKind::StoreGlobal &&
+              !instruction.declaresSymbol && !instruction.symbol.empty()) {
+            assignedGlobals.insert(instruction.symbol);
+          }
+        }
+      }
+    }
+
+    std::unordered_map<std::string, StableFunctionTarget> stableFunctions;
+    for (const auto &[globalName, functionName] : globalToFunction) {
+      if (assignedGlobals.find(globalName) != assignedGlobals.end()) {
+        continue;
+      }
+      if (declarationCounts[globalName] != 1) {
+        continue;
+      }
+      const LoxFunction *target = module.findFunction(functionName);
+      if (!target || !target->upvalues().empty()) {
+        continue;
+      }
+      stableFunctions.emplace(globalName,
+                              StableFunctionTarget{functionName,
+                                                   target->arity()});
+    }
+    if (stableFunctions.empty()) {
+      return false;
+    }
+
+    bool changed = false;
+    for (auto &function : module.functions()) {
+      std::unordered_map<uint32_t, Instruction *> definitions;
+      std::unordered_map<uint32_t, uint32_t> useCounts;
+      for (auto &block : function.blocks()) {
+        for (auto &instruction : block.instructions()) {
+          if (instruction.result) {
+            definitions[instruction.result->id] = &instruction;
+          }
+          for (ValueId operand : instruction.operands) {
+            if (operand.valid()) {
+              ++useCounts[operand.id];
+            }
+          }
+          for (ValueId argument : instruction.arguments) {
+            if (argument.valid()) {
+              ++useCounts[argument.id];
+            }
+          }
+        }
+      }
+
+      for (auto &block : function.blocks()) {
+        for (auto &instruction : block.instructions()) {
+          if (instruction.kind != InstructionKind::Call ||
+              instruction.operands.size() != 1) {
+            continue;
+          }
+          auto defIt = definitions.find(instruction.operands[0].id);
+          if (defIt == definitions.end()) {
+            continue;
+          }
+          Instruction *calleeLoad = defIt->second;
+          if (calleeLoad->kind != InstructionKind::LoadGlobal) {
+            continue;
+          }
+          auto targetIt = stableFunctions.find(calleeLoad->symbol);
+          if (targetIt == stableFunctions.end()) {
+            continue;
+          }
+          if (static_cast<int>(instruction.arguments.size()) !=
+              targetIt->second.arity) {
+            continue;
+          }
+
+          if (useCounts[instruction.operands[0].id] == 1) {
+            replaceWithNil(*calleeLoad);
+          }
+          instruction.kind = InstructionKind::DirectCall;
+          instruction.symbol = targetIt->second.functionName;
+          instruction.operands.clear();
+          changed = true;
+        }
+      }
+    }
+    return changed;
+  }
+};
+
 class DeadCodeEliminationPass final : public LoxPass {
 public:
   std::string name() const override { return "dead-code-elimination"; }
@@ -804,6 +939,7 @@ LoxPassManager createDefaultLoxPassPipeline() {
   LoxPassManager manager;
   manager.add(std::make_unique<GlobalDemotionPass>());
   manager.add(createTypePropagationPass());
+  manager.add(std::make_unique<DirectCallPass>());
   manager.add(createConstantFoldingPass());
   manager.add(createTypePropagationPass());
   manager.add(createDeadCodeEliminationPass());

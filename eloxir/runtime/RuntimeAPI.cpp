@@ -3124,6 +3124,21 @@ void elx_clear_runtime_error() {
   runtime_error_message.clear();
 }
 
+int elx_enter_call_frame() {
+  if (current_call_depth >= MAX_CALL_DEPTH) {
+    elx_runtime_error("Stack overflow.");
+    return 0;
+  }
+  ++current_call_depth;
+  return 1;
+}
+
+void elx_leave_call_frame() {
+  if (current_call_depth > 0) {
+    --current_call_depth;
+  }
+}
+
 // Safe arithmetic operations (IEEE 754 compliant)
 uint64_t elx_safe_divide(uint64_t a_bits, uint64_t b_bits) {
   Value a = Value::fromBits(a_bits);

@@ -459,6 +459,8 @@ private:
       return emitReturn(instruction);
     case InstructionKind::Call:
       return emitCall(instruction);
+    case InstructionKind::DirectCall:
+      return emitDirectCall(instruction);
     case InstructionKind::PreparePropertyCall:
       return emitPreparePropertyCall(instruction);
     case InstructionKind::CallPreparedProperty:
@@ -804,6 +806,52 @@ private:
     auto *result =
         builder_.CreateCall(call, {lookup(instruction.operands[0]), args, count},
                             "call");
+    guardRuntimeError();
+    bind(instruction, result, instruction.resultType);
+    return std::nullopt;
+  }
+
+  std::optional<std::string> emitDirectCall(const Instruction &instruction) {
+    for (ValueId id : instruction.arguments) {
+      if (!lookup(id)) {
+        return unsupported(instruction, "argument was not defined");
+      }
+    }
+    auto functionIt = functions_.find(instruction.symbol);
+    auto loxIt = loxFunctions_.find(instruction.symbol);
+    auto *enter = runtime("elx_enter_call_frame");
+    auto *leave = runtime("elx_leave_call_frame");
+    if (functionIt == functions_.end() || loxIt == loxFunctions_.end()) {
+      return unsupported(instruction, "missing direct call target");
+    }
+    if (!loxIt->second->upvalues().empty()) {
+      return unsupported(instruction, "direct closure calls are not supported");
+    }
+    if (!enter || !leave) {
+      return unsupported(instruction, "missing direct call frame helper");
+    }
+
+    auto *overflowBlock =
+        llvm::BasicBlock::Create(ctx_, "direct.call.overflow", function_);
+    auto *callBlock =
+        llvm::BasicBlock::Create(ctx_, "direct.call.body", function_);
+    auto *entered = builder_.CreateICmpNE(
+        builder_.CreateCall(enter, {}, "direct.call.entered"), constantI32(0),
+        "direct.call.can.enter");
+    builder_.CreateCondBr(entered, callBlock, overflowBlock);
+
+    builder_.SetInsertPoint(overflowBlock);
+    builder_.CreateRet(nilValue());
+
+    builder_.SetInsertPoint(callBlock);
+    std::vector<llvm::Value *> args;
+    args.reserve(instruction.arguments.size());
+    for (ValueId id : instruction.arguments) {
+      args.push_back(lookup(id));
+    }
+    auto *result =
+        builder_.CreateCall(functionIt->second, args, "direct.call");
+    builder_.CreateCall(leave, {});
     guardRuntimeError();
     bind(instruction, result, instruction.resultType);
     return std::nullopt;
