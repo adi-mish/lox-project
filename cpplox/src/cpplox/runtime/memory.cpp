@@ -126,6 +126,12 @@ static void blackenObject(Vm &vm, Obj *object) {
     break;
   }
 }
+
+template <typename Object> void destroyObject(Vm &vm, Object *object) {
+  object->~Object();
+  release(vm, object);
+}
+
 static void freeObject(Vm &vm, Obj *object) {
 #ifdef DEBUG_LOG_GC
   std::printf("%p free type %d\n", (void *)object, objectKindIndex(object->type));
@@ -133,44 +139,41 @@ static void freeObject(Vm &vm, Obj *object) {
 
   switch (object->type) {
   case OBJ_BOUND_METHOD:
-    release(vm, reinterpret_cast<ObjBoundMethod *>(object));
+    destroyObject(vm, reinterpret_cast<ObjBoundMethod *>(object));
     break;
   case OBJ_CLASS: {
     ObjClass *klass = (ObjClass *)object;
-    klass->methods.~Table();
-    klass->fieldSlots.~Table();
-    release(vm, klass);
+    destroyObject(vm, klass);
     break;
   }
   case OBJ_CLOSURE: {
     ObjClosure *closure = (ObjClosure *)object;
     freeArray(vm, closure->upvalues, closure->upvalueCount);
-    release(vm, closure);
+    destroyObject(vm, closure);
     break;
   }
   case OBJ_FUNCTION: {
     ObjFunction *function = (ObjFunction *)object;
-    freeChunk(&function->chunk);
-    release(vm, function);
+    destroyObject(vm, function);
     break;
   }
   case OBJ_INSTANCE: {
     ObjInstance *instance = (ObjInstance *)object;
     freeArray(vm, instance->fields, instance->fieldCapacity);
-    release(vm, instance);
+    destroyObject(vm, instance);
     break;
   }
   case OBJ_NATIVE:
-    release(vm, reinterpret_cast<ObjNative *>(object));
+    destroyObject(vm, reinterpret_cast<ObjNative *>(object));
     break;
   case OBJ_STRING: {
     ObjString *string = (ObjString *)object;
     freeArray(vm, string->chars, string->length + 1);
-    release(vm, string);
+    destroyObject(vm, string);
     break;
   }
   case OBJ_UPVALUE:
-    release(vm, reinterpret_cast<ObjUpvalue *>(object));
+    destroyObject(vm, reinterpret_cast<ObjUpvalue *>(object));
     break;
   }
 }

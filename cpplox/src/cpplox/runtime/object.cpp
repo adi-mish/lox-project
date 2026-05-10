@@ -13,8 +13,9 @@ namespace cpplox {
 
 template <typename Object>
 static Object *allocateObject(Vm &vm, ObjectKind type) {
-  Object *object = allocate<Object>(vm);
-  Obj *header = reinterpret_cast<Obj *>(object);
+  void *storage = allocate<Object>(vm);
+  Object *object = new (storage) Object();
+  Obj *header = &object->obj;
   header->type = type;
   header->isMarked = false;
 
@@ -37,8 +38,6 @@ ObjBoundMethod *Vm::newBoundMethod(Value receiver, ObjClosure *method) {
 }
 ObjClass *Vm::newClass(ObjString *name) {
   ObjClass *klass = allocateObject<ObjClass>(*this, OBJ_CLASS);
-  new (&klass->methods) Table();
-  new (&klass->fieldSlots) Table();
   klass->name = name;
   klass->initializer = nullptr;
   klass->fieldSlotCount = 0;
@@ -62,7 +61,6 @@ ObjFunction *Vm::newFunction() {
   function->arity = 0;
   function->upvalueCount = 0;
   function->name = nullptr;
-  initChunk(&function->chunk);
   return function;
 }
 ObjInstance *Vm::newInstance(ObjClass *klass) {

@@ -7,16 +7,6 @@
 
 namespace cpplox {
 
-void initValueArray(ValueArray *array) {
-  array->clear();
-}
-void writeValueArray(ValueArray *array, Value value) {
-  array->push_back(value);
-}
-void freeValueArray(ValueArray *array) {
-  ValueArray empty;
-  array->swap(empty);
-}
 void printValue(Value value) {
   if (isBool(value)) {
     std::printf(asBool(value) ? "true" : "false");

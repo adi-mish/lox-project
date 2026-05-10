@@ -1,5 +1,3 @@
-#include <new>
-
 #include "chunk.h"
 
 namespace cpplox {
@@ -17,13 +15,6 @@ static InlineCache emptyInlineCache() {
   cache.tableCapacity = 0;
   cache.value = nilValue();
   return cache;
-}
-
-void initChunk(Chunk *chunk) {
-  new (chunk) Chunk();
-}
-void freeChunk(Chunk *chunk) {
-  chunk->~Chunk();
 }
 
 void Chunk::write(uint8_t byte, int line) {
@@ -44,7 +35,7 @@ int Chunk::addConstant(Value value) {
     }
   }
 
-  writeValueArray(&constants_, value);
+  constants_.push_back(value);
   inlineCaches_.push_back(emptyInlineCache());
   return static_cast<int>(constants_.size()) - 1;
 }
