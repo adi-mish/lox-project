@@ -286,8 +286,8 @@ static void runtimeError(const char *format, ...) {
 }
 static void defineNative(const char *name, NativeFn function) {
   Vm &vm = currentVm();
-  vm.push(OBJ_VAL(copyString(name, (int)strlen(name))));
-  vm.push(OBJ_VAL(newNative(function)));
+  vm.push(OBJ_VAL(vm.copyString(name, (int)strlen(name))));
+  vm.push(OBJ_VAL(vm.newNative(function)));
   vm.globals.set(AS_STRING(vm.stack[0]), vm.stack[1]);
   vm.pop();
   vm.pop();
@@ -313,7 +313,7 @@ void Vm::initialize() {
   vm.strings.clear();
 
   vm.initString = NULL;
-  vm.initString = copyString("init", 4);
+  vm.initString = vm.copyString("init", 4);
 
   defineNative("clock", clockNative);
 }
@@ -379,7 +379,7 @@ static bool callValue(Value callee, int argCount) {
       if (vm.statsEnabled)
         vm.classCalls++;
 #endif
-      vm.stackTop[-argCount - 1] = OBJ_VAL(newInstance(klass));
+      vm.stackTop[-argCount - 1] = OBJ_VAL(vm.newInstance(klass));
       if (klass->initializer != NULL) {
         return call(klass->initializer, argCount);
       } else if (argCount != 0) {
@@ -559,7 +559,7 @@ static bool bindMethodCached(ObjClass *klass, ObjString *name,
   if (!findMethodCached(klass, name, cache, &method))
     return false;
 
-  ObjBoundMethod *bound = newBoundMethod(peek(0), AS_CLOSURE(method));
+  ObjBoundMethod *bound = currentVm().newBoundMethod(peek(0), AS_CLOSURE(method));
   currentVm().pop();
   currentVm().push(OBJ_VAL(bound));
   return true;
@@ -580,7 +580,7 @@ static ObjUpvalue *captureUpvalue(Value *local) {
     return upvalue;
   }
 
-  ObjUpvalue *createdUpvalue = newUpvalue(local);
+  ObjUpvalue *createdUpvalue = vm.newUpvalue(local);
   createdUpvalue->next = upvalue;
 
   if (prevUpvalue == NULL) {
@@ -625,7 +625,7 @@ static void concatenate() {
   memcpy(chars + a->length, b->chars, b->length);
   chars[length] = '\0';
 
-  ObjString *result = takeString(chars, length);
+  ObjString *result = vm.takeString(chars, length);
   vm.pop();
   vm.pop();
   vm.push(OBJ_VAL(result));
@@ -1020,7 +1020,7 @@ static InterpretResult run() {
     }
     case OP_CLOSURE: {
       ObjFunction *function = AS_FUNCTION(READ_CONSTANT());
-      ObjClosure *closure = newClosure(function);
+      ObjClosure *closure = vm.newClosure(function);
       PUSH_VALUE(OBJ_VAL(closure));
       for (int i = 0; i < closure->upvalueCount; i++) {
         uint8_t isLocal = READ_BYTE();
@@ -1053,7 +1053,7 @@ static InterpretResult run() {
       break;
     }
     case OP_CLASS:
-      PUSH_VALUE(OBJ_VAL(newClass(READ_STRING())));
+      PUSH_VALUE(OBJ_VAL(vm.newClass(READ_STRING())));
       break;
     case OP_INHERIT: {
       Value superclass = peek(1);
@@ -1093,7 +1093,7 @@ InterpretResult Vm::interpret(const char *source) {
 
   vm.push(OBJ_VAL(function));
 
-  ObjClosure *closure = newClosure(function);
+  ObjClosure *closure = vm.newClosure(function);
   vm.pop();
   vm.push(OBJ_VAL(closure));
   call(closure, 0);

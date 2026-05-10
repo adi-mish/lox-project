@@ -33,6 +33,16 @@ public:
   void push(Value value);
   Value pop();
 
+  ObjBoundMethod *newBoundMethod(Value receiver, ObjClosure *method);
+  ObjClass *newClass(ObjString *name);
+  ObjClosure *newClosure(ObjFunction *function);
+  ObjFunction *newFunction();
+  ObjInstance *newInstance(ObjClass *klass);
+  ObjNative *newNative(NativeFn function);
+  ObjString *takeString(char *chars, int length);
+  ObjString *copyString(const char *chars, int length);
+  ObjUpvalue *newUpvalue(Value *slot);
+
 #ifdef CPPLOX_ENABLE_VM_STATS
   void setStatsEnabled(bool enabled);
   void resetStats();
