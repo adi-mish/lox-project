@@ -65,6 +65,7 @@ add_definitions(${LLVM_DEFINITIONS})
 # 4) Subdirectories
 add_subdirectory(runtime)
 add_subdirectory(frontend)
+add_subdirectory(ir)
 add_subdirectory(codegen)
 add_subdirectory(jit)
 
@@ -78,6 +79,6 @@ target_link_libraries(eloxir PRIVATE
 )
 
 # 6) Apply a consistent warning policy to all local targets.
-foreach(target_name IN ITEMS Runtime Frontend CodeGen EloxirJIT eloxir)
+foreach(target_name IN ITEMS Runtime Frontend LoxIR CodeGen EloxirJIT eloxir)
   eloxir_enable_warnings(${target_name})
 endforeach()
