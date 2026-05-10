@@ -178,7 +178,7 @@ int disassembleInstruction(Chunk *chunk, int offset) {
     printValue(chunk->constantAt(constant));
     std::printf("\n");
 
-    ObjFunction *function = AS_FUNCTION(chunk->constantAt(constant));
+    ObjFunction *function = asFunction(chunk->constantAt(constant));
     for (int j = 0; j < function->upvalueCount; j++) {
       int isLocal = chunk->byteAt(offset++);
       int index = chunk->byteAt(offset++);

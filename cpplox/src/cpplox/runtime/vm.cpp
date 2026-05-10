@@ -288,7 +288,7 @@ static void defineNative(const char *name, NativeFn function) {
   Vm &vm = currentVm();
   vm.push(OBJ_VAL(vm.copyString(name, (int)std::strlen(name))));
   vm.push(OBJ_VAL(vm.newNative(function)));
-  vm.globals.set(AS_STRING(vm.stack[0]), vm.stack[1]);
+  vm.globals.set(asString(vm.stack[0]), vm.stack[1]);
   vm.pop();
   vm.pop();
 }
@@ -374,9 +374,9 @@ static bool call(ObjClosure *closure, int argCount) {
 static bool callValue(Value callee, int argCount) {
   Vm &vm = currentVm();
   if (IS_OBJ(callee)) {
-    switch (OBJ_TYPE(callee)) {
+    switch (objectType(callee)) {
     case OBJ_BOUND_METHOD: {
-      ObjBoundMethod *bound = AS_BOUND_METHOD(callee);
+      ObjBoundMethod *bound = asBoundMethod(callee);
 #ifdef CPPLOX_ENABLE_VM_STATS
       if (vm.statsEnabled)
         vm.boundMethodCalls++;
@@ -385,7 +385,7 @@ static bool callValue(Value callee, int argCount) {
       return call(bound->method, argCount);
     }
     case OBJ_CLASS: {
-      ObjClass *klass = AS_CLASS(callee);
+      ObjClass *klass = asClass(callee);
 #ifdef CPPLOX_ENABLE_VM_STATS
       if (vm.statsEnabled)
         vm.classCalls++;
@@ -404,10 +404,10 @@ static bool callValue(Value callee, int argCount) {
       if (vm.statsEnabled)
         vm.closureCalls++;
 #endif
-      return call(AS_CLOSURE(callee), argCount);
+      return call(asClosure(callee), argCount);
 
     case OBJ_NATIVE: {
-      NativeFn native = AS_NATIVE(callee);
+      NativeFn native = asNative(callee);
 #ifdef CPPLOX_ENABLE_VM_STATS
       if (vm.statsEnabled)
         vm.nativeCalls++;
@@ -513,7 +513,7 @@ static bool invokeFromClass(ObjClass *klass, ObjString *name, int argCount,
   Value method;
   if (!findMethodCached(klass, name, cache, &method))
     return false;
-  return call(AS_CLOSURE(method), argCount);
+  return call(asClosure(method), argCount);
 }
 
 static bool invoke(ObjString *name, int argCount, InlineCache *cache) {
@@ -524,25 +524,25 @@ static bool invoke(ObjString *name, int argCount, InlineCache *cache) {
 #endif
   Value receiver = peek(argCount);
 
-  if (!IS_INSTANCE(receiver)) {
+  if (!isInstance(receiver)) {
     runtimeError("Only instances have methods.");
     return false;
   }
 
-  ObjInstance *instance = AS_INSTANCE(receiver);
+  ObjInstance *instance = asInstance(receiver);
   if (cache != nullptr && cache->kind == CACHE_METHOD && cache->key == name &&
       cache->owner == instance->klass &&
       cache->tableVersion == instance->klass->methods.version() &&
       cache->secondaryVersion == instance->klass->fieldVersion) {
     if (cache->entryIndex == -1) {
       RECORD_METHOD_CACHE_HIT();
-      return call(AS_CLOSURE(cache->value), argCount);
+      return call(asClosure(cache->value), argCount);
     }
     if (cache->entryIndex >= 0) {
       Value ignored;
       if (!readInstanceField(instance, cache->entryIndex, &ignored)) {
         RECORD_METHOD_CACHE_HIT();
-        return call(AS_CLOSURE(cache->value), argCount);
+        return call(asClosure(cache->value), argCount);
       }
     }
   }
@@ -561,7 +561,7 @@ static bool invoke(ObjString *name, int argCount, InlineCache *cache) {
     cache->secondaryVersion = instance->klass->fieldVersion;
     cache->entryIndex = fieldSlot >= 0 ? fieldSlot : -1;
   }
-  return call(AS_CLOSURE(value), argCount);
+  return call(asClosure(value), argCount);
 }
 static bool bindMethodCached(ObjClass *klass, ObjString *name,
                              InlineCache *cache) {
@@ -569,7 +569,7 @@ static bool bindMethodCached(ObjClass *klass, ObjString *name,
   if (!findMethodCached(klass, name, cache, &method))
     return false;
 
-  ObjBoundMethod *bound = currentVm().newBoundMethod(peek(0), AS_CLOSURE(method));
+  ObjBoundMethod *bound = currentVm().newBoundMethod(peek(0), asClosure(method));
   currentVm().pop();
   currentVm().push(OBJ_VAL(bound));
   return true;
@@ -613,10 +613,10 @@ static void closeUpvalues(Value *last) {
 static void defineMethod(ObjString *name) {
   Vm &vm = currentVm();
   Value method = peek(0);
-  ObjClass *klass = AS_CLASS(peek(1));
+  ObjClass *klass = asClass(peek(1));
   klass->methods.set(name, method);
   if (name == vm.initString) {
-    klass->initializer = AS_CLOSURE(method);
+    klass->initializer = asClosure(method);
   }
   vm.pop();
 }
@@ -626,8 +626,8 @@ static bool isFalsey(Value value) {
 static void concatenate() {
   Vm &vm = currentVm();
 
-  ObjString *b = AS_STRING(peek(0));
-  ObjString *a = AS_STRING(peek(1));
+  ObjString *b = asString(peek(0));
+  ObjString *a = asString(peek(1));
 
   int length = a->length + b->length;
   char *chars = allocate<char>(length + 1);
@@ -652,7 +652,7 @@ static InterpretResult run() {
 #define READ_CONSTANT()                                                        \
   (frame->closure->function->chunk.constantAt(READ_BYTE()))
 
-#define READ_STRING() AS_STRING(READ_CONSTANT())
+#define READ_STRING() asString(READ_CONSTANT())
 #define PUSH_VALUE(value)                                                      \
   do {                                                                         \
     *vm.stackTop = (value);                                                    \
@@ -783,7 +783,7 @@ static InterpretResult run() {
     case OP_GET_GLOBAL: {
       uint8_t constant = READ_BYTE();
       Chunk *chunk = &frame->closure->function->chunk;
-      ObjString *name = AS_STRING(chunk->constantAt(constant));
+      ObjString *name = asString(chunk->constantAt(constant));
       InlineCache *cache = &chunk->inlineCache(constant);
 
       Entry *entry = cache->entry;
@@ -811,7 +811,7 @@ static InterpretResult run() {
     case OP_DEFINE_GLOBAL: {
       uint8_t constant = READ_BYTE();
       Chunk *chunk = &frame->closure->function->chunk;
-      ObjString *name = AS_STRING(chunk->constantAt(constant));
+      ObjString *name = asString(chunk->constantAt(constant));
       vm.globals.set(name, vm.stackTop[-1]);
       InlineCache *cache = &chunk->inlineCache(constant);
       cache->key = name;
@@ -824,7 +824,7 @@ static InterpretResult run() {
     case OP_SET_GLOBAL: {
       uint8_t constant = READ_BYTE();
       Chunk *chunk = &frame->closure->function->chunk;
-      ObjString *name = AS_STRING(chunk->constantAt(constant));
+      ObjString *name = asString(chunk->constantAt(constant));
       InlineCache *cache = &chunk->inlineCache(constant);
 
       Entry *entry = cache->entry;
@@ -858,15 +858,15 @@ static InterpretResult run() {
       break;
     }
     case OP_GET_PROPERTY: {
-      if (!IS_INSTANCE(peek(0))) {
+      if (!isInstance(peek(0))) {
         runtimeError("Only instances have properties.");
         return INTERPRET_RUNTIME_ERROR;
       }
 
-      ObjInstance *instance = AS_INSTANCE(peek(0));
+      ObjInstance *instance = asInstance(peek(0));
       uint8_t constant = READ_BYTE();
       Chunk *chunk = &frame->closure->function->chunk;
-      ObjString *name = AS_STRING(chunk->constantAt(constant));
+      ObjString *name = asString(chunk->constantAt(constant));
       InlineCache *cache = &chunk->inlineCache(constant);
 
       if (cache->kind == CACHE_FIELD && cache->key == name &&
@@ -904,12 +904,12 @@ static InterpretResult run() {
       break;
     }
     case OP_SET_PROPERTY: {
-      if (!IS_INSTANCE(peek(1))) {
+      if (!isInstance(peek(1))) {
         runtimeError("Only instances have fields.");
         return INTERPRET_RUNTIME_ERROR;
       }
 
-      ObjInstance *instance = AS_INSTANCE(peek(1));
+      ObjInstance *instance = asInstance(peek(1));
       int fieldSlot = ensureFieldSlot(instance->klass, READ_STRING());
       writeInstanceField(instance, fieldSlot, peek(0));
       Value value = POP_VALUE();
@@ -919,7 +919,7 @@ static InterpretResult run() {
     }
     case OP_GET_SUPER: {
       ObjString *name = READ_STRING();
-      ObjClass *superclass = AS_CLASS(POP_VALUE());
+      ObjClass *superclass = asClass(POP_VALUE());
 
       if (!bindMethod(superclass, name)) {
         return INTERPRET_RUNTIME_ERROR;
@@ -942,7 +942,7 @@ static InterpretResult run() {
     case OP_ADD: {
       Value bValue = vm.stackTop[-1];
       Value aValue = vm.stackTop[-2];
-      if (IS_STRING(bValue) && IS_STRING(aValue)) {
+      if (isString(bValue) && isString(aValue)) {
         concatenate();
       } else if (IS_NUMBER(bValue) && IS_NUMBER(aValue)) {
         vm.stackTop[-2] = NUMBER_VAL(AS_NUMBER(aValue) + AS_NUMBER(bValue));
@@ -1007,7 +1007,7 @@ static InterpretResult run() {
     case OP_INVOKE: {
       uint8_t constant = READ_BYTE();
       Chunk *chunk = &frame->closure->function->chunk;
-      ObjString *method = AS_STRING(chunk->constantAt(constant));
+      ObjString *method = asString(chunk->constantAt(constant));
       int argCount = READ_BYTE();
       if (!invoke(method, argCount, &chunk->inlineCache(constant))) {
         return INTERPRET_RUNTIME_ERROR;
@@ -1018,9 +1018,9 @@ static InterpretResult run() {
     case OP_SUPER_INVOKE: {
       uint8_t constant = READ_BYTE();
       Chunk *chunk = &frame->closure->function->chunk;
-      ObjString *method = AS_STRING(chunk->constantAt(constant));
+      ObjString *method = asString(chunk->constantAt(constant));
       int argCount = READ_BYTE();
-      ObjClass *superclass = AS_CLASS(POP_VALUE());
+      ObjClass *superclass = asClass(POP_VALUE());
       if (!invokeFromClass(superclass, method, argCount,
                            &chunk->inlineCache(constant))) {
         return INTERPRET_RUNTIME_ERROR;
@@ -1029,7 +1029,7 @@ static InterpretResult run() {
       break;
     }
     case OP_CLOSURE: {
-      ObjFunction *function = AS_FUNCTION(READ_CONSTANT());
+      ObjFunction *function = asFunction(READ_CONSTANT());
       ObjClosure *closure = vm.newClosure(function);
       PUSH_VALUE(OBJ_VAL(closure));
       for (int i = 0; i < closure->upvalueCount; i++) {
@@ -1067,13 +1067,13 @@ static InterpretResult run() {
       break;
     case OP_INHERIT: {
       Value superclass = peek(1);
-      if (!IS_CLASS(superclass)) {
+      if (!isClass(superclass)) {
         runtimeError("Superclass must be a class.");
         return INTERPRET_RUNTIME_ERROR;
       }
 
-      ObjClass *subclass = AS_CLASS(peek(0));
-      ObjClass *superKlass = AS_CLASS(superclass);
+      ObjClass *subclass = asClass(peek(0));
+      ObjClass *superKlass = asClass(superclass);
       subclass->methods.addAllFrom(superKlass->methods);
       subclass->initializer = superKlass->initializer;
       vm.stackTop--;

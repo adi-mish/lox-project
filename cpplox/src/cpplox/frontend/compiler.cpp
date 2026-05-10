@@ -332,7 +332,7 @@ static bool discardPureExpression(int start) {
       break;
     case OP_GET_GLOBAL: {
       ObjString *name =
-          AS_STRING(chunk->constantAt(chunk->byteAt(offset + 1)));
+          asString(chunk->constantAt(chunk->byteAt(offset + 1)));
       bool known = name->length == 5 && std::memcmp(name->chars, "clock", 5) == 0;
       for (int i = 0; !known && i < knownGlobalCount; i++) {
         known = knownGlobals[i] == name;
@@ -366,7 +366,7 @@ static bool discardPureExpression(int start) {
 }
 
 static void rememberGlobal(uint8_t constant) {
-  ObjString *name = AS_STRING(currentChunk()->constantAt(constant));
+  ObjString *name = asString(currentChunk()->constantAt(constant));
   for (int i = 0; i < knownGlobalCount; i++) {
     if (knownGlobals[i] == name)
       return;

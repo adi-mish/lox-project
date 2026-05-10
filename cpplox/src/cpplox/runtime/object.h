@@ -8,25 +8,6 @@
 
 namespace cpplox {
 
-#define OBJ_TYPE(value) (AS_OBJ(value)->type)
-
-#define IS_BOUND_METHOD(value) isObjType(value, OBJ_BOUND_METHOD)
-#define IS_CLASS(value) isObjType(value, OBJ_CLASS)
-#define IS_CLOSURE(value) isObjType(value, OBJ_CLOSURE)
-#define IS_FUNCTION(value) isObjType(value, OBJ_FUNCTION)
-#define IS_INSTANCE(value) isObjType(value, OBJ_INSTANCE)
-#define IS_NATIVE(value) isObjType(value, OBJ_NATIVE)
-#define IS_STRING(value) isObjType(value, OBJ_STRING)
-
-#define AS_BOUND_METHOD(value) ((ObjBoundMethod *)AS_OBJ(value))
-#define AS_CLASS(value) ((ObjClass *)AS_OBJ(value))
-#define AS_CLOSURE(value) ((ObjClosure *)AS_OBJ(value))
-#define AS_FUNCTION(value) ((ObjFunction *)AS_OBJ(value))
-#define AS_INSTANCE(value) ((ObjInstance *)AS_OBJ(value))
-#define AS_NATIVE(value) (((ObjNative *)AS_OBJ(value))->function)
-#define AS_STRING(value) ((ObjString *)AS_OBJ(value))
-#define AS_CSTRING(value) (((ObjString *)AS_OBJ(value))->chars)
-
 enum class ObjectKind : uint8_t {
   BoundMethod,
   Class,
@@ -119,6 +100,40 @@ void printObject(Value value);
 static inline bool isObjType(Value value, ObjectKind type) {
   return IS_OBJ(value) && AS_OBJ(value)->type == type;
 }
+
+inline ObjectKind objectType(Value value) { return AS_OBJ(value)->type; }
+inline bool isBoundMethod(Value value) {
+  return isObjType(value, OBJ_BOUND_METHOD);
+}
+inline bool isClass(Value value) { return isObjType(value, OBJ_CLASS); }
+inline bool isClosure(Value value) { return isObjType(value, OBJ_CLOSURE); }
+inline bool isFunction(Value value) { return isObjType(value, OBJ_FUNCTION); }
+inline bool isInstance(Value value) { return isObjType(value, OBJ_INSTANCE); }
+inline bool isNative(Value value) { return isObjType(value, OBJ_NATIVE); }
+inline bool isString(Value value) { return isObjType(value, OBJ_STRING); }
+
+inline ObjBoundMethod *asBoundMethod(Value value) {
+  return reinterpret_cast<ObjBoundMethod *>(AS_OBJ(value));
+}
+inline ObjClass *asClass(Value value) {
+  return reinterpret_cast<ObjClass *>(AS_OBJ(value));
+}
+inline ObjClosure *asClosure(Value value) {
+  return reinterpret_cast<ObjClosure *>(AS_OBJ(value));
+}
+inline ObjFunction *asFunction(Value value) {
+  return reinterpret_cast<ObjFunction *>(AS_OBJ(value));
+}
+inline ObjInstance *asInstance(Value value) {
+  return reinterpret_cast<ObjInstance *>(AS_OBJ(value));
+}
+inline NativeFn asNative(Value value) {
+  return reinterpret_cast<ObjNative *>(AS_OBJ(value))->function;
+}
+inline ObjString *asString(Value value) {
+  return reinterpret_cast<ObjString *>(AS_OBJ(value));
+}
+inline char *asCString(Value value) { return asString(value)->chars; }
 
 } // namespace cpplox
 

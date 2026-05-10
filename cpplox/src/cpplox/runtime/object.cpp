@@ -137,27 +137,27 @@ static void printFunction(ObjFunction *function) {
   std::printf("<fn %s>", function->name->chars);
 }
 void printObject(Value value) {
-  switch (OBJ_TYPE(value)) {
+  switch (objectType(value)) {
   case OBJ_BOUND_METHOD:
-    printFunction(AS_BOUND_METHOD(value)->method->function);
+    printFunction(asBoundMethod(value)->method->function);
     break;
   case OBJ_CLASS:
-    std::printf("%s", AS_CLASS(value)->name->chars);
+    std::printf("%s", asClass(value)->name->chars);
     break;
   case OBJ_CLOSURE:
-    printFunction(AS_CLOSURE(value)->function);
+    printFunction(asClosure(value)->function);
     break;
   case OBJ_FUNCTION:
-    printFunction(AS_FUNCTION(value));
+    printFunction(asFunction(value));
     break;
   case OBJ_INSTANCE:
-    std::printf("%s instance", AS_INSTANCE(value)->klass->name->chars);
+    std::printf("%s instance", asInstance(value)->klass->name->chars);
     break;
   case OBJ_NATIVE:
     std::printf("<native fn>");
     break;
   case OBJ_STRING:
-    std::printf("%s", AS_CSTRING(value));
+    std::printf("%s", asCString(value));
     break;
   case OBJ_UPVALUE:
     std::printf("upvalue");
