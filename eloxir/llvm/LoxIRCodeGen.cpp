@@ -1,6 +1,6 @@
 #include "LoxIRCodeGen.h"
 
-#include "../codegen/BuiltinsIR.h"
+#include "BuiltinsIR.h"
 #include "../runtime/Value.h"
 
 #include <cstdint>
@@ -45,8 +45,8 @@ public:
   }
 
   std::optional<std::string> emit(const LoxModule &loxModule) {
-    if (!loxModule.findFunction("main")) {
-      return "module does not contain a main function";
+    if (loxModule.functions().empty()) {
+      return "module does not contain any functions";
     }
 
     for (const LoxFunction &function : loxModule.functions()) {
@@ -484,6 +484,18 @@ private:
     }
     if (instruction.symbol.empty()) {
       return unsupported(instruction, "missing local symbol");
+    }
+    if (instruction.declaresSymbol) {
+      auto *allocate = runtime("elx_allocate_value_slot");
+      if (!allocate) {
+        return unsupported(instruction, "missing elx_allocate_value_slot");
+      }
+      auto *slot = builder_.CreateCall(
+          allocate, {lookup(instruction.operands[0])},
+          instruction.symbol + ".slot");
+      locals_[instruction.symbol] = slot;
+      guardRuntimeError();
+      return std::nullopt;
     }
     auto *slot = localSlot(instruction.symbol);
     if (!slot) {

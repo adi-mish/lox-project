@@ -1,27 +1,7 @@
 #include "Stmt.h"
-#include "../codegen/CodeGenVisitor.h"
 #include "Visitor.h"
 
 namespace eloxir {
-
-// Implementations for codegen methods - delegate to visitor
-void Expression::codegen(CodeGenVisitor &cg) { cg.visitExpressionStmt(this); }
-
-void Print::codegen(CodeGenVisitor &cg) { cg.visitPrintStmt(this); }
-
-void Var::codegen(CodeGenVisitor &cg) { cg.visitVarStmt(this); }
-
-void Block::codegen(CodeGenVisitor &cg) { cg.visitBlockStmt(this); }
-
-void If::codegen(CodeGenVisitor &cg) { cg.visitIfStmt(this); }
-
-void While::codegen(CodeGenVisitor &cg) { cg.visitWhileStmt(this); }
-
-void Function::codegen(CodeGenVisitor &cg) { cg.visitFunctionStmt(this); }
-
-void Return::codegen(CodeGenVisitor &cg) { cg.visitReturnStmt(this); }
-
-void Class::codegen(CodeGenVisitor &cg) { cg.visitClassStmt(this); }
 
 // Accept method implementations
 void Expression::accept(StmtVisitor *v) { v->visitExpressionStmt(this); }

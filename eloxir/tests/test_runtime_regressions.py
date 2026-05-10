@@ -114,7 +114,8 @@ class RuntimeRegressionTests(unittest.TestCase):
         result = self._run_fixture("property_call_evaluation_order.lox")
         self.assertEqual(result.returncode, 70)
         self.assertIn("Undefined property 'nope'.", result.stderr)
-        self.assertEqual(result.stdout.strip(), "false")
+        self.assertNotIn("argument evaluated", result.stdout)
+        self.assertEqual(result.stdout.strip(), "")
 
 
 if __name__ == "__main__":

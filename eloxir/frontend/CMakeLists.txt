@@ -7,6 +7,3 @@ add_library(Frontend STATIC
 )
 
 target_include_directories(Frontend PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-
-# Link with CodeGen and Runtime if needed
-# target_link_libraries(Frontend PUBLIC CodeGen Runtime)

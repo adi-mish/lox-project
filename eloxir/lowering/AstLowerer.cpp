@@ -1,9 +1,11 @@
 #include "AstLowerer.h"
 
+#include "../frontend/CompileError.h"
 #include "../frontend/Visitor.h"
 
 #include <algorithm>
 #include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <unordered_map>
 #include <unordered_set>
@@ -54,10 +56,11 @@ public:
                   const std::unordered_map<const Function *,
                                            std::vector<std::string>>
                       *functionUpvalues,
-                  int functionDepth, uint32_t &functionCounter)
+                  int functionDepth, uint32_t &functionCounter,
+                  const std::string &symbolPrefix)
       : module_(module), function_(function), resolvedLocals_(resolvedLocals),
         functionUpvalues_(functionUpvalues), functionDepth_(functionDepth),
-        functionCounter_(functionCounter) {
+        functionCounter_(functionCounter), symbolPrefix_(symbolPrefix) {
     currentBlock_ = function_.addBlock("entry").id();
     pushScope();
     for (const auto &parameter : function_.parameters()) {
@@ -101,6 +104,8 @@ public:
   }
 
   void visitLiteralExpr(Literal *expr) override {
+    recordConstant(expr);
+
     Instruction instruction;
     instruction.result = makeValue();
     if (std::holds_alternative<std::monostate>(expr->value)) {
@@ -177,6 +182,15 @@ public:
     expr->left->accept(this);
     ValueId left = value_;
 
+    const std::string resultSlot = makeTempLocal("logic");
+    Instruction storeLeft;
+    storeLeft.kind = InstructionKind::StoreLocal;
+    storeLeft.source = sourceFromToken(expr->op);
+    storeLeft.symbol = resultSlot;
+    storeLeft.declaresSymbol = true;
+    storeLeft.operands = {left};
+    append(std::move(storeLeft));
+
     Instruction truthy;
     truthy.kind = InstructionKind::IsTruthy;
     truthy.source = sourceFromToken(expr->op);
@@ -204,14 +218,21 @@ public:
     currentBlock_ = rightBlock;
     expr->right->accept(this);
     ValueId right = value_;
+    Instruction storeRight;
+    storeRight.kind = InstructionKind::StoreLocal;
+    storeRight.source = sourceFromToken(expr->op);
+    storeRight.symbol = resultSlot;
+    storeRight.operands = {right};
+    append(std::move(storeRight));
     emitJump(endBlock);
 
     currentBlock_ = endBlock;
-    Instruction phi;
-    phi.kind = InstructionKind::Phi;
-    phi.result = makeValue();
-    phi.operands = {left, right};
-    append(std::move(phi));
+    Instruction loadResult;
+    loadResult.kind = InstructionKind::LoadLocal;
+    loadResult.source = sourceFromToken(expr->op);
+    loadResult.result = makeValue();
+    loadResult.symbol = resultSlot;
+    append(std::move(loadResult));
   }
 
   void visitCallExpr(Call *expr) override {
@@ -236,12 +257,13 @@ public:
 
   void visitGetExpr(Get *expr) override {
     expr->object->accept(this);
+    ValueId object = value_;
     Instruction instruction;
     instruction.kind = InstructionKind::GetProperty;
     instruction.source = sourceFromToken(expr->name);
     instruction.result = makeValue();
     instruction.symbol = expr->name.getLexeme();
-    instruction.operands = {value_};
+    instruction.operands = {object};
     append(std::move(instruction));
   }
 
@@ -327,7 +349,7 @@ public:
     instruction.source = sourceFromToken(stmt->name);
     instruction.symbol = topLevel ? stmt->name.getLexeme()
                                   : declareLocal(stmt->name.getLexeme());
-    instruction.declaresSymbol = topLevel;
+    instruction.declaresSymbol = true;
     instruction.operands = {initial};
     append(std::move(instruction));
   }
@@ -424,6 +446,7 @@ public:
       placeholder.kind = InstructionKind::StoreLocal;
       placeholder.source = sourceFromToken(stmt->name);
       placeholder.symbol = localSymbol;
+      placeholder.declaresSymbol = true;
       placeholder.operands = {value_};
       append(std::move(placeholder));
     }
@@ -439,7 +462,7 @@ public:
 
     FunctionLowerer childLowerer(module_, child, resolvedLocals_,
                                  functionUpvalues_, functionDepth_ + 1,
-                                 functionCounter_);
+                                 functionCounter_, symbolPrefix_);
     if (stmt->body) {
       childLowerer.lower(stmt->body->statements);
     }
@@ -449,7 +472,7 @@ public:
     instruction.source = sourceFromToken(stmt->name);
     instruction.result = makeValue();
     instruction.resultType = LoxType::Function;
-    instruction.symbol = stmt->name.getLexeme();
+    instruction.symbol = child.name();
     append(std::move(instruction));
 
     Instruction store;
@@ -492,6 +515,7 @@ public:
       placeholder.kind = InstructionKind::StoreLocal;
       placeholder.source = sourceFromToken(stmt->name);
       placeholder.symbol = classSymbol;
+      placeholder.declaresSymbol = true;
       placeholder.operands = {value_};
       append(std::move(placeholder));
     }
@@ -508,6 +532,7 @@ public:
       superStore.kind = InstructionKind::StoreLocal;
       superStore.source = sourceFromToken(stmt->name);
       superStore.symbol = superSymbol;
+      superStore.declaresSymbol = true;
       superStore.operands = {value_};
       append(std::move(superStore));
     }
@@ -549,7 +574,7 @@ public:
 
       FunctionLowerer methodLowerer(module_, methodFn, resolvedLocals_,
                                     functionUpvalues_, functionDepth_ + 1,
-                                    functionCounter_);
+                                    functionCounter_, symbolPrefix_);
       if (method->body) {
         methodLowerer.lower(method->body->statements);
       }
@@ -589,7 +614,10 @@ private:
   std::vector<std::unordered_map<std::string, std::string>> localScopes_;
   std::unordered_map<std::string, uint32_t> upvalueIndices_;
   uint32_t nextLocalId_ = 0;
+  uint32_t constantCount_ = 0;
   uint32_t &functionCounter_;
+  const std::string &symbolPrefix_;
+  static constexpr uint32_t kMaxConstants = 256;
 
   bool isTopLevel() const {
     return functionDepth_ == 0 && blockDepth_ == 0;
@@ -610,6 +638,10 @@ private:
     std::string symbol = name + "$" + std::to_string(nextLocalId_++);
     localScopes_.back()[name] = symbol;
     return symbol;
+  }
+
+  std::string makeTempLocal(const std::string &name) {
+    return name + "$tmp" + std::to_string(nextLocalId_++);
   }
 
   std::string lookupLocal(const std::string &name) const {
@@ -633,7 +665,34 @@ private:
   }
 
   std::string uniqueFunctionName(const std::string &base) {
-    return base + "$fn" + std::to_string(functionCounter_++);
+    return symbolPrefix_ + base + "$fn" + std::to_string(functionCounter_++);
+  }
+
+  void recordConstant(const Literal *literal) {
+    const bool isPoolConstant = std::holds_alternative<double>(literal->value) ||
+                                std::holds_alternative<std::string>(
+                                    literal->value);
+    if (!isPoolConstant) {
+      return;
+    }
+    if (constantCount_ >= kMaxConstants) {
+      throw CompileError("Error at '" + literalLexeme(literal) +
+                         "': Too many constants in one chunk.");
+    }
+    ++constantCount_;
+  }
+
+  static std::string literalLexeme(const Literal *literal) {
+    if (const auto *number = std::get_if<double>(&literal->value)) {
+      std::ostringstream out;
+      out.precision(15);
+      out << *number;
+      return out.str();
+    }
+    if (const auto *text = std::get_if<std::string>(&literal->value)) {
+      return "\"" + *text + "\"";
+    }
+    return "literal";
   }
 
   std::vector<std::string> resolverUpvaluesFor(const Function *function,
@@ -659,6 +718,14 @@ private:
                                         });
                                   }),
                    upvalues.end());
+
+    if (!isMethod &&
+        std::find(upvalues.begin(), upvalues.end(), "super") !=
+            upvalues.end() &&
+        std::find(upvalues.begin(), upvalues.end(), "this") ==
+            upvalues.end()) {
+      upvalues.push_back("this");
+    }
 
     std::vector<std::string> unique;
     std::unordered_set<std::string> seen;
@@ -760,17 +827,20 @@ private:
 AstLowerer::AstLowerer(
     const std::unordered_map<const Expr *, int> *resolvedLocals,
     const std::unordered_map<const Function *, std::vector<std::string>>
-        *functionUpvalues)
-    : resolvedLocals_(resolvedLocals), functionUpvalues_(functionUpvalues) {}
+        *functionUpvalues,
+    std::string symbolPrefix)
+    : resolvedLocals_(resolvedLocals), functionUpvalues_(functionUpvalues),
+      symbolPrefix_(std::move(symbolPrefix)) {}
 
 LoxModule
 AstLowerer::lower(const std::string &moduleName,
-                  const std::vector<std::unique_ptr<Stmt>> &statements) {
+                  const std::vector<std::unique_ptr<Stmt>> &statements,
+                  const std::string &entryName) {
   LoxModule module(moduleName);
-  LoxFunction &main = module.addFunction("main");
+  LoxFunction &main = module.addFunction(entryName);
   uint32_t functionCounter = 0;
   FunctionLowerer lowerer(module, main, resolvedLocals_, functionUpvalues_, 0,
-                          functionCounter);
+                          functionCounter, symbolPrefix_);
   lowerer.lower(statements);
   return module;
 }

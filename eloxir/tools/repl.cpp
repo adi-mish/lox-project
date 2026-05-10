@@ -1,5 +1,3 @@
-#include "../codegen/CodeGenVisitor.h"
-#include "../codegen/CodeGenPlan.h"
 #include "../frontend/CompileError.h"
 #include "../frontend/Parser.h"
 #include "../frontend/Resolver.h"
@@ -16,15 +14,11 @@
 #include <initializer_list>
 #include <iostream>
 #include <cstdlib>
-#include <llvm/IR/PassManager.h>
 #include <llvm/IR/Verifier.h>
 #include <llvm/Support/TargetSelect.h>
-#include <llvm/Transforms/Utils/Cloning.h>
 #include <memory>
 #include <sstream>
 #include <string>
-#include <unordered_map>
-#include <unordered_set>
 #include <variant>
 
 using namespace llvm;
@@ -180,140 +174,6 @@ private:
   void appendPart(std::string &builder, const std::string &text) {
     builder.push_back(' ');
     builder += text;
-  }
-};
-
-class GlobalSyncCollector : public eloxir::ExprVisitor,
-                            public eloxir::StmtVisitor {
-public:
-  explicit GlobalSyncCollector(
-      const std::unordered_map<const eloxir::Expr *, int> &resolvedLocals)
-      : resolvedLocals(resolvedLocals) {}
-
-  std::unordered_set<std::string>
-  collect(const std::vector<std::unique_ptr<eloxir::Stmt>> &statements) {
-    for (const auto &stmt : statements) {
-      visit(stmt.get());
-    }
-    return globals;
-  }
-
-  void visitBinaryExpr(eloxir::Binary *expr) override {
-    visit(expr->left.get());
-    visit(expr->right.get());
-  }
-
-  void visitGroupingExpr(eloxir::Grouping *expr) override {
-    visit(expr->expression.get());
-  }
-
-  void visitLiteralExpr(eloxir::Literal *) override {}
-
-  void visitUnaryExpr(eloxir::Unary *expr) override {
-    visit(expr->right.get());
-  }
-
-  void visitVariableExpr(eloxir::Variable *expr) override {
-    if (functionDepth > 0 &&
-        resolvedLocals.find(expr) == resolvedLocals.end()) {
-      const auto &name = expr->name.getLexeme();
-      if (name != "clock" && name != "readLine") {
-        globals.insert(name);
-      }
-    }
-  }
-
-  void visitAssignExpr(eloxir::Assign *expr) override {
-    visit(expr->value.get());
-    if (functionDepth > 0 &&
-        resolvedLocals.find(expr) == resolvedLocals.end()) {
-      globals.insert(expr->name.getLexeme());
-    }
-  }
-
-  void visitLogicalExpr(eloxir::Logical *expr) override {
-    visit(expr->left.get());
-    visit(expr->right.get());
-  }
-
-  void visitCallExpr(eloxir::Call *expr) override {
-    visit(expr->callee.get());
-    for (const auto &arg : expr->arguments) {
-      visit(arg.get());
-    }
-  }
-
-  void visitGetExpr(eloxir::Get *expr) override { visit(expr->object.get()); }
-
-  void visitSetExpr(eloxir::Set *expr) override {
-    visit(expr->object.get());
-    visit(expr->value.get());
-  }
-
-  void visitThisExpr(eloxir::This *) override {}
-  void visitSuperExpr(eloxir::Super *) override {}
-
-  void visitExpressionStmt(eloxir::Expression *stmt) override {
-    visit(stmt->expression.get());
-  }
-
-  void visitPrintStmt(eloxir::Print *stmt) override {
-    visit(stmt->expression.get());
-  }
-
-  void visitVarStmt(eloxir::Var *stmt) override {
-    visit(stmt->initializer.get());
-  }
-
-  void visitBlockStmt(eloxir::Block *stmt) override {
-    for (const auto &inner : stmt->statements) {
-      visit(inner.get());
-    }
-  }
-
-  void visitIfStmt(eloxir::If *stmt) override {
-    visit(stmt->condition.get());
-    visit(stmt->thenBranch.get());
-    visit(stmt->elseBranch.get());
-  }
-
-  void visitWhileStmt(eloxir::While *stmt) override {
-    visit(stmt->condition.get());
-    visit(stmt->body.get());
-  }
-
-  void visitFunctionStmt(eloxir::Function *stmt) override {
-    ++functionDepth;
-    if (stmt->body) {
-      visitBlockStmt(stmt->body.get());
-    }
-    --functionDepth;
-  }
-
-  void visitReturnStmt(eloxir::Return *stmt) override {
-    visit(stmt->value.get());
-  }
-
-  void visitClassStmt(eloxir::Class *stmt) override {
-    visit(stmt->superclass.get());
-    for (const auto &method : stmt->methods) {
-      visitFunctionStmt(method.get());
-    }
-  }
-
-private:
-  const std::unordered_map<const eloxir::Expr *, int> &resolvedLocals;
-  std::unordered_set<std::string> globals;
-  int functionDepth = 0;
-
-  void visit(eloxir::Expr *expr) {
-    if (expr)
-      expr->accept(this);
-  }
-
-  void visit(eloxir::Stmt *stmt) {
-    if (stmt)
-      stmt->accept(this);
   }
 };
 
@@ -557,178 +417,83 @@ int runFile(const std::string &filename) {
     std::cerr << "Resolution error: " << e.what() << '\n';
     return static_cast<int>(ExitCode::kCompileError);
   }
-  auto runtimeSyncedGlobals =
-      GlobalSyncCollector(resolver.locals).collect(stmts);
-  auto codeGenPlan = eloxir::CodeGenPlan::analyze(stmts);
-
-  const bool useLoxIRBackend =
-      eloxir::loxir::loxirEnvFlag("ELOXIR_USE_LOXIR_BACKEND");
-  const bool wantLoxIR =
-      useLoxIRBackend || eloxir::loxir::loxirEnvFlag("ELOXIR_PRINT_LOXIR") ||
-      std::getenv("ELOXIR_DUMP_LOXIR") != nullptr;
   const bool traceLoxIR =
       eloxir::loxir::loxirEnvFlag("ELOXIR_TRACE_PASSES") ||
       eloxir::loxir::loxirEnvFlag("ELOXIR_PRINT_LOXIR") ||
       std::getenv("ELOXIR_DUMP_LOXIR") != nullptr;
-  bool loxIRVerified = true;
   std::unique_ptr<eloxir::loxir::LoxModule> loxModule;
-  if (wantLoxIR) {
+  try {
     eloxir::loxir::AstLowerer lowerer(&resolver.locals,
                                        &resolver.function_upvalues);
     loxModule = std::make_unique<eloxir::loxir::LoxModule>(
         lowerer.lower("file_module", stmts));
-    if (hasOversizedLoxIRBlock(*loxModule)) {
-      loxIRVerified = false;
-      if (traceLoxIR) {
-        std::cerr << "eloxir-loxir: falling back to legacy LLVM backend: "
-                     "oversized block needs legacy diagnostics\n";
-      }
-    }
-    auto verification = eloxir::loxir::verifyModule(*loxModule);
-    if (!verification.ok) {
-      loxIRVerified = false;
-      if (traceLoxIR) {
-        std::cerr << "LoxIR verification warnings:\n";
-        for (const auto &message : verification.errors) {
-          std::cerr << "  " << message << '\n';
-        }
-      }
-    }
-    eloxir::loxir::dumpModuleIfRequested(*loxModule, "lowered");
-
-    auto passManager = eloxir::loxir::createDefaultLoxPassPipeline();
-    passManager.run(*loxModule);
-    auto optimizedVerification = eloxir::loxir::verifyModule(*loxModule);
-    if (!optimizedVerification.ok) {
-      loxIRVerified = false;
-      if (traceLoxIR) {
-        std::cerr << "Optimized LoxIR verification warnings:\n";
-        for (const auto &message : optimizedVerification.errors) {
-          std::cerr << "  " << message << '\n';
-        }
-      }
-    }
-    eloxir::loxir::dumpModuleIfRequested(*loxModule, "optimized");
+  } catch (const eloxir::CompileError &e) {
+    std::cerr << "Compile error: " << e.what() << '\n';
+    return static_cast<int>(ExitCode::kCompileError);
+  } catch (const std::runtime_error &e) {
+    std::cerr << "Compile error: " << e.what() << '\n';
+    return static_cast<int>(ExitCode::kCompileError);
   }
+  if (hasOversizedLoxIRBlock(*loxModule)) {
+    std::cerr << "Compile error: Loop body too large.\n";
+    return static_cast<int>(ExitCode::kCompileError);
+  }
+
+  eloxir::loxir::dumpModuleIfRequested(*loxModule, "lowered");
+  auto verification = eloxir::loxir::verifyModule(*loxModule);
+  if (!verification.ok) {
+    if (traceLoxIR) {
+      std::cerr << "LoxIR verification warnings:\n";
+      for (const auto &message : verification.errors) {
+        std::cerr << "  " << message << '\n';
+      }
+    }
+    return static_cast<int>(ExitCode::kCompileError);
+  }
+
+  auto passManager = eloxir::loxir::createDefaultLoxPassPipeline();
+  passManager.run(*loxModule);
+  auto optimizedVerification = eloxir::loxir::verifyModule(*loxModule);
+  if (!optimizedVerification.ok) {
+    if (traceLoxIR) {
+      std::cerr << "Optimized LoxIR verification warnings:\n";
+      for (const auto &message : optimizedVerification.errors) {
+        std::cerr << "  " << message << '\n';
+      }
+    }
+    return static_cast<int>(ExitCode::kCompileError);
+  }
+  eloxir::loxir::dumpModuleIfRequested(*loxModule, "optimized");
 
   // Clear any previous runtime errors
   elx_clear_runtime_error();
 
   try {
-    if (useLoxIRBackend && loxModule && loxIRVerified) {
-      auto jit = cantFail(eloxir::EloxirJIT::Create());
-      auto fileCtx = std::make_unique<LLVMContext>();
-      auto fileMod = std::make_unique<Module>("file_module", *fileCtx);
-      fileMod->setDataLayout(jit->getDataLayout());
-      fileMod->setTargetTriple(jit->getTargetTriple().str());
-
-      auto unsupported =
-          eloxir::loxir::emitLoxIRModuleToLLVM(*loxModule, *fileMod);
-      if (!unsupported) {
-        if (llvm::verifyModule(*fileMod, &llvm::errs())) {
-          std::cerr << "Generated invalid LoxIR LLVM module. Cannot execute.\n";
-          return static_cast<int>(ExitCode::kCompileError);
-        }
-
-        cantFail(jit->addModule(
-            makeThreadSafeModule(std::move(fileMod), std::move(fileCtx))));
-        auto sym = cantFail(jit->lookup("main"));
-        using FnTy = uint64_t (*)();
-        reinterpret_cast<FnTy>(sym.getAddress())();
-
-        if (elx_has_runtime_error()) {
-          elx_clear_runtime_error();
-          return static_cast<int>(ExitCode::kRuntimeError);
-        }
-        return static_cast<int>(ExitCode::kOk);
-      }
-
-      if (eloxir::loxir::loxirEnvFlag("ELOXIR_TRACE_PASSES")) {
-        std::cerr << "eloxir-loxir: falling back to legacy LLVM backend: "
-                  << *unsupported << '\n';
-      }
-      elx_clear_runtime_error();
-    } else if (useLoxIRBackend && loxModule && !loxIRVerified &&
-               traceLoxIR) {
-      std::cerr << "eloxir-loxir: falling back to legacy LLVM backend: "
-                   "LoxIR verification failed\n";
-    }
-
     auto jit = cantFail(eloxir::EloxirJIT::Create());
-
-    // Create context and module for the entire file
     auto fileCtx = std::make_unique<LLVMContext>();
     auto fileMod = std::make_unique<Module>("file_module", *fileCtx);
     fileMod->setDataLayout(jit->getDataLayout());
     fileMod->setTargetTriple(jit->getTargetTriple().str());
-    eloxir::CodeGenVisitor fileCG(*fileMod);
 
-    // Pass resolver upvalue information to code generator
-    fileCG.setResolverUpvalues(&resolver.function_upvalues);
-    fileCG.setResolverLocals(&resolver.locals);
-    fileCG.setRuntimeSyncedGlobals(std::move(runtimeSyncedGlobals));
-    fileCG.setCodeGenPlan(&codeGenPlan);
-
-    // Create main function
-    auto fnTy = FunctionType::get(fileCG.llvmValueTy(), {}, false);
-    auto fn =
-        Function::Create(fnTy, Function::ExternalLinkage, "main", *fileMod);
-    fileCG.getBuilder().SetInsertPoint(
-        BasicBlock::Create(*fileCtx, "entry", fn));
-
-    // Generate code for all statements with two-pass approach for functions
-    llvm::Value *lastValue = nullptr;
-
-    // Create a nil literal to get a nil constant
-    auto nilLiteral = std::make_unique<eloxir::Literal>(std::monostate{});
-    nilLiteral->accept(&fileCG);
-    lastValue = fileCG.value; // This will be nil
-
-    // Pass 1: Declare all function signatures
-    for (auto &stmt : stmts) {
-      if (auto funcStmt = dynamic_cast<eloxir::Function *>(stmt.get())) {
-        fileCG.declareFunctionSignature(funcStmt);
-      }
-    }
-
-    // Pass 2: Process all statements (including function bodies)
-    for (auto &stmt : stmts) {
-      stmt->accept(&fileCG);
-      if (fileCG.value != nullptr) {
-        lastValue = fileCG.value;
-      }
-    }
-
-    // Return the last value (or nil if no expression result)
-    fileCG.getBuilder().CreateRet(lastValue);
-
-    // Verify the function before executing
-    if (llvm::verifyFunction(*fn, &llvm::errs())) {
-      std::cerr << "Generated invalid LLVM IR. Cannot execute.\n";
+    auto unsupported =
+        eloxir::loxir::emitLoxIRModuleToLLVM(*loxModule, *fileMod);
+    if (unsupported) {
+      std::cerr << "Compile error: " << *unsupported << '\n';
       return static_cast<int>(ExitCode::kCompileError);
     }
 
-    // After the main function is complete, create function objects at global
-    // scope The builder is now outside any function
-    fileCG.createGlobalFunctionObjects();
+    if (llvm::verifyModule(*fileMod, &llvm::errs())) {
+      std::cerr << "Generated invalid LoxIR LLVM module. Cannot execute.\n";
+      return static_cast<int>(ExitCode::kCompileError);
+    }
 
     cantFail(jit->addModule(
         makeThreadSafeModule(std::move(fileMod), std::move(fileCtx))));
-
-    // First, run the global initialization function if it exists
-    auto initSymOpt = jit->lookup("__global_init");
-    if (initSymOpt) {
-      using InitFnTy = void (*)();
-      reinterpret_cast<InitFnTy>(initSymOpt->getAddress())();
-    }
-
     auto sym = cantFail(jit->lookup("main"));
-    using FnTy = eloxir::Value (*)();
+    using FnTy = uint64_t (*)();
     reinterpret_cast<FnTy>(sym.getAddress())();
 
-    // Check for runtime errors after execution
     if (elx_has_runtime_error()) {
-      // Error already printed by runtime, just clear it
       elx_clear_runtime_error();
       return static_cast<int>(ExitCode::kRuntimeError);
     }
@@ -801,44 +566,51 @@ void runREPL() {
     if (!exprAST)
       continue;
 
-    // Resolve the statement
     eloxir::Resolver resolver;
+    std::vector<std::unique_ptr<eloxir::Stmt>> stmts;
+    stmts.push_back(std::move(exprAST));
     try {
-      std::vector<std::unique_ptr<eloxir::Stmt>> stmts;
-      stmts.push_back(std::move(exprAST));
       resolver.resolve(stmts);
-      exprAST = std::move(stmts[0]);
     } catch (const std::runtime_error &e) {
       std::cerr << "Resolution error: " << e.what() << '\n';
       continue;
     }
 
     try {
-      // Create a new context and module for each line
+      std::string fnName = "__expr" + std::to_string(lineCount++);
+      eloxir::loxir::AstLowerer lowerer(&resolver.locals,
+                                         &resolver.function_upvalues,
+                                         fnName + "$");
+      auto loxModule = lowerer.lower("repl_line", stmts, fnName);
+
+      auto verification = eloxir::loxir::verifyModule(loxModule);
+      if (!verification.ok) {
+        std::cerr << "Generated invalid LoxIR. Skipping execution.\n";
+        continue;
+      }
+      eloxir::loxir::dumpModuleIfRequested(loxModule, "lowered");
+
+      auto passManager = eloxir::loxir::createDefaultLoxPassPipeline();
+      passManager.run(loxModule);
+      auto optimizedVerification = eloxir::loxir::verifyModule(loxModule);
+      if (!optimizedVerification.ok) {
+        std::cerr << "Generated invalid optimized LoxIR. Skipping execution.\n";
+        continue;
+      }
+      eloxir::loxir::dumpModuleIfRequested(loxModule, "optimized");
+
       auto lineCtx = std::make_unique<LLVMContext>();
       auto lineMod = std::make_unique<Module>("repl_line", *lineCtx);
       lineMod->setDataLayout(jit->getDataLayout());
       lineMod->setTargetTriple(jit->getTargetTriple().str());
-      eloxir::CodeGenVisitor lineCG(*lineMod);
 
-      // Pass resolver upvalue information to code generator
-      lineCG.setResolverUpvalues(&resolver.function_upvalues);
-      lineCG.setResolverLocals(&resolver.locals);
-
-      // wrap in unique function name to avoid duplicates
-      std::string fnName = "__expr" + std::to_string(lineCount++);
-      auto fnTy = FunctionType::get(lineCG.llvmValueTy(), {}, false);
-      auto fn =
-          Function::Create(fnTy, Function::ExternalLinkage, fnName, *lineMod);
-      lineCG.getBuilder().SetInsertPoint(
-          BasicBlock::Create(*lineCtx, "entry", fn));
-
-      // Generate code for the statement/expression
-      exprAST->codegen(lineCG);
-      lineCG.getBuilder().CreateRet(lineCG.value);
-
-      // Verify the function before executing
-      if (llvm::verifyFunction(*fn, &llvm::errs())) {
+      auto unsupported =
+          eloxir::loxir::emitLoxIRModuleToLLVM(loxModule, *lineMod);
+      if (unsupported) {
+        std::cerr << "Compile error: " << *unsupported << '\n';
+        continue;
+      }
+      if (llvm::verifyModule(*lineMod, &llvm::errs())) {
         std::cerr << "Generated invalid LLVM IR. Skipping execution.\n";
         continue;
       }
@@ -847,7 +619,7 @@ void runREPL() {
           makeThreadSafeModule(std::move(lineMod), std::move(lineCtx))));
 
       auto sym = cantFail(jit->lookup(fnName));
-      using FnTy = eloxir::Value (*)();
+      using FnTy = uint64_t (*)();
       reinterpret_cast<FnTy>(sym.getAddress())();
 
       // Check for runtime errors after execution
