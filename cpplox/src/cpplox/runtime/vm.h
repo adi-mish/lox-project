@@ -12,11 +12,17 @@ namespace cpplox {
 #define FRAMES_MAX 64
 #define STACK_MAX (FRAMES_MAX * UINT8_COUNT)
 
-typedef enum {
-  INTERPRET_OK,
-  INTERPRET_COMPILE_ERROR,
-  INTERPRET_RUNTIME_ERROR
-} InterpretResult;
+enum class InterpretResult : uint8_t {
+  Ok,
+  CompileError,
+  RuntimeError
+};
+
+inline constexpr InterpretResult INTERPRET_OK = InterpretResult::Ok;
+inline constexpr InterpretResult INTERPRET_COMPILE_ERROR =
+    InterpretResult::CompileError;
+inline constexpr InterpretResult INTERPRET_RUNTIME_ERROR =
+    InterpretResult::RuntimeError;
 
 struct CallFrame {
   ObjClosure *closure;

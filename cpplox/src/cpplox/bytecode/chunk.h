@@ -22,7 +22,7 @@ inline constexpr InlineCacheKind CACHE_GLOBAL = InlineCacheKind::Global;
 inline constexpr InlineCacheKind CACHE_FIELD = InlineCacheKind::Field;
 inline constexpr InlineCacheKind CACHE_METHOD = InlineCacheKind::Method;
 
-typedef struct {
+struct InlineCache {
   InlineCacheKind kind;
   ObjString *key;
   Entry *entry;
@@ -33,7 +33,7 @@ typedef struct {
   int entryIndex;
   int tableCapacity;
   Value value;
-} InlineCache;
+};
 
 enum class Opcode : uint8_t {
   Constant,

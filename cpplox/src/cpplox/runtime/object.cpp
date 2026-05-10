@@ -14,7 +14,7 @@ namespace cpplox {
 #define ALLOCATE_OBJ(vm, type, objectType)                                     \
   (type *)allocateObject((vm), sizeof(type), objectType)
 
-static Obj *allocateObject(Vm &vm, size_t size, ObjType type) {
+static Obj *allocateObject(Vm &vm, size_t size, ObjectKind type) {
   Obj *object = (Obj *)reallocate(NULL, 0, size);
   object->type = type;
   object->isMarked = false;
@@ -23,7 +23,8 @@ static Obj *allocateObject(Vm &vm, size_t size, ObjType type) {
   vm.objects = object;
 
 #ifdef DEBUG_LOG_GC
-  printf("%p allocate %zu for %d\n", (void *)object, size, type);
+  printf("%p allocate %zu for %d\n", (void *)object, size,
+         objectKindIndex(type));
 #endif
 
   return object;

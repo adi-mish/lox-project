@@ -15,14 +15,14 @@
 
 namespace cpplox {
 
-typedef struct {
+struct Parser {
   Token current;
   Token previous;
-  bool hadError;
-  bool panicMode;
-} Parser;
+  bool hadError = false;
+  bool panicMode = false;
+};
 
-typedef enum {
+enum Precedence {
   PREC_NONE,
   PREC_ASSIGNMENT,
   PREC_OR,
@@ -34,34 +34,39 @@ typedef enum {
   PREC_UNARY,
   PREC_CALL,
   PREC_PRIMARY
-} Precedence;
+};
 
-typedef void (*ParseFn)(bool canAssign);
+using ParseFn = void (*)(bool canAssign);
 
-typedef struct {
+struct ParseRule {
   ParseFn prefix;
   ParseFn infix;
   Precedence precedence;
-} ParseRule;
+};
 
-typedef struct {
+struct Local {
   Token name;
   int depth = 0;
   bool isCaptured = false;
-} Local;
-typedef struct {
+};
+struct Upvalue {
   uint8_t index = 0;
   bool isLocal = false;
-} Upvalue;
-typedef enum {
-  TYPE_FUNCTION,
-  TYPE_INITIALIZER,
-  TYPE_METHOD,
-  TYPE_SCRIPT
-} FunctionType;
+};
+enum class FunctionType : uint8_t {
+  Function,
+  Initializer,
+  Method,
+  Script
+};
 
-typedef struct Compiler {
-  struct Compiler *enclosing;
+inline constexpr FunctionType TYPE_FUNCTION = FunctionType::Function;
+inline constexpr FunctionType TYPE_INITIALIZER = FunctionType::Initializer;
+inline constexpr FunctionType TYPE_METHOD = FunctionType::Method;
+inline constexpr FunctionType TYPE_SCRIPT = FunctionType::Script;
+
+struct FunctionCompiler {
+  FunctionCompiler *enclosing;
   ObjFunction *function;
   FunctionType type;
 
@@ -70,21 +75,21 @@ typedef struct Compiler {
   std::array<Upvalue, UINT8_COUNT> upvalues;
   int scopeDepth;
   int logicalByteCount;
-} Compiler;
+};
 
-typedef struct {
+struct LoopStart {
   int code;
   int logical;
-} LoopStart;
+};
 
-typedef struct ClassCompiler {
-  struct ClassCompiler *enclosing;
+struct ClassCompiler {
+  ClassCompiler *enclosing;
   bool hasSuperclass;
-} ClassCompiler;
+};
 
 Parser parser;
 static Scanner scanner;
-Compiler *current = NULL;
+FunctionCompiler *current = NULL;
 ClassCompiler *currentClass = NULL;
 static Vm *compilingVm = NULL;
 static std::array<ObjString *, UINT8_COUNT> knownGlobals;
@@ -216,7 +221,7 @@ static void patchJump(int offset) {
   currentChunk()->byteAt(offset + 1) = jump & 0xff;
 }
 
-static void initCompiler(Compiler *compiler, FunctionType type) {
+static void initCompiler(FunctionCompiler *compiler, FunctionType type) {
   compiler->enclosing = current;
   compiler->function = NULL;
   compiler->type = type;
@@ -377,7 +382,7 @@ static bool identifiersEqual(Token *a, Token *b) {
     return false;
   return memcmp(a->start, b->start, a->length) == 0;
 }
-static int resolveLocal(Compiler *compiler, Token *name) {
+static int resolveLocal(FunctionCompiler *compiler, Token *name) {
   for (int i = compiler->localCount - 1; i >= 0; i--) {
     Local *local = &compiler->locals[i];
     if (identifiersEqual(name, &local->name)) {
@@ -390,7 +395,7 @@ static int resolveLocal(Compiler *compiler, Token *name) {
 
   return -1;
 }
-static int addUpvalue(Compiler *compiler, uint8_t index, bool isLocal) {
+static int addUpvalue(FunctionCompiler *compiler, uint8_t index, bool isLocal) {
   int upvalueCount = compiler->function->upvalueCount;
 
   for (int i = 0; i < upvalueCount; i++) {
@@ -409,7 +414,7 @@ static int addUpvalue(Compiler *compiler, uint8_t index, bool isLocal) {
   compiler->upvalues[upvalueCount].index = index;
   return compiler->function->upvalueCount++;
 }
-static int resolveUpvalue(Compiler *compiler, Token *name) {
+static int resolveUpvalue(FunctionCompiler *compiler, Token *name) {
   if (compiler->enclosing == NULL)
     return -1;
 
@@ -784,7 +789,7 @@ static void block() {
   consume(TOKEN_RIGHT_BRACE, "Expect '}' after block.");
 }
 static void function(FunctionType type) {
-  Compiler compiler;
+  FunctionCompiler compiler;
   initCompiler(&compiler, type);
   beginScope();
 
@@ -1061,7 +1066,7 @@ ObjFunction *compile(Vm &vm, const char *source) {
   scanner.reset(source);
   knownGlobalCount = 0;
 
-  Compiler compiler;
+  FunctionCompiler compiler;
 
   initCompiler(&compiler, TYPE_SCRIPT);
 
@@ -1079,7 +1084,7 @@ ObjFunction *compile(Vm &vm, const char *source) {
   return parser.hadError ? NULL : function;
 }
 void markCompilerRoots() {
-  Compiler *compiler = current;
+  FunctionCompiler *compiler = current;
   while (compiler != NULL) {
     markObject((Obj *)compiler->function);
     compiler = compiler->enclosing;

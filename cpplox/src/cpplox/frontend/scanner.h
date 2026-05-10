@@ -97,12 +97,12 @@ inline constexpr int tokenIndex(TokenType type) {
   return static_cast<int>(type);
 }
 
-typedef struct {
+struct Token {
   TokenType type;
   const char *start;
   int length;
   int line;
-} Token;
+};
 
 class Scanner {
 public:

@@ -27,37 +27,50 @@ namespace cpplox {
 #define AS_STRING(value) ((ObjString *)AS_OBJ(value))
 #define AS_CSTRING(value) (((ObjString *)AS_OBJ(value))->chars)
 
-typedef enum {
-  OBJ_BOUND_METHOD,
-  OBJ_CLASS,
-  OBJ_CLOSURE,
-  OBJ_FUNCTION,
-  OBJ_INSTANCE,
-  OBJ_NATIVE,
-  OBJ_STRING,
-  OBJ_UPVALUE
-} ObjType;
-
-struct Obj {
-  ObjType type;
-  bool isMarked;
-  struct Obj *next;
+enum class ObjectKind : uint8_t {
+  BoundMethod,
+  Class,
+  Closure,
+  Function,
+  Instance,
+  Native,
+  String,
+  Upvalue
 };
 
-typedef struct {
+inline constexpr ObjectKind OBJ_BOUND_METHOD = ObjectKind::BoundMethod;
+inline constexpr ObjectKind OBJ_CLASS = ObjectKind::Class;
+inline constexpr ObjectKind OBJ_CLOSURE = ObjectKind::Closure;
+inline constexpr ObjectKind OBJ_FUNCTION = ObjectKind::Function;
+inline constexpr ObjectKind OBJ_INSTANCE = ObjectKind::Instance;
+inline constexpr ObjectKind OBJ_NATIVE = ObjectKind::Native;
+inline constexpr ObjectKind OBJ_STRING = ObjectKind::String;
+inline constexpr ObjectKind OBJ_UPVALUE = ObjectKind::Upvalue;
+
+inline constexpr int objectKindIndex(ObjectKind kind) {
+  return static_cast<int>(kind);
+}
+
+struct Obj {
+  ObjectKind type;
+  bool isMarked;
+  Obj *next;
+};
+
+struct ObjFunction {
   Obj obj;
   int arity;
   int upvalueCount;
   Chunk chunk;
   ObjString *name;
-} ObjFunction;
+};
 
-typedef Value (*NativeFn)(int argCount, Value *args);
+using NativeFn = Value (*)(int argCount, Value *args);
 
-typedef struct {
+struct ObjNative {
   Obj obj;
   NativeFn function;
-} ObjNative;
+};
 
 struct ObjString {
   Obj obj;
@@ -65,20 +78,20 @@ struct ObjString {
   char *chars;
   uint32_t hash;
 };
-typedef struct ObjUpvalue {
+struct ObjUpvalue {
   Obj obj;
   Value *location;
   Value closed;
-  struct ObjUpvalue *next;
-} ObjUpvalue;
-typedef struct {
+  ObjUpvalue *next;
+};
+struct ObjClosure {
   Obj obj;
   ObjFunction *function;
   ObjUpvalue **upvalues;
   int upvalueCount;
-} ObjClosure;
+};
 
-typedef struct {
+struct ObjClass {
   Obj obj;
   ObjString *name;
   Table methods;
@@ -86,24 +99,24 @@ typedef struct {
   Table fieldSlots;
   int fieldSlotCount;
   uint32_t fieldVersion;
-} ObjClass;
+};
 
-typedef struct {
+struct ObjInstance {
   Obj obj;
   ObjClass *klass;
   Value *fields;
   int fieldCapacity;
-} ObjInstance;
+};
 
-typedef struct {
+struct ObjBoundMethod {
   Obj obj;
   Value receiver;
   ObjClosure *method;
-} ObjBoundMethod;
+};
 
 void printObject(Value value);
 
-static inline bool isObjType(Value value, ObjType type) {
+static inline bool isObjType(Value value, ObjectKind type) {
   return IS_OBJ(value) && AS_OBJ(value)->type == type;
 }
 

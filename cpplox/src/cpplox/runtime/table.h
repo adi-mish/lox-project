@@ -8,10 +8,10 @@
 
 namespace cpplox {
 
-typedef struct Entry {
+struct Entry {
   ObjString *key = nullptr;
   Value value = NIL_VAL;
-} Entry;
+};
 
 class Table {
 public:

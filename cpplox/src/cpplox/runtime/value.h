@@ -1,15 +1,15 @@
 #ifndef clox_value_h
 #define clox_value_h
 
-#include <string.h>
+#include <cstring>
 #include <vector>
 
 #include "common.h"
 
 namespace cpplox {
 
-typedef struct Obj Obj;
-typedef struct ObjString ObjString;
+struct Obj;
+struct ObjString;
 
 #ifdef NAN_BOXING
 
@@ -21,7 +21,7 @@ typedef struct ObjString ObjString;
 #define TAG_TRUE 3
 #define TAG_UNINITIALIZED 4
 
-typedef uint64_t Value;
+using Value = uint64_t;
 
 #define IS_BOOL(value) (((value) | 1) == TRUE_VAL)
 #define IS_NIL(value) ((value) == NIL_VAL)
@@ -43,34 +43,75 @@ typedef uint64_t Value;
 
 static inline double valueToNum(Value value) {
   double num;
-  memcpy(&num, &value, sizeof(Value));
+  std::memcpy(&num, &value, sizeof(Value));
   return num;
 }
 
 static inline Value numToValue(double num) {
   Value value;
-  memcpy(&value, &num, sizeof(double));
+  std::memcpy(&value, &num, sizeof(double));
   return value;
 }
 
 #else
 
-typedef enum {
-  VAL_BOOL,
-  VAL_NIL,
-  VAL_NUMBER,
-  VAL_OBJ,
-  VAL_UNINITIALIZED
-} ValueType;
+enum class ValueType : uint8_t {
+  Bool,
+  Nil,
+  Number,
+  Obj,
+  Uninitialized
+};
 
-typedef struct {
+inline constexpr ValueType VAL_BOOL = ValueType::Bool;
+inline constexpr ValueType VAL_NIL = ValueType::Nil;
+inline constexpr ValueType VAL_NUMBER = ValueType::Number;
+inline constexpr ValueType VAL_OBJ = ValueType::Obj;
+inline constexpr ValueType VAL_UNINITIALIZED = ValueType::Uninitialized;
+
+struct Value {
   ValueType type;
   union {
     bool boolean;
     double number;
     Obj *obj;
   } as;
-} Value;
+};
+
+inline Value boolValue(bool value) {
+  Value result;
+  result.type = VAL_BOOL;
+  result.as.boolean = value;
+  return result;
+}
+
+inline Value nilValue() {
+  Value result;
+  result.type = VAL_NIL;
+  result.as.number = 0;
+  return result;
+}
+
+inline Value uninitializedValue() {
+  Value result;
+  result.type = VAL_UNINITIALIZED;
+  result.as.number = 0;
+  return result;
+}
+
+inline Value numberValue(double value) {
+  Value result;
+  result.type = VAL_NUMBER;
+  result.as.number = value;
+  return result;
+}
+
+inline Value objectValue(Obj *object) {
+  Value result;
+  result.type = VAL_OBJ;
+  result.as.obj = object;
+  return result;
+}
 
 #define IS_BOOL(value) ((value).type == VAL_BOOL)
 #define IS_NIL(value) ((value).type == VAL_NIL)
@@ -82,11 +123,11 @@ typedef struct {
 #define AS_BOOL(value) ((value).as.boolean)
 #define AS_NUMBER(value) ((value).as.number)
 
-#define BOOL_VAL(value) ((Value){VAL_BOOL, {.boolean = value}})
-#define NIL_VAL ((Value){VAL_NIL, {.number = 0}})
-#define UNINITIALIZED_VAL ((Value){VAL_UNINITIALIZED, {.number = 0}})
-#define NUMBER_VAL(value) ((Value){VAL_NUMBER, {.number = value}})
-#define OBJ_VAL(object) ((Value){VAL_OBJ, {.obj = (Obj *)object}})
+#define BOOL_VAL(value) boolValue(value)
+#define NIL_VAL nilValue()
+#define UNINITIALIZED_VAL uninitializedValue()
+#define NUMBER_VAL(value) numberValue(value)
+#define OBJ_VAL(object) objectValue((Obj *)object)
 
 #endif
 
