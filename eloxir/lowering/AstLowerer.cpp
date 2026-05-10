@@ -3,6 +3,7 @@
 #include "../frontend/Visitor.h"
 
 #include <stdexcept>
+#include <unordered_map>
 
 namespace eloxir::loxir {
 
@@ -125,7 +126,9 @@ public:
                                              : InstructionKind::LoadGlobal;
     instruction.source = sourceFromToken(expr->name);
     instruction.result = makeValue();
-    instruction.symbol = expr->name.getLexeme();
+    instruction.symbol = instruction.kind == InstructionKind::LoadLocal
+                             ? lookupLocal(expr->name.getLexeme())
+                             : expr->name.getLexeme();
     append(std::move(instruction));
   }
 
@@ -137,7 +140,9 @@ public:
     instruction.kind = isResolvedLocal(expr) ? InstructionKind::StoreLocal
                                              : InstructionKind::StoreGlobal;
     instruction.source = sourceFromToken(expr->name);
-    instruction.symbol = expr->name.getLexeme();
+    instruction.symbol = instruction.kind == InstructionKind::StoreLocal
+                             ? lookupLocal(expr->name.getLexeme())
+                             : expr->name.getLexeme();
     instruction.operands = {assigned};
     append(std::move(instruction));
   }
@@ -284,22 +289,26 @@ public:
     ValueId initial = value_;
 
     Instruction instruction;
-    instruction.kind = isTopLevel() ? InstructionKind::StoreGlobal
-                                    : InstructionKind::StoreLocal;
+    bool topLevel = isTopLevel();
+    instruction.kind =
+        topLevel ? InstructionKind::StoreGlobal : InstructionKind::StoreLocal;
     instruction.source = sourceFromToken(stmt->name);
-    instruction.symbol = stmt->name.getLexeme();
+    instruction.symbol = topLevel ? stmt->name.getLexeme()
+                                  : declareLocal(stmt->name.getLexeme());
     instruction.operands = {initial};
     append(std::move(instruction));
   }
 
   void visitBlockStmt(Block *stmt) override {
     ++blockDepth_;
+    pushScope();
     for (const auto &inner : stmt->statements) {
       if (hasTerminator()) {
         break;
       }
       inner->accept(this);
     }
+    popScope();
     --blockDepth_;
   }
 
@@ -392,10 +401,12 @@ public:
     append(std::move(instruction));
 
     Instruction store;
-    store.kind = isTopLevel() ? InstructionKind::StoreGlobal
-                              : InstructionKind::StoreLocal;
+    bool topLevel = isTopLevel();
+    store.kind = topLevel ? InstructionKind::StoreGlobal
+                          : InstructionKind::StoreLocal;
     store.source = sourceFromToken(stmt->name);
-    store.symbol = stmt->name.getLexeme();
+    store.symbol = topLevel ? stmt->name.getLexeme()
+                            : declareLocal(stmt->name.getLexeme());
     store.operands = {value_};
     append(std::move(store));
   }
@@ -431,10 +442,12 @@ public:
     ValueId classValue = value_;
 
     Instruction store;
-    store.kind = isTopLevel() ? InstructionKind::StoreGlobal
-                              : InstructionKind::StoreLocal;
+    bool topLevel = isTopLevel();
+    store.kind = topLevel ? InstructionKind::StoreGlobal
+                          : InstructionKind::StoreLocal;
     store.source = sourceFromToken(stmt->name);
-    store.symbol = stmt->name.getLexeme();
+    store.symbol = topLevel ? stmt->name.getLexeme()
+                            : declareLocal(stmt->name.getLexeme());
     store.operands = {classValue};
     append(std::move(store));
 
@@ -478,6 +491,8 @@ private:
   int blockDepth_ = 0;
   BlockId currentBlock_;
   ValueId value_;
+  std::vector<std::unordered_map<std::string, std::string>> localScopes_;
+  uint32_t nextLocalId_ = 0;
 
   bool isTopLevel() const {
     return functionDepth_ == 0 && blockDepth_ == 0;
@@ -485,6 +500,34 @@ private:
 
   bool isResolvedLocal(const Expr *expr) const {
     return resolvedLocals_ && resolvedLocals_->find(expr) != resolvedLocals_->end();
+  }
+
+  void pushScope() { localScopes_.emplace_back(); }
+
+  void popScope() {
+    if (!localScopes_.empty()) {
+      localScopes_.pop_back();
+    }
+  }
+
+  std::string declareLocal(const std::string &name) {
+    if (localScopes_.empty()) {
+      pushScope();
+    }
+    std::string symbol = name + "$" + std::to_string(nextLocalId_++);
+    localScopes_.back()[name] = symbol;
+    return symbol;
+  }
+
+  std::string lookupLocal(const std::string &name) const {
+    for (auto scope = localScopes_.rbegin(); scope != localScopes_.rend();
+         ++scope) {
+      auto it = scope->find(name);
+      if (it != scope->end()) {
+        return it->second;
+      }
+    }
+    return name;
   }
 
   bool hasTerminator() { return block().hasTerminator(); }

@@ -12,6 +12,7 @@
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/Function.h>
 #include <llvm/IR/IRBuilder.h>
+#include <llvm/IR/Instructions.h>
 #include <llvm/IR/Module.h>
 #include <llvm/IR/Type.h>
 
@@ -60,6 +61,7 @@ private:
   std::unordered_map<uint32_t, llvm::BasicBlock *> blocks_;
   std::unordered_map<uint32_t, llvm::Value *> values_;
   std::unordered_map<uint32_t, LoxType> types_;
+  std::unordered_map<std::string, llvm::AllocaInst *> locals_;
 
   llvm::IntegerType *valueTy() { return llvm::Type::getInt64Ty(ctx_); }
   llvm::IntegerType *i32Ty() { return llvm::Type::getInt32Ty(ctx_); }
@@ -101,6 +103,20 @@ private:
 
   llvm::Function *runtime(const char *name) {
     return module_.getFunction(name);
+  }
+
+  llvm::AllocaInst *localSlot(const std::string &name) {
+    auto it = locals_.find(name);
+    if (it != locals_.end()) {
+      return it->second;
+    }
+
+    llvm::IRBuilder<> entryBuilder(
+        &function_->getEntryBlock(), function_->getEntryBlock().begin());
+    auto *slot = entryBuilder.CreateAlloca(valueTy(), nullptr, name);
+    entryBuilder.CreateStore(nilValue(), slot);
+    locals_[name] = slot;
+    return slot;
   }
 
   llvm::Value *stringPtr(const std::string &text, const std::string &name) {
@@ -198,6 +214,10 @@ private:
       return emitLoadGlobal(instruction);
     case InstructionKind::StoreGlobal:
       return emitStoreGlobal(instruction);
+    case InstructionKind::LoadLocal:
+      return emitLoadLocal(instruction);
+    case InstructionKind::StoreLocal:
+      return emitStoreLocal(instruction);
     case InstructionKind::Binary:
       return emitBinary(instruction);
     case InstructionKind::Unary:
@@ -212,8 +232,6 @@ private:
       return emitBranch(instruction);
     case InstructionKind::Return:
       return emitReturn(instruction);
-    case InstructionKind::LoadLocal:
-    case InstructionKind::StoreLocal:
     case InstructionKind::LoadUpvalue:
     case InstructionKind::StoreUpvalue:
     case InstructionKind::Phi:
@@ -255,6 +273,28 @@ private:
     auto *name = stringPtr(instruction.symbol, "global.name");
     auto *value = builder_.CreateCall(load, {name}, "global");
     bind(instruction, value, instruction.resultType);
+    return std::nullopt;
+  }
+
+  std::optional<std::string> emitLoadLocal(const Instruction &instruction) {
+    if (instruction.symbol.empty()) {
+      return unsupported(instruction, "missing local symbol");
+    }
+    auto *slot = localSlot(instruction.symbol);
+    auto *value = builder_.CreateLoad(valueTy(), slot, instruction.symbol);
+    bind(instruction, value, instruction.resultType);
+    return std::nullopt;
+  }
+
+  std::optional<std::string> emitStoreLocal(const Instruction &instruction) {
+    if (auto failure = requireOperands(instruction, 1)) {
+      return failure;
+    }
+    if (instruction.symbol.empty()) {
+      return unsupported(instruction, "missing local symbol");
+    }
+    builder_.CreateStore(lookup(instruction.operands[0]),
+                         localSlot(instruction.symbol));
     return std::nullopt;
   }
 

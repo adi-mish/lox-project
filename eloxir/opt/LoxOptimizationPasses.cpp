@@ -325,7 +325,8 @@ bool mergeGlobalType(std::unordered_map<std::string, LoxType> &globalTypes,
 LoxType inferResultType(
     const Instruction &instruction,
     const std::unordered_map<uint32_t, LoxType> &valueTypes,
-    const std::unordered_map<std::string, LoxType> &globalTypes) {
+    const std::unordered_map<std::string, LoxType> &globalTypes,
+    const std::unordered_map<std::string, LoxType> &localTypes) {
   switch (instruction.kind) {
   case InstructionKind::ConstantNil:
     return LoxType::Nil;
@@ -338,6 +339,10 @@ LoxType inferResultType(
   case InstructionKind::LoadGlobal: {
     auto it = globalTypes.find(instruction.symbol);
     return it == globalTypes.end() ? LoxType::Unknown : it->second;
+  }
+  case InstructionKind::LoadLocal: {
+    auto it = localTypes.find(instruction.symbol);
+    return it == localTypes.end() ? LoxType::Unknown : it->second;
   }
   case InstructionKind::Binary:
     if (instruction.binaryOp == BinaryOp::Equal ||
@@ -423,6 +428,7 @@ public:
     bool changed = false;
     for (auto &function : module.functions()) {
       std::unordered_map<std::string, LoxType> globalTypes;
+      std::unordered_map<std::string, LoxType> localTypes;
       bool functionChanged = false;
       do {
         functionChanged = false;
@@ -434,10 +440,17 @@ public:
         for (auto &block : function.blocks()) {
           for (auto &instruction : block.instructions()) {
             LoxType inferred =
-                inferResultType(instruction, valueTypes, globalTypes);
+                inferResultType(instruction, valueTypes, globalTypes,
+                                localTypes);
             functionChanged |= setResultType(instruction, inferred);
             if (instruction.result) {
               valueTypes[instruction.result->id] = instruction.resultType;
+            }
+            if (instruction.kind == InstructionKind::StoreLocal &&
+                instruction.operands.size() == 1) {
+              functionChanged |= mergeGlobalType(
+                  localTypes, instruction.symbol,
+                  valueType(instruction.operands[0], valueTypes));
             }
             if (instruction.kind == InstructionKind::StoreGlobal &&
                 instruction.operands.size() == 1) {
