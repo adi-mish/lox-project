@@ -1,7 +1,7 @@
-//> Scanning on Demand scanner-h
+// Token definitions exposed by the scanner.
+
 #ifndef clox_scanner_h
 #define clox_scanner_h
-//> token-type
 
 typedef enum {
   // Single-character tokens.
@@ -24,8 +24,6 @@ typedef enum {
 
   TOKEN_ERROR, TOKEN_EOF
 } TokenType;
-//< token-type
-//> token-struct
 
 typedef struct {
   TokenType type;
@@ -33,11 +31,8 @@ typedef struct {
   int length;
   int line;
 } Token;
-//< token-struct
 
 void initScanner(const char* source);
-//> scan-token-h
 Token scanToken();
-//< scan-token-h
 
 #endif

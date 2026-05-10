@@ -1,4 +1,5 @@
-//> Chunks of Bytecode debug-h
+// Disassembler entry points for debugging compiled chunks.
+
 #ifndef clox_debug_h
 #define clox_debug_h
 
