@@ -96,7 +96,7 @@ static void blackenObject(Vm &vm, Obj *object) {
   case OBJ_CLOSURE: {
     ObjClosure *closure = (ObjClosure *)object;
     markObject(vm, (Obj *)closure->function);
-    for (int i = 0; i < closure->upvalueCount; i++) {
+    for (int i = 0; i < closure->upvalues.size(); i++) {
       markObject(vm, (Obj *)closure->upvalues[i]);
     }
     break;
@@ -111,9 +111,10 @@ static void blackenObject(Vm &vm, Obj *object) {
   case OBJ_INSTANCE: {
     ObjInstance *instance = (ObjInstance *)object;
     markObject(vm, (Obj *)instance->klass);
-    for (int i = 0; i < instance->fieldCapacity; i++) {
-      if (!isUninitialized(instance->fields[i])) {
-        markValue(vm, instance->fields[i]);
+    for (int i = 0; i < instance->fields.capacity(); i++) {
+      Value value = instance->fields.data()[i];
+      if (!isUninitialized(value)) {
+        markValue(vm, value);
       }
     }
     break;
@@ -148,7 +149,6 @@ static void freeObject(Vm &vm, Obj *object) {
   }
   case OBJ_CLOSURE: {
     ObjClosure *closure = (ObjClosure *)object;
-    freeArray(vm, closure->upvalues, closure->upvalueCount);
     destroyObject(vm, closure);
     break;
   }
@@ -159,7 +159,6 @@ static void freeObject(Vm &vm, Obj *object) {
   }
   case OBJ_INSTANCE: {
     ObjInstance *instance = (ObjInstance *)object;
-    freeArray(vm, instance->fields, instance->fieldCapacity);
     destroyObject(vm, instance);
     break;
   }

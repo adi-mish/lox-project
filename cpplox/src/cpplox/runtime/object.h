@@ -7,6 +7,8 @@
 
 namespace cpplox {
 
+class Vm;
+
 enum class ObjectKind : uint8_t {
   BoundMethod,
   Class,
@@ -64,11 +66,29 @@ struct ObjUpvalue {
   Value closed;
   ObjUpvalue *next;
 };
+
+class UpvalueStorage {
+public:
+  UpvalueStorage() = default;
+  ~UpvalueStorage();
+  UpvalueStorage(const UpvalueStorage &) = delete;
+  UpvalueStorage &operator=(const UpvalueStorage &) = delete;
+
+  void adopt(Vm &vm, ObjUpvalue **values, int count);
+  ObjUpvalue *&operator[](int index) { return values_[index]; }
+  ObjUpvalue *operator[](int index) const { return values_[index]; }
+  int size() const { return count_; }
+
+private:
+  Vm *vm_ = nullptr;
+  ObjUpvalue **values_ = nullptr;
+  int count_ = 0;
+};
+
 struct ObjClosure {
   Obj obj;
   ObjFunction *function;
-  ObjUpvalue **upvalues;
-  int upvalueCount;
+  UpvalueStorage upvalues;
 };
 
 struct ObjClass {
@@ -81,11 +101,32 @@ struct ObjClass {
   uint32_t fieldVersion;
 };
 
+class FieldStorage {
+public:
+  FieldStorage() = default;
+  ~FieldStorage();
+  FieldStorage(const FieldStorage &) = delete;
+  FieldStorage &operator=(const FieldStorage &) = delete;
+
+  void initialize(Vm &vm);
+  bool read(int slot, Value *value) const;
+  void write(int slot, Value value);
+  int capacity() const { return capacity_; }
+  Value *data() { return values_; }
+  const Value *data() const { return values_; }
+
+private:
+  void ensureCapacity(int slot);
+
+  Vm *vm_ = nullptr;
+  Value *values_ = nullptr;
+  int capacity_ = 0;
+};
+
 struct ObjInstance {
   Obj obj;
   ObjClass *klass;
-  Value *fields;
-  int fieldCapacity;
+  FieldStorage fields;
 };
 
 struct ObjBoundMethod {
@@ -135,4 +176,3 @@ inline ObjString *asString(Value value) {
 inline char *asCString(Value value) { return asString(value)->chars; }
 
 } // namespace cpplox
-

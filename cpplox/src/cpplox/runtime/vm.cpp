@@ -420,37 +420,12 @@ static int ensureFieldSlot(ObjClass *klass, ObjString *name) {
   return slot;
 }
 
-static void ensureInstanceFieldCapacity(Vm &vm, ObjInstance *instance,
-                                        int slot) {
-  if (slot < instance->fieldCapacity)
-    return;
-
-  int oldCapacity = instance->fieldCapacity;
-  int newCapacity = growCapacity(oldCapacity);
-  while (newCapacity <= slot) {
-    newCapacity = growCapacity(newCapacity);
-  }
-
-  instance->fields = growArray(vm, instance->fields, oldCapacity, newCapacity);
-  for (int i = oldCapacity; i < newCapacity; i++) {
-    instance->fields[i] = uninitializedValue();
-  }
-  instance->fieldCapacity = newCapacity;
-}
-
 static bool readInstanceField(ObjInstance *instance, int slot, Value *value) {
-  if (slot < 0 || slot >= instance->fieldCapacity ||
-      isUninitialized(instance->fields[slot])) {
-    return false;
-  }
-  *value = instance->fields[slot];
-  return true;
+  return instance->fields.read(slot, value);
 }
 
-static void writeInstanceField(Vm &vm, ObjInstance *instance, int slot,
-                               Value value) {
-  ensureInstanceFieldCapacity(vm, instance, slot);
-  instance->fields[slot] = value;
+static void writeInstanceField(ObjInstance *instance, int slot, Value value) {
+  instance->fields.write(slot, value);
 }
 
 static bool findMethodCached(Vm &vm, ObjClass *klass, ObjString *name,
@@ -871,7 +846,7 @@ static InterpretResult run(Vm &vm) {
 
       ObjInstance *instance = asInstance(peek(vm, 1));
       int fieldSlot = ensureFieldSlot(instance->klass, readString());
-      writeInstanceField(vm, instance, fieldSlot, peek(vm, 0));
+      writeInstanceField(instance, fieldSlot, peek(vm, 0));
       Value value = popValue();
       popValue();
       pushValue(value);
@@ -997,7 +972,7 @@ static InterpretResult run(Vm &vm) {
       ObjFunction *function = asFunction(readConstant());
       ObjClosure *closure = vm.newClosure(function);
       pushValue(objectValue(closure));
-      for (int i = 0; i < closure->upvalueCount; i++) {
+      for (int i = 0; i < closure->upvalues.size(); i++) {
         uint8_t isLocal = readByte();
         uint8_t index = readByte();
         if (isLocal) {

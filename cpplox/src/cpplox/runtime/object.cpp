@@ -11,6 +11,56 @@
 
 namespace cpplox {
 
+UpvalueStorage::~UpvalueStorage() {
+  if (vm_ != nullptr && values_ != nullptr) {
+    freeArray(*vm_, values_, count_);
+  }
+}
+
+void UpvalueStorage::adopt(Vm &vm, ObjUpvalue **values, int count) {
+  vm_ = &vm;
+  values_ = values;
+  count_ = count;
+}
+
+FieldStorage::~FieldStorage() {
+  if (vm_ != nullptr && values_ != nullptr) {
+    freeArray(*vm_, values_, capacity_);
+  }
+}
+
+void FieldStorage::initialize(Vm &vm) { vm_ = &vm; }
+
+void FieldStorage::ensureCapacity(int slot) {
+  if (slot < capacity_)
+    return;
+
+  int oldCapacity = capacity_;
+  int newCapacity = growCapacity(oldCapacity);
+  while (newCapacity <= slot) {
+    newCapacity = growCapacity(newCapacity);
+  }
+
+  values_ = growArray(*vm_, values_, oldCapacity, newCapacity);
+  for (int i = oldCapacity; i < newCapacity; i++) {
+    values_[i] = uninitializedValue();
+  }
+  capacity_ = newCapacity;
+}
+
+bool FieldStorage::read(int slot, Value *value) const {
+  if (slot < 0 || slot >= capacity_ || isUninitialized(values_[slot])) {
+    return false;
+  }
+  *value = values_[slot];
+  return true;
+}
+
+void FieldStorage::write(int slot, Value value) {
+  ensureCapacity(slot);
+  values_[slot] = value;
+}
+
 template <typename Object>
 static Object *allocateObject(Vm &vm, ObjectKind type) {
   void *storage = allocate<Object>(vm);
@@ -52,8 +102,7 @@ ObjClosure *Vm::newClosure(ObjFunction *function) {
 
   ObjClosure *closure = allocateObject<ObjClosure>(*this, OBJ_CLOSURE);
   closure->function = function;
-  closure->upvalues = upvalues;
-  closure->upvalueCount = function->upvalueCount;
+  closure->upvalues.adopt(*this, upvalues, function->upvalueCount);
   return closure;
 }
 ObjFunction *Vm::newFunction() {
@@ -66,8 +115,7 @@ ObjFunction *Vm::newFunction() {
 ObjInstance *Vm::newInstance(ObjClass *klass) {
   ObjInstance *instance = allocateObject<ObjInstance>(*this, OBJ_INSTANCE);
   instance->klass = klass;
-  instance->fields = nullptr;
-  instance->fieldCapacity = 0;
+  instance->fields.initialize(*this);
   return instance;
 }
 ObjNative *Vm::newNative(NativeFn function) {
