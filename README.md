@@ -274,9 +274,11 @@ LLVM IR and pass instrumentation can be enabled at runtime:
 ```bash
 ELOXIR_PRINT_IR=1 ./eloxir/build/eloxir path/to/script.lox
 ELOXIR_DUMP_IR_DIR=/tmp/eloxir-ir ./eloxir/build/eloxir path/to/script.lox
+ELOXIR_TRACE_LLVM_MODULES=1 ELOXIR_TIME_PASSES=1 ./eloxir/build/eloxir path/to/script.lox
 ELOXIR_TRACE_OPT=1 \
   ELOXIR_POST_OPT_PIPELINE='globalopt,function(instcombine,simplifycfg),globaldce' \
   ./eloxir/build/eloxir path/to/script.lox
+ELOXIR_USE_LOXIR_BACKEND=1 ELOXIR_TRACE_PASSES=1 ./eloxir/build/eloxir path/to/script.lox
 ELOXIR_AGGRESSIVE_CLEANUP=1 ./eloxir/build/eloxir path/to/script.lox
 ```
 
@@ -285,6 +287,15 @@ Useful knobs:
 - `ELOXIR_DISABLE_OPT=1` bypasses the LLVM optimization pipeline.
 - `ELOXIR_DUMP_IR=1` writes `.preopt.ll` and `.postopt.ll` files to
   `eloxir-ir/`.
+- `ELOXIR_TRACE_LLVM_MODULES=1` prints function/block/instruction counts before
+  and after LLVM optimization.
+- `ELOXIR_TRACE_LLVM_PASSES=1` traces LLVM pass execution.
+- `ELOXIR_TIME_PASSES=1` prints LLVM pass timing; add
+  `ELOXIR_TIME_PASSES_PER_RUN=1` for per-run timing.
+- `ELOXIR_PRINT_LOXIR=1`, `ELOXIR_DUMP_LOXIR=/tmp/loxir`, and
+  `ELOXIR_TRACE_PASSES=1` inspect the staged LoxIR pipeline.
+- `ELOXIR_USE_LOXIR_BACKEND=1` enables the staged LoxIR-to-LLVM backend for the
+  supported subset and falls back to the legacy backend outside that subset.
 - `ELOXIR_PRE_CLEANUP_PIPELINE` appends an LLVM pass pipeline after default
   `-O3` and before optional eloxir cleanup passes.
 - `ELOXIR_AGGRESSIVE_CLEANUP=1` adds an experimental post-O3 cleanup pipeline

@@ -292,6 +292,97 @@ bool isPure(const Instruction &instruction) {
   }
 }
 
+LoxType valueType(ValueId value,
+                  const std::unordered_map<uint32_t, LoxType> &types) {
+  auto it = types.find(value.id);
+  return it == types.end() ? LoxType::Unknown : it->second;
+}
+
+bool setResultType(Instruction &instruction, LoxType type) {
+  if (!instruction.result || instruction.resultType == type) {
+    return false;
+  }
+  instruction.resultType = type;
+  return true;
+}
+
+bool mergeGlobalType(std::unordered_map<std::string, LoxType> &globalTypes,
+                     const std::string &name, LoxType type) {
+  if (type == LoxType::Unknown) {
+    return false;
+  }
+  auto [it, inserted] = globalTypes.emplace(name, type);
+  if (inserted || it->second == type) {
+    return inserted;
+  }
+  if (it->second != LoxType::Unknown) {
+    it->second = LoxType::Unknown;
+    return true;
+  }
+  return false;
+}
+
+LoxType inferResultType(
+    const Instruction &instruction,
+    const std::unordered_map<uint32_t, LoxType> &valueTypes,
+    const std::unordered_map<std::string, LoxType> &globalTypes) {
+  switch (instruction.kind) {
+  case InstructionKind::ConstantNil:
+    return LoxType::Nil;
+  case InstructionKind::ConstantBool:
+    return LoxType::Bool;
+  case InstructionKind::ConstantNumber:
+    return LoxType::Number;
+  case InstructionKind::ConstantString:
+    return LoxType::String;
+  case InstructionKind::LoadGlobal: {
+    auto it = globalTypes.find(instruction.symbol);
+    return it == globalTypes.end() ? LoxType::Unknown : it->second;
+  }
+  case InstructionKind::Binary:
+    if (instruction.binaryOp == BinaryOp::Equal ||
+        instruction.binaryOp == BinaryOp::NotEqual) {
+      return LoxType::Bool;
+    }
+    if (instruction.operands.size() != 2) {
+      return LoxType::Unknown;
+    }
+    if (valueType(instruction.operands[0], valueTypes) != LoxType::Number ||
+        valueType(instruction.operands[1], valueTypes) != LoxType::Number) {
+      return LoxType::Unknown;
+    }
+    switch (instruction.binaryOp) {
+    case BinaryOp::Add:
+    case BinaryOp::Subtract:
+    case BinaryOp::Multiply:
+    case BinaryOp::Divide:
+      return LoxType::Number;
+    case BinaryOp::Greater:
+    case BinaryOp::GreaterEqual:
+    case BinaryOp::Less:
+    case BinaryOp::LessEqual:
+      return LoxType::Bool;
+    case BinaryOp::Equal:
+    case BinaryOp::NotEqual:
+      return LoxType::Bool;
+    }
+    return LoxType::Unknown;
+  case InstructionKind::Unary:
+    if (instruction.unaryOp == UnaryOp::Not) {
+      return LoxType::Bool;
+    }
+    if (instruction.operands.size() == 1 &&
+        valueType(instruction.operands[0], valueTypes) == LoxType::Number) {
+      return LoxType::Number;
+    }
+    return LoxType::Unknown;
+  case InstructionKind::IsTruthy:
+    return LoxType::Bool;
+  default:
+    return instruction.resultType;
+  }
+}
+
 void collectUses(const Instruction &instruction,
                  std::unordered_set<uint32_t> &usedValues) {
   for (ValueId value : instruction.operands) {
@@ -319,6 +410,45 @@ public:
           changed |= foldInstruction(instruction, constants);
         }
       }
+    }
+    return changed;
+  }
+};
+
+class TypePropagationPass final : public LoxPass {
+public:
+  std::string name() const override { return "type-propagation"; }
+
+  bool run(LoxModule &module) override {
+    bool changed = false;
+    for (auto &function : module.functions()) {
+      std::unordered_map<std::string, LoxType> globalTypes;
+      bool functionChanged = false;
+      do {
+        functionChanged = false;
+        std::unordered_map<uint32_t, LoxType> valueTypes;
+        for (const auto &parameter : function.parameters()) {
+          valueTypes[parameter.value.id] = parameter.type;
+        }
+
+        for (auto &block : function.blocks()) {
+          for (auto &instruction : block.instructions()) {
+            LoxType inferred =
+                inferResultType(instruction, valueTypes, globalTypes);
+            functionChanged |= setResultType(instruction, inferred);
+            if (instruction.result) {
+              valueTypes[instruction.result->id] = instruction.resultType;
+            }
+            if (instruction.kind == InstructionKind::StoreGlobal &&
+                instruction.operands.size() == 1) {
+              functionChanged |= mergeGlobalType(
+                  globalTypes, instruction.symbol,
+                  valueType(instruction.operands[0], valueTypes));
+            }
+          }
+        }
+        changed |= functionChanged;
+      } while (functionChanged);
     }
     return changed;
   }
@@ -373,13 +503,19 @@ std::unique_ptr<LoxPass> createConstantFoldingPass() {
   return std::make_unique<ConstantFoldingPass>();
 }
 
+std::unique_ptr<LoxPass> createTypePropagationPass() {
+  return std::make_unique<TypePropagationPass>();
+}
+
 std::unique_ptr<LoxPass> createDeadCodeEliminationPass() {
   return std::make_unique<DeadCodeEliminationPass>();
 }
 
 LoxPassManager createDefaultLoxPassPipeline() {
   LoxPassManager manager;
+  manager.add(createTypePropagationPass());
   manager.add(createConstantFoldingPass());
+  manager.add(createTypePropagationPass());
   manager.add(createDeadCodeEliminationPass());
   return manager;
 }

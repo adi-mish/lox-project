@@ -7,6 +7,7 @@
 namespace eloxir::loxir {
 
 std::unique_ptr<LoxPass> createConstantFoldingPass();
+std::unique_ptr<LoxPass> createTypePropagationPass();
 std::unique_ptr<LoxPass> createDeadCodeEliminationPass();
 LoxPassManager createDefaultLoxPassPipeline();
 

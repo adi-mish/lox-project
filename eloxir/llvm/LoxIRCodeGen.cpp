@@ -254,7 +254,7 @@ private:
     }
     auto *name = stringPtr(instruction.symbol, "global.name");
     auto *value = builder_.CreateCall(load, {name}, "global");
-    bind(instruction, value);
+    bind(instruction, value, instruction.resultType);
     return std::nullopt;
   }
 

@@ -2,6 +2,7 @@
 
 #include <cctype>
 #include <cstdlib>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -11,7 +12,9 @@
 #include <llvm/Analysis/LoopAnalysisManager.h>
 #include <llvm/Analysis/TargetTransformInfo.h>
 #include <llvm/ExecutionEngine/Orc/ThreadSafeModule.h>
+#include <llvm/IR/PassInstrumentation.h>
 #include <llvm/IR/PassManager.h>
+#include <llvm/IR/PassTimingInfo.h>
 #include <llvm/Passes/OptimizationLevel.h>
 #include <llvm/Passes/PassBuilder.h>
 #include <llvm/Support/Error.h>
@@ -85,6 +88,38 @@ inline void dumpModuleIR(const llvm::Module &module, std::string_view phase) {
   }
 }
 
+inline size_t moduleBasicBlockCount(const llvm::Module &module) {
+  size_t count = 0;
+  for (const auto &function : module) {
+    count += function.size();
+  }
+  return count;
+}
+
+inline size_t moduleInstructionCount(const llvm::Module &module) {
+  size_t count = 0;
+  for (const auto &function : module) {
+    for (const auto &block : function) {
+      count += block.size();
+    }
+  }
+  return count;
+}
+
+inline void traceModuleStats(const llvm::Module &module,
+                             std::string_view phase) {
+  if (!envFlag("ELOXIR_TRACE_OPT") &&
+      !envFlag("ELOXIR_TRACE_LLVM_MODULES")) {
+    return;
+  }
+
+  llvm::errs() << "eloxir: " << phase
+               << " module=" << module.getModuleIdentifier()
+               << " functions=" << module.size()
+               << " basic_blocks=" << moduleBasicBlockCount(module)
+               << " instructions=" << moduleInstructionCount(module) << "\n";
+}
+
 inline void appendOptionalPipeline(llvm::PassBuilder &passBuilder,
                                    llvm::ModulePassManager &mpm,
                                    const char *envName) {
@@ -132,6 +167,7 @@ inline void appendPipeline(llvm::PassBuilder &passBuilder,
 
 inline void runOptimisationPipeline(llvm::Module &module,
                                     llvm::TargetMachine *targetMachine) {
+  traceModuleStats(module, "preopt");
   dumpModuleIR(module, "preopt");
 
   llvm::PipelineTuningOptions tuningOptions;
@@ -143,7 +179,32 @@ inline void runOptimisationPipeline(llvm::Module &module,
   tuningOptions.InlinerThreshold = 550;
   tuningOptions.CallGraphProfile = true;
 
-  llvm::PassBuilder passBuilder(targetMachine, tuningOptions);
+  llvm::PassInstrumentationCallbacks passInstrumentation;
+  llvm::TimePassesHandler timePasses(envFlag("ELOXIR_TIME_PASSES"),
+                                     envFlag("ELOXIR_TIME_PASSES_PER_RUN"));
+  if (envFlag("ELOXIR_TIME_PASSES")) {
+    timePasses.setOutStream(llvm::errs());
+    timePasses.registerCallbacks(passInstrumentation);
+  }
+  if (envFlag("ELOXIR_TRACE_LLVM_PASSES")) {
+    passInstrumentation.registerBeforeNonSkippedPassCallback(
+        [](llvm::StringRef passName, llvm::Any) {
+          llvm::errs() << "eloxir: llvm-pass begin " << passName << "\n";
+        });
+    passInstrumentation.registerAfterPassCallback(
+        [](llvm::StringRef passName, llvm::Any,
+           const llvm::PreservedAnalyses &) {
+          llvm::errs() << "eloxir: llvm-pass end " << passName << "\n";
+        });
+    passInstrumentation.registerAfterPassInvalidatedCallback(
+        [](llvm::StringRef passName, const llvm::PreservedAnalyses &) {
+          llvm::errs() << "eloxir: llvm-pass invalidated " << passName
+                       << "\n";
+        });
+  }
+
+  llvm::PassBuilder passBuilder(targetMachine, tuningOptions, std::nullopt,
+                                &passInstrumentation);
   llvm::LoopAnalysisManager lam;
   llvm::FunctionAnalysisManager fam;
   llvm::CGSCCAnalysisManager cgam;
@@ -174,6 +235,10 @@ inline void runOptimisationPipeline(llvm::Module &module,
   }
   appendOptionalPipeline(passBuilder, mpm, "ELOXIR_POST_OPT_PIPELINE");
   mpm.run(module, mam);
+  if (envFlag("ELOXIR_TIME_PASSES")) {
+    timePasses.print();
+  }
+  traceModuleStats(module, "postopt");
   dumpModuleIR(module, "postopt");
 }
 
