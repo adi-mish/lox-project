@@ -1,0 +1,168 @@
+#include <cstring>
+
+#include "memory.h"
+#include "object.h"
+#include "table.h"
+#include "value.h"
+
+namespace cpplox {
+
+inline constexpr double TABLE_MAX_LOAD = 0.75;
+
+void Table::clear() {
+  count_ = 0;
+  version_ = 0;
+  entries_.clear();
+  entries_.shrink_to_fit();
+}
+
+Entry *Table::findEntry(Entry *entries, int capacity, ObjString *key) {
+  uint32_t index = key->hash & (capacity - 1);
+  Entry *tombstone = nullptr;
+
+  for (;;) {
+    Entry *entry = &entries[index];
+
+    if (entry->key == nullptr) {
+      if (isNil(entry->value)) {
+
+        return tombstone != nullptr ? tombstone : entry;
+      } else {
+
+        if (tombstone == nullptr)
+          tombstone = entry;
+      }
+    } else if (entry->key == key) {
+
+      return entry;
+    }
+
+    index = (index + 1) & (capacity - 1);
+  }
+}
+
+const Entry *Table::findEntry(const Entry *entries, int capacity,
+                              ObjString *key) {
+  return findEntry(const_cast<Entry *>(entries), capacity, key);
+}
+
+bool Table::get(ObjString *key, Value *value) const {
+  if (count_ == 0)
+    return false;
+
+  const Entry *entry = findEntry(entries_.data(), capacity(), key);
+  if (entry->key == nullptr)
+    return false;
+
+  *value = entry->value;
+  return true;
+}
+Entry *Table::findSlot(ObjString *key) {
+  if (entries_.empty())
+    return nullptr;
+
+  return findEntry(entries_.data(), capacity(), key);
+}
+Entry *Table::getEntry(ObjString *key) {
+  Entry *entry = findSlot(key);
+  if (entry == nullptr)
+    return nullptr;
+  if (entry->key == nullptr)
+    return nullptr;
+  return entry;
+}
+
+void Table::adjustCapacity(int capacity) {
+  std::vector<Entry> entries(static_cast<size_t>(capacity));
+
+  count_ = 0;
+  for (Entry &oldEntry : entries_) {
+    Entry *entry = &oldEntry;
+    if (entry->key == nullptr)
+      continue;
+
+    Entry *dest = findEntry(entries.data(), capacity, entry->key);
+    dest->key = entry->key;
+    dest->value = entry->value;
+    count_++;
+  }
+
+  entries_.swap(entries);
+  version_++;
+}
+bool Table::set(ObjString *key, Value value) {
+  if (count_ + 1 > capacity() * TABLE_MAX_LOAD) {
+    int newCapacity = growCapacity(capacity());
+    adjustCapacity(newCapacity);
+  }
+
+  Entry *entry = findEntry(entries_.data(), capacity(), key);
+  bool isNewKey = entry->key == nullptr;
+
+  if (isNewKey && isNil(entry->value)) {
+    count_++;
+    version_++;
+  }
+
+  entry->key = key;
+  entry->value = value;
+  return isNewKey;
+}
+bool Table::remove(ObjString *key) {
+  if (count_ == 0)
+    return false;
+
+  Entry *entry = findEntry(entries_.data(), capacity(), key);
+  if (entry->key == nullptr)
+    return false;
+
+  entry->key = nullptr;
+  entry->value = boolValue(true);
+  version_++;
+  return true;
+}
+void Table::addAllFrom(const Table &from) {
+  for (const Entry &oldEntry : from.entries_) {
+    const Entry *entry = &oldEntry;
+    if (entry->key != nullptr) {
+      set(entry->key, entry->value);
+    }
+  }
+}
+ObjString *Table::findString(const char *chars, int length,
+                             uint32_t hash) const {
+  if (count_ == 0)
+    return nullptr;
+
+  uint32_t index = hash & (capacity() - 1);
+  for (;;) {
+    const Entry *entry = &entries_[index];
+    if (entry->key == nullptr) {
+
+      if (isNil(entry->value))
+        return nullptr;
+    } else if (entry->key->length == length && entry->key->hash == hash &&
+               std::memcmp(entry->key->chars, chars, length) == 0) {
+
+      return entry->key;
+    }
+
+    index = (index + 1) & (capacity() - 1);
+  }
+}
+void Table::removeWhite() {
+  for (Entry &oldEntry : entries_) {
+    Entry *entry = &oldEntry;
+    if (entry->key != nullptr && !entry->key->isMarked) {
+      remove(entry->key);
+    }
+  }
+}
+void Table::mark(Vm &vm) const {
+  for (const Entry &entry : entries_) {
+    markObject(vm, entry.key);
+    markValue(vm, entry.value);
+  }
+}
+
+} // namespace cpplox

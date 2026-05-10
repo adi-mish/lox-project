@@ -1,4 +1,3 @@
-#include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <iterator>
@@ -9,16 +8,9 @@
 #include "scanner.h"
 #include "vm.h"
 
+using namespace cpplox;
+
 namespace {
-
-class VmSession {
-public:
-  VmSession() { initVM(); }
-  ~VmSession() { freeVM(); }
-
-  VmSession(const VmSession &) = delete;
-  VmSession &operator=(const VmSession &) = delete;
-};
 
 std::string readFile(std::string_view path) {
   std::ifstream file(std::string(path), std::ios::binary);
@@ -31,8 +23,8 @@ std::string readFile(std::string_view path) {
                      std::istreambuf_iterator<char>());
 }
 
-int runSource(const std::string &source) {
-  InterpretResult result = interpret(source.c_str());
+int runSource(Vm &vm, const std::string &source) {
+  InterpretResult result = vm.interpret(source);
   if (result == INTERPRET_COMPILE_ERROR)
     return 65;
   if (result == INTERPRET_RUNTIME_ERROR)
@@ -40,16 +32,16 @@ int runSource(const std::string &source) {
   return 0;
 }
 
-int runFile(std::string_view path) {
+int runFile(Vm &vm, std::string_view path) {
   try {
-    return runSource(readFile(path));
+    return runSource(vm, readFile(path));
   } catch (const std::runtime_error &error) {
     std::cerr << error.what() << '\n';
     return 74;
   }
 }
 
-void repl() {
+void repl(Vm &vm) {
   std::string line;
   for (;;) {
     std::cout << "> ";
@@ -57,7 +49,7 @@ void repl() {
       std::cout << '\n';
       break;
     }
-    interpret(line.c_str());
+    vm.interpret(line);
   }
 }
 
@@ -185,11 +177,11 @@ void printScanToken(Token token) {
 }
 
 int scanSource(const std::string &source) {
-  initScanner(source.c_str());
+  Scanner scanner(source);
   bool hadError = false;
 
   for (;;) {
-    Token token = scanToken();
+    Token token = scanner.scanToken();
     if (token.type == TOKEN_ERROR) {
       std::cerr << "[line " << token.line << "] Error: ";
       std::cerr.write(token.start, token.length);
@@ -218,7 +210,7 @@ int scanFile(std::string_view path) {
 } // namespace
 
 int main(int argc, const char *argv[]) {
-  VmSession vm;
+  Vm vm;
   bool scan = false;
   bool stats = false;
   const char *path = nullptr;
@@ -238,8 +230,8 @@ int main(int argc, const char *argv[]) {
   }
 
 #ifdef CPPLOX_ENABLE_VM_STATS
-  setVMStatsEnabled(stats);
-  resetVMStats();
+  vm.setStatsEnabled(stats);
+  vm.resetStats();
 #else
   if (stats) {
     std::cerr << "cpplox was built without CPPLOX_ENABLE_VM_STATS.\n";
@@ -255,14 +247,14 @@ int main(int argc, const char *argv[]) {
     }
     exitCode = scanFile(path);
   } else if (path == nullptr) {
-    repl();
+    repl(vm);
   } else {
-    exitCode = runFile(path);
+    exitCode = runFile(vm, path);
   }
 
 #ifdef CPPLOX_ENABLE_VM_STATS
   if (stats) {
-    printVMStats();
+    vm.printStats();
   }
 #endif
   return exitCode;

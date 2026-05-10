@@ -1,61 +1,66 @@
-#include <stdio.h>
-#include <string.h>
+#include <cstring>
+#include <string_view>
 
-#include "common.h"
 #include "scanner.h"
 
-typedef struct {
-  const char *start;
-  const char *current;
-  int line;
-} Scanner;
+namespace cpplox {
 
-Scanner scanner;
-void initScanner(const char *source) {
-  scanner.start = source;
-  scanner.current = source;
-  scanner.line = 1;
+void Scanner::reset(std::string_view source) {
+  start_ = source.data();
+  current_ = source.data();
+  end_ = source.data() + source.size();
+  line_ = 1;
 }
-static bool isAlpha(char c) {
+
+bool Scanner::isAlpha(char c) {
   return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
 }
-static bool isDigit(char c) { return c >= '0' && c <= '9'; }
-static bool isAtEnd() { return *scanner.current == '\0'; }
-static char advance() {
-  scanner.current++;
-  return scanner.current[-1];
+
+bool Scanner::isDigit(char c) { return c >= '0' && c <= '9'; }
+
+bool Scanner::isAtEnd() const { return current_ >= end_; }
+
+char Scanner::advance() {
+  current_++;
+  return current_[-1];
 }
-static char peek() { return *scanner.current; }
-static char peekNext() {
-  if (isAtEnd())
+
+char Scanner::peek() const { return isAtEnd() ? '\0' : *current_; }
+
+char Scanner::peekNext() const {
+  if (current_ + 1 >= end_)
     return '\0';
-  return scanner.current[1];
+  return current_[1];
 }
-static bool match(char expected) {
+
+bool Scanner::match(char expected) {
   if (isAtEnd())
     return false;
-  if (*scanner.current != expected)
+  if (*current_ != expected)
     return false;
-  scanner.current++;
+  current_++;
   return true;
 }
-static Token makeToken(TokenType type) {
+
+Token Scanner::makeToken(TokenType type) const {
   Token token;
   token.type = type;
-  token.start = scanner.start;
-  token.length = (int)(scanner.current - scanner.start);
-  token.line = scanner.line;
+  token.start = start_;
+  token.length = static_cast<int>(current_ - start_);
+  token.line = line_;
   return token;
 }
-static Token errorToken(const char *message) {
+
+Token Scanner::errorToken(const char *message) const {
   Token token;
   token.type = TOKEN_ERROR;
   token.start = message;
-  token.length = (int)strlen(message);
-  token.line = scanner.line;
+  token.length = static_cast<int>(std::strlen(message));
+  token.line = line_;
   return token;
 }
-static void skipWhitespace() {
+
+void Scanner::skipWhitespace() {
   for (;;) {
     char c = peek();
     switch (c) {
@@ -65,12 +70,11 @@ static void skipWhitespace() {
       advance();
       break;
     case '\n':
-      scanner.line++;
+      line_++;
       advance();
       break;
     case '/':
       if (peekNext() == '/') {
-
         while (peek() != '\n' && !isAtEnd())
           advance();
       } else {
@@ -82,17 +86,19 @@ static void skipWhitespace() {
     }
   }
 }
-static TokenType checkKeyword(int start, int length, const char *rest,
-                              TokenType type) {
-  if (scanner.current - scanner.start == start + length &&
-      memcmp(scanner.start + start, rest, length) == 0) {
+
+TokenType Scanner::checkKeyword(int start, int length, const char *rest,
+                                TokenType type) const {
+  if (current_ - start_ == start + length &&
+      std::memcmp(start_ + start, rest, length) == 0) {
     return type;
   }
 
   return TOKEN_IDENTIFIER;
 }
-static TokenType identifierType() {
-  switch (scanner.start[0]) {
+
+TokenType Scanner::identifierType() const {
+  switch (start_[0]) {
   case 'a':
     return checkKeyword(1, 2, "nd", TOKEN_AND);
   case 'c':
@@ -100,8 +106,8 @@ static TokenType identifierType() {
   case 'e':
     return checkKeyword(1, 3, "lse", TOKEN_ELSE);
   case 'f':
-    if (scanner.current - scanner.start > 1) {
-      switch (scanner.start[1]) {
+    if (current_ - start_ > 1) {
+      switch (start_[1]) {
       case 'a':
         return checkKeyword(2, 3, "lse", TOKEN_FALSE);
       case 'o':
@@ -124,8 +130,8 @@ static TokenType identifierType() {
   case 's':
     return checkKeyword(1, 4, "uper", TOKEN_SUPER);
   case 't':
-    if (scanner.current - scanner.start > 1) {
-      switch (scanner.start[1]) {
+    if (current_ - start_ > 1) {
+      switch (start_[1]) {
       case 'h':
         return checkKeyword(2, 2, "is", TOKEN_THIS);
       case 'r':
@@ -141,29 +147,30 @@ static TokenType identifierType() {
 
   return TOKEN_IDENTIFIER;
 }
-static Token identifier() {
+
+Token Scanner::identifier() {
   while (isAlpha(peek()) || isDigit(peek()))
     advance();
   return makeToken(identifierType());
 }
-static Token number() {
+
+Token Scanner::number() {
   while (isDigit(peek()))
     advance();
 
   if (peek() == '.' && isDigit(peekNext())) {
-
     advance();
-
     while (isDigit(peek()))
       advance();
   }
 
   return makeToken(TOKEN_NUMBER);
 }
-static Token string() {
+
+Token Scanner::string() {
   while (peek() != '"' && !isAtEnd()) {
     if (peek() == '\n')
-      scanner.line++;
+      line_++;
     advance();
   }
 
@@ -173,9 +180,10 @@ static Token string() {
   advance();
   return makeToken(TOKEN_STRING);
 }
-Token scanToken() {
+
+Token Scanner::scanToken() {
   skipWhitespace();
-  scanner.start = scanner.current;
+  start_ = current_;
 
   if (isAtEnd())
     return makeToken(TOKEN_EOF);
@@ -223,3 +231,5 @@ Token scanToken() {
 
   return errorToken("Unexpected character.");
 }
+
+} // namespace cpplox
