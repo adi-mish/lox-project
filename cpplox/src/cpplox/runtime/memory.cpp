@@ -63,8 +63,8 @@ static void markInlineCaches(Vm &vm, Chunk *chunk) {
   for (int i = 0; i < static_cast<int>(chunk->constants().size()); i++) {
     InlineCache *cache = &chunk->inlineCache(i);
     if ((cache->kind == CACHE_FIELD || cache->kind == CACHE_METHOD) &&
-        cache->owner != nullptr) {
-      markObject(vm, reinterpret_cast<Obj *>(cache->owner));
+        cache->ownerClass != nullptr) {
+      markObject(vm, &cache->ownerClass->obj);
     }
     if (cache->kind == CACHE_METHOD) {
       markValue(vm, cache->value);

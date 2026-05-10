@@ -2,21 +2,6 @@
 
 namespace cpplox {
 
-static InlineCache emptyInlineCache() {
-  InlineCache cache;
-  cache.kind = CACHE_EMPTY;
-  cache.key = nullptr;
-  cache.entry = nullptr;
-  cache.tableVersion = 0;
-  cache.owner = nullptr;
-  cache.secondaryOwner = nullptr;
-  cache.secondaryVersion = 0;
-  cache.entryIndex = -1;
-  cache.tableCapacity = 0;
-  cache.value = nilValue();
-  return cache;
-}
-
 void Chunk::write(uint8_t byte, int line) {
   code_.push_back(byte);
   lines_.push_back(line);
@@ -36,7 +21,7 @@ int Chunk::addConstant(Value value) {
   }
 
   constants_.push_back(value);
-  inlineCaches_.push_back(emptyInlineCache());
+  inlineCaches_.emplace_back();
   return static_cast<int>(constants_.size()) - 1;
 }
 

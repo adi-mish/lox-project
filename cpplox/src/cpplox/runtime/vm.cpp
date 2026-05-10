@@ -456,7 +456,7 @@ static void writeInstanceField(Vm &vm, ObjInstance *instance, int slot,
 static bool findMethodCached(Vm &vm, ObjClass *klass, ObjString *name,
                              InlineCache *cache, Value *method) {
   if (cache != nullptr && cache->kind == CACHE_METHOD && cache->key == name &&
-      cache->owner == klass &&
+      cache->ownerClass == klass &&
       cache->tableVersion == klass->methods.version()) {
     recordMethodCacheHit(vm);
     *method = cache->value;
@@ -472,13 +472,11 @@ static bool findMethodCached(Vm &vm, ObjClass *klass, ObjString *name,
   if (cache != nullptr) {
     cache->kind = CACHE_METHOD;
     cache->key = name;
-    cache->owner = klass;
+    cache->ownerClass = klass;
     cache->value = *method;
     cache->tableVersion = klass->methods.version();
-    cache->secondaryOwner = nullptr;
     cache->secondaryVersion = 0;
     cache->entryIndex = -2;
-    cache->tableCapacity = -1;
   }
   return true;
 }
@@ -505,7 +503,7 @@ static bool invoke(Vm &vm, ObjString *name, int argCount, InlineCache *cache) {
 
   ObjInstance *instance = asInstance(receiver);
   if (cache != nullptr && cache->kind == CACHE_METHOD && cache->key == name &&
-      cache->owner == instance->klass &&
+      cache->ownerClass == instance->klass &&
       cache->tableVersion == instance->klass->methods.version() &&
       cache->secondaryVersion == instance->klass->fieldVersion) {
     if (cache->entryIndex == -1) {
@@ -833,7 +831,7 @@ static InterpretResult run(Vm &vm) {
       InlineCache *cache = &chunk->inlineCache(constant);
 
       if (cache->kind == CACHE_FIELD && cache->key == name &&
-          cache->owner == instance->klass &&
+          cache->ownerClass == instance->klass &&
           cache->secondaryVersion == instance->klass->fieldVersion &&
           cache->entryIndex >= 0) {
         Value fieldValue;
@@ -851,10 +849,9 @@ static InterpretResult run(Vm &vm) {
           readInstanceField(instance, fieldSlot, &fieldValue)) {
         cache->kind = CACHE_FIELD;
         cache->key = name;
-        cache->owner = instance->klass;
+        cache->ownerClass = instance->klass;
         cache->entry = nullptr;
         cache->entryIndex = fieldSlot;
-        cache->tableCapacity = -1;
         cache->tableVersion = 0;
         cache->secondaryVersion = instance->klass->fieldVersion;
         vm.stackTop[-1] = fieldValue;

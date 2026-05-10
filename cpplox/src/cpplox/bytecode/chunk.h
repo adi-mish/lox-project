@@ -8,6 +8,7 @@
 namespace cpplox {
 
 struct Entry;
+struct ObjClass;
 
 enum class InlineCacheKind : uint8_t {
   Empty,
@@ -22,16 +23,14 @@ inline constexpr InlineCacheKind CACHE_FIELD = InlineCacheKind::Field;
 inline constexpr InlineCacheKind CACHE_METHOD = InlineCacheKind::Method;
 
 struct InlineCache {
-  InlineCacheKind kind;
-  ObjString *key;
-  Entry *entry;
-  uint32_t tableVersion;
-  void *owner;
-  void *secondaryOwner;
-  uint32_t secondaryVersion;
-  int entryIndex;
-  int tableCapacity;
-  Value value;
+  InlineCacheKind kind = CACHE_EMPTY;
+  ObjString *key = nullptr;
+  Entry *entry = nullptr;
+  uint32_t tableVersion = 0;
+  ObjClass *ownerClass = nullptr;
+  uint32_t secondaryVersion = 0;
+  int entryIndex = -1;
+  Value value = nilValue();
 };
 
 enum class Opcode : uint8_t {
