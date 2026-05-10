@@ -80,12 +80,17 @@ typedef struct {
   Obj obj;
   ObjString *name;
   Table methods;
+  Table fieldSlots;
+  int fieldSlotCount;
+  uint32_t fieldVersion;
 } ObjClass;
 
 typedef struct {
   Obj obj;
   ObjClass *klass;
-  Table fields;
+  Value *fields;
+  uint8_t *fieldInitialized;
+  int fieldCapacity;
 } ObjInstance;
 
 typedef struct {

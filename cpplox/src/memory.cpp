@@ -97,6 +97,7 @@ static void blackenObject(Obj *object) {
     ObjClass *klass = (ObjClass *)object;
     markObject((Obj *)klass->name);
     markTable(&klass->methods);
+    markTable(&klass->fieldSlots);
     break;
   }
   case OBJ_CLOSURE: {
@@ -117,7 +118,11 @@ static void blackenObject(Obj *object) {
   case OBJ_INSTANCE: {
     ObjInstance *instance = (ObjInstance *)object;
     markObject((Obj *)instance->klass);
-    markTable(&instance->fields);
+    for (int i = 0; i < instance->fieldCapacity; i++) {
+      if (instance->fieldInitialized[i]) {
+        markValue(instance->fields[i]);
+      }
+    }
     break;
   }
   case OBJ_UPVALUE:
@@ -140,6 +145,7 @@ static void freeObject(Obj *object) {
   case OBJ_CLASS: {
     ObjClass *klass = (ObjClass *)object;
     freeTable(&klass->methods);
+    freeTable(&klass->fieldSlots);
     FREE(ObjClass, object);
     break;
   }
@@ -157,7 +163,8 @@ static void freeObject(Obj *object) {
   }
   case OBJ_INSTANCE: {
     ObjInstance *instance = (ObjInstance *)object;
-    freeTable(&instance->fields);
+    FREE_ARRAY(Value, instance->fields, instance->fieldCapacity);
+    FREE_ARRAY(uint8_t, instance->fieldInitialized, instance->fieldCapacity);
     FREE(ObjInstance, object);
     break;
   }

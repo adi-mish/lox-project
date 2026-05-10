@@ -377,6 +377,62 @@ static bool callValue(Value callee, int argCount) {
   runtimeError("Can only call functions and classes.");
   return false;
 }
+
+static bool getFieldSlot(ObjClass *klass, ObjString *name, int *slot) {
+  Value slotValue;
+  if (!tableGet(&klass->fieldSlots, name, &slotValue))
+    return false;
+  *slot = (int)AS_NUMBER(slotValue);
+  return true;
+}
+
+static int ensureFieldSlot(ObjClass *klass, ObjString *name) {
+  int slot;
+  if (getFieldSlot(klass, name, &slot))
+    return slot;
+
+  slot = klass->fieldSlotCount++;
+  tableSet(&klass->fieldSlots, name, NUMBER_VAL(slot));
+  klass->fieldVersion++;
+  return slot;
+}
+
+static void ensureInstanceFieldCapacity(ObjInstance *instance, int slot) {
+  if (slot < instance->fieldCapacity)
+    return;
+
+  int oldCapacity = instance->fieldCapacity;
+  int newCapacity = GROW_CAPACITY(oldCapacity);
+  while (newCapacity <= slot) {
+    newCapacity = GROW_CAPACITY(newCapacity);
+  }
+
+  instance->fields =
+      GROW_ARRAY(Value, instance->fields, oldCapacity, newCapacity);
+  instance->fieldInitialized = GROW_ARRAY(uint8_t, instance->fieldInitialized,
+                                         oldCapacity, newCapacity);
+  for (int i = oldCapacity; i < newCapacity; i++) {
+    instance->fields[i] = NIL_VAL;
+    instance->fieldInitialized[i] = 0;
+  }
+  instance->fieldCapacity = newCapacity;
+}
+
+static bool readInstanceField(ObjInstance *instance, int slot, Value *value) {
+  if (slot < 0 || slot >= instance->fieldCapacity ||
+      !instance->fieldInitialized[slot]) {
+    return false;
+  }
+  *value = instance->fields[slot];
+  return true;
+}
+
+static void writeInstanceField(ObjInstance *instance, int slot, Value value) {
+  ensureInstanceFieldCapacity(instance, slot);
+  instance->fields[slot] = value;
+  instance->fieldInitialized[slot] = 1;
+}
+
 static bool findMethodCached(ObjClass *klass, ObjString *name,
                              InlineCache *cache, Value *method) {
   if (cache != NULL && cache->kind == CACHE_METHOD && cache->key == name &&
@@ -431,14 +487,14 @@ static bool invoke(ObjString *name, int argCount, InlineCache *cache) {
   if (cache != NULL && cache->kind == CACHE_METHOD && cache->key == name &&
       cache->owner == instance->klass &&
       cache->tableVersion == instance->klass->methods.version &&
-      cache->tableCapacity == instance->fields.capacity) {
+      cache->secondaryVersion == instance->klass->fieldVersion) {
     if (cache->entryIndex == -1) {
       RECORD_METHOD_CACHE_HIT();
       return call(AS_CLOSURE(cache->value), argCount);
     }
     if (cache->entryIndex >= 0) {
-      Entry *fieldSlot = &instance->fields.entries[cache->entryIndex];
-      if (fieldSlot->key == NULL && IS_NIL(fieldSlot->value)) {
+      Value ignored;
+      if (!readInstanceField(instance, cache->entryIndex, &ignored)) {
         RECORD_METHOD_CACHE_HIT();
         return call(AS_CLOSURE(cache->value), argCount);
       }
@@ -446,23 +502,18 @@ static bool invoke(ObjString *name, int argCount, InlineCache *cache) {
   }
 
   Value value;
-  Entry *fieldSlot = tableFindSlot(&instance->fields, name);
-  if (fieldSlot != NULL && fieldSlot->key == name) {
-    vm.stackTop[-argCount - 1] = fieldSlot->value;
-    return callValue(fieldSlot->value, argCount);
+  int fieldSlot = -1;
+  if (getFieldSlot(instance->klass, name, &fieldSlot) &&
+      readInstanceField(instance, fieldSlot, &value)) {
+    vm.stackTop[-argCount - 1] = value;
+    return callValue(value, argCount);
   }
 
   if (!findMethodCached(instance->klass, name, cache, &value))
     return false;
   if (cache != NULL) {
-    cache->tableCapacity = instance->fields.capacity;
-    cache->entryIndex = -2;
-    if (instance->fields.capacity == 0) {
-      cache->entryIndex = -1;
-    } else if (fieldSlot != NULL && fieldSlot->key == NULL &&
-               IS_NIL(fieldSlot->value)) {
-      cache->entryIndex = (int)(fieldSlot - instance->fields.entries);
-    }
+    cache->secondaryVersion = instance->klass->fieldVersion;
+    cache->entryIndex = fieldSlot >= 0 ? fieldSlot : -1;
   }
   return call(AS_CLOSURE(value), argCount);
 }
@@ -758,29 +809,32 @@ static InterpretResult run() {
       ObjString *name = AS_STRING(chunk->constants.values[constant]);
       InlineCache *cache = &chunk->inlineCaches[constant];
 
-      Entry *entry = cache->entry;
       if (cache->kind == CACHE_FIELD && cache->key == name &&
           cache->owner == instance->klass &&
-          cache->tableCapacity == instance->fields.capacity &&
+          cache->secondaryVersion == instance->klass->fieldVersion &&
           cache->entryIndex >= 0) {
-        entry = &instance->fields.entries[cache->entryIndex];
-        if (entry->key == name) {
+        Value fieldValue;
+        if (readInstanceField(instance, cache->entryIndex, &fieldValue)) {
           RECORD_FIELD_CACHE_HIT();
-          vm.stackTop[-1] = entry->value;
+          vm.stackTop[-1] = fieldValue;
           break;
         }
       }
 
       RECORD_FIELD_CACHE_MISS();
-      entry = tableFindSlot(&instance->fields, name);
-      if (entry != NULL && entry->key == name) {
+      int fieldSlot = -1;
+      Value fieldValue;
+      if (getFieldSlot(instance->klass, name, &fieldSlot) &&
+          readInstanceField(instance, fieldSlot, &fieldValue)) {
         cache->kind = CACHE_FIELD;
         cache->key = name;
         cache->owner = instance->klass;
-        cache->entry = entry;
-        cache->entryIndex = (int)(entry - instance->fields.entries);
-        cache->tableCapacity = instance->fields.capacity;
-        vm.stackTop[-1] = entry->value;
+        cache->entry = NULL;
+        cache->entryIndex = fieldSlot;
+        cache->tableCapacity = -1;
+        cache->tableVersion = 0;
+        cache->secondaryVersion = instance->klass->fieldVersion;
+        vm.stackTop[-1] = fieldValue;
         break;
       }
 
@@ -796,7 +850,8 @@ static InterpretResult run() {
       }
 
       ObjInstance *instance = AS_INSTANCE(peek(1));
-      tableSet(&instance->fields, READ_STRING(), peek(0));
+      int fieldSlot = ensureFieldSlot(instance->klass, READ_STRING());
+      writeInstanceField(instance, fieldSlot, peek(0));
       Value value = POP_VALUE();
       POP_VALUE();
       PUSH_VALUE(value);

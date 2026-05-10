@@ -34,6 +34,9 @@ ObjClass *newClass(ObjString *name) {
   ObjClass *klass = ALLOCATE_OBJ(ObjClass, OBJ_CLASS);
   klass->name = name;
   initTable(&klass->methods);
+  initTable(&klass->fieldSlots);
+  klass->fieldSlotCount = 0;
+  klass->fieldVersion = 0;
   return klass;
 }
 ObjClosure *newClosure(ObjFunction *function) {
@@ -59,7 +62,9 @@ ObjFunction *newFunction() {
 ObjInstance *newInstance(ObjClass *klass) {
   ObjInstance *instance = ALLOCATE_OBJ(ObjInstance, OBJ_INSTANCE);
   instance->klass = klass;
-  initTable(&instance->fields);
+  instance->fields = NULL;
+  instance->fieldInitialized = NULL;
+  instance->fieldCapacity = 0;
   return instance;
 }
 ObjNative *newNative(NativeFn function) {
