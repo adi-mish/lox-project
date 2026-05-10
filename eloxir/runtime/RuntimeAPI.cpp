@@ -1086,6 +1086,14 @@ uint64_t elx_intern_string(const char *chars, int length) {
   return new_string;
 }
 
+static ObjString *cachedInitName() {
+  static uint64_t init_bits = 0;
+  if (init_bits == 0) {
+    init_bits = elx_intern_string("init", 4);
+  }
+  return getStringObject(Value::fromBits(init_bits));
+}
+
 uint64_t elx_allocate_string(const char *chars, int length) {
   // Allocate memory for the string object
   size_t size = offsetof(ObjString, chars) + length + 1;
@@ -1514,12 +1522,11 @@ uint64_t elx_call_value(uint64_t callee_bits, uint64_t *args, int arg_count) {
   case ObjType::CLASS: {
     ObjClass *klass = static_cast<ObjClass *>(obj_ptr);
 
-    uint64_t instance_bits = elx_instantiate_class(callee_bits);
+    uint64_t instance_bits = elx_instantiate_known_class(callee_bits);
     if (elx_has_runtime_error())
       return Value::nil().getBits();
 
-    uint64_t init_bits = elx_intern_string("init", 4);
-    ObjString *init_name = getStringObject(Value::fromBits(init_bits));
+    ObjString *init_name = cachedInitName();
     uint64_t initializer_bits = init_name ? findMethodOnClass(klass, init_name)
                                           : Value::nil().getBits();
     if (initializer_bits != Value::nil().getBits()) {
@@ -1996,8 +2003,7 @@ void elx_call_cache_update(CallInlineCache *cache, uint64_t callee_bits) {
     cache->kind = static_cast<int32_t>(CallInlineCacheKind::CLASS);
     cache->guard1_bits = reinterpret_cast<uint64_t>(klass);
 
-    uint64_t init_bits = elx_intern_string("init", 4);
-    ObjString *init_name = getStringObject(Value::fromBits(init_bits));
+    ObjString *init_name = cachedInitName();
     uint64_t initializer_bits = init_name ? findMethodOnClass(klass, init_name)
                                           : Value::nil().getBits();
 
