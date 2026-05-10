@@ -109,6 +109,7 @@ class CodeGenVisitor : public ExprVisitor, public StmtVisitor {
   int stringConstantCounter = 0;
   const CodeGenPlan *codeGenPlan = nullptr;
   std::unordered_map<std::string, llvm::Value *> stableClassSlots;
+  std::unordered_map<std::string, llvm::Value *> stableReceiverSlots;
 
 public:
   CodeGenVisitor(llvm::Module &m);
@@ -219,7 +220,9 @@ private:
   llvm::GlobalVariable *getFunctionObjectSlot(const std::string &name);
   llvm::GlobalVariable *getStringConstantSlot(const std::string &value);
   bool isDiscardablePlannedClassCall(const Expr *expr) const;
+  bool isDiscardablePlannedReceiverCall(const Expr *expr) const;
   bool emitPlannedClassCall(Call *e);
+  bool emitPlannedReceiverCall(Call *e);
   void emitLegacyGetExpr(Get *e, llvm::Value *objectValue,
                          llvm::Value *nameValue);
   void emitLegacySetExpr(Set *e, llvm::Value *objectValue);

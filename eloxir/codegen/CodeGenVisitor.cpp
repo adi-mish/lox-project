@@ -1340,12 +1340,186 @@ bool CodeGenVisitor::isDiscardablePlannedClassCall(const Expr *expr) const {
   return stableClassSlots.find(className) != stableClassSlots.end();
 }
 
+bool CodeGenVisitor::isDiscardablePlannedReceiverCall(const Expr *expr) const {
+  if (!codeGenPlan) {
+    return false;
+  }
+
+  const auto *call = dynamic_cast<const Call *>(expr);
+  if (!call || !call->arguments.empty()) {
+    return false;
+  }
+
+  const auto *get = dynamic_cast<const Get *>(call->callee.get());
+  if (!get) {
+    return false;
+  }
+
+  const auto *receiver = dynamic_cast<const Variable *>(get->object.get());
+  if (!receiver) {
+    return false;
+  }
+
+  const std::string &receiverName = receiver->name.getLexeme();
+  auto slotIt = stableReceiverSlots.find(receiverName);
+  if (slotIt == stableReceiverSlots.end()) {
+    return false;
+  }
+
+  auto stackIt = variableStacks.find(receiverName);
+  if (stackIt == variableStacks.end() || stackIt->second.empty() ||
+      stackIt->second.back() != slotIt->second) {
+    return false;
+  }
+
+  const PlannedMethod *method =
+      codeGenPlan->findStableReceiverMethod(receiverName, get->name.getLexeme());
+  return method && method->arity == 0;
+}
+
+bool CodeGenVisitor::emitPlannedReceiverCall(Call *e) {
+  if (!codeGenPlan || !e->arguments.empty()) {
+    return false;
+  }
+
+  auto *get = dynamic_cast<Get *>(e->callee.get());
+  if (!get) {
+    return false;
+  }
+
+  auto *receiverVar = dynamic_cast<Variable *>(get->object.get());
+  if (!receiverVar) {
+    return false;
+  }
+
+  const std::string &receiverName = receiverVar->name.getLexeme();
+  const std::string &methodName = get->name.getLexeme();
+  const PlannedMethod *method =
+      codeGenPlan->findStableReceiverMethod(receiverName, methodName);
+  if (!method || method->arity != 0) {
+    return false;
+  }
+
+  auto slotIt = stableReceiverSlots.find(receiverName);
+  if (slotIt == stableReceiverSlots.end()) {
+    return false;
+  }
+
+  auto stackIt = variableStacks.find(receiverName);
+  if (stackIt == variableStacks.end() || stackIt->second.empty() ||
+      stackIt->second.back() != slotIt->second) {
+    return false;
+  }
+
+  llvm::Value *slot = slotIt->second;
+  auto *alloca = llvm::dyn_cast<llvm::AllocaInst>(slot);
+  llvm::Function *fn = builder.GetInsertBlock()->getParent();
+  if (!alloca || alloca->getFunction() != fn) {
+    return false;
+  }
+
+  llvm::Function *shapeFn = mod.getFunction("elx_instance_shape_ptr");
+  llvm::Function *fieldsFn = mod.getFunction("elx_instance_field_values_ptr");
+  llvm::Function *presenceFn =
+      mod.getFunction("elx_instance_field_presence_ptr");
+  llvm::Function *callPropertyFn = mod.getFunction("elx_call_property");
+  if (!shapeFn || !callPropertyFn) {
+    return false;
+  }
+  if (method->kind == PlannedMethodKind::FieldGetter &&
+      (!fieldsFn || !presenceFn)) {
+    return false;
+  }
+
+  llvm::Value *receiver =
+      builder.CreateLoad(llvmValueTy(), slot, receiverName + "_receiver");
+  llvm::Value *shape = builder.CreateCall(shapeFn, {receiver}, "direct_shape");
+  llvm::Value *shapeValid = builder.CreateIsNotNull(shape, "direct_shape_ok");
+
+  auto directBB = llvm::BasicBlock::Create(ctx, "direct.method", fn);
+  auto fallbackBB = llvm::BasicBlock::Create(ctx, "direct.method.fallback", fn);
+  auto contBB = llvm::BasicBlock::Create(ctx, "direct.method.cont", fn);
+  builder.CreateCondBr(shapeValid, directBB, fallbackBB);
+
+  std::vector<std::pair<llvm::BasicBlock *, llvm::Value *>> results;
+
+  builder.SetInsertPoint(directBB);
+  if (method->kind == PlannedMethodKind::Empty) {
+    llvm::Value *directValue = nilConst();
+    builder.CreateBr(contBB);
+    results.emplace_back(builder.GetInsertBlock(), directValue);
+  } else if (method->kind == PlannedMethodKind::FieldGetter) {
+    llvm::Value *fields = builder.CreateCall(fieldsFn, {receiver}, "fields");
+    llvm::Value *presence =
+        builder.CreateCall(presenceFn, {receiver}, "field_presence");
+    llvm::Value *fieldsOk = builder.CreateIsNotNull(fields, "fields_ok");
+    llvm::Value *presenceOk =
+        builder.CreateIsNotNull(presence, "field_presence_ok");
+    llvm::Value *storageOk =
+        builder.CreateAnd(fieldsOk, presenceOk, "field_storage_ok");
+
+    auto loadBB = llvm::BasicBlock::Create(ctx, "direct.method.load", fn);
+    builder.CreateCondBr(storageOk, loadBB, fallbackBB);
+
+    builder.SetInsertPoint(loadBB);
+    auto slotIndex = llvm::ConstantInt::get(builder.getInt64Ty(),
+                                            method->fieldSlot);
+    auto presencePtr = builder.CreateInBoundsGEP(
+        builder.getInt8Ty(), presence, slotIndex, "field_presence_ptr");
+    auto initializedByte =
+        builder.CreateLoad(builder.getInt8Ty(), presencePtr, "field_present");
+    auto initialized =
+        builder.CreateICmpNE(initializedByte, builder.getInt8(0),
+                             "field_initialized");
+    auto initializedBB =
+        llvm::BasicBlock::Create(ctx, "direct.method.initialized", fn);
+    builder.CreateCondBr(initialized, initializedBB, fallbackBB);
+
+    builder.SetInsertPoint(initializedBB);
+    auto fieldPtr = builder.CreateInBoundsGEP(llvmValueTy(), fields, slotIndex,
+                                              "field_ptr");
+    llvm::Value *directValue =
+        builder.CreateLoad(llvmValueTy(), fieldPtr, "field_value");
+    builder.CreateBr(contBB);
+    results.emplace_back(builder.GetInsertBlock(), directValue);
+  } else {
+    builder.CreateBr(fallbackBB);
+  }
+
+  builder.SetInsertPoint(fallbackBB);
+  llvm::Value *nameValue = stringConst(methodName, true);
+  llvm::Value *argArray = llvm::ConstantPointerNull::get(
+      llvm::PointerType::get(llvmValueTy(), 0));
+  llvm::Value *argCount = builder.getInt32(0);
+  llvm::Value *fallbackValue =
+      builder.CreateCall(callPropertyFn, {receiver, nameValue, argArray,
+                                          argCount},
+                         "direct_property_fallback");
+  checkRuntimeError(fallbackValue);
+  llvm::Value *safeFallbackValue = value;
+  builder.CreateBr(contBB);
+  results.emplace_back(builder.GetInsertBlock(), safeFallbackValue);
+
+  builder.SetInsertPoint(contBB);
+  auto phi = builder.CreatePHI(llvmValueTy(), results.size(),
+                               "direct_method_result");
+  for (auto &entry : results) {
+    phi->addIncoming(entry.second, entry.first);
+  }
+  value = phi;
+  return true;
+}
+
 void CodeGenVisitor::visitCallExpr(Call *e) {
   if (e->arguments.size() > static_cast<size_t>(MAX_PARAMETERS)) {
     throw CompileError("Can't have more than 255 arguments.");
   }
 
   if (emitPlannedClassCall(e)) {
+    return;
+  }
+
+  if (emitPlannedReceiverCall(e)) {
     return;
   }
 
@@ -1798,6 +1972,12 @@ void CodeGenVisitor::visitExpressionStmt(Expression *s) {
     return;
   }
 
+  if (isDiscardablePlannedReceiverCall(s->expression.get())) {
+    addLoopInstructions(2);
+    value = nilConst();
+    return;
+  }
+
   if (isDiscardablePureExpression(s->expression.get())) {
     for (std::size_t i = 0; i < countDiscardedConstants(s->expression.get());
          ++i) {
@@ -1855,6 +2035,10 @@ void CodeGenVisitor::visitVarStmtWithExecution(Var *s) {
     if (setGlobalVarFn && shouldSyncGlobal(varName)) {
       auto nameStr = builder.CreateGlobalStringPtr(varName, "var_name");
       builder.CreateCall(setGlobalVarFn, {nameStr, initValue});
+    }
+    if (codeGenPlan && codeGenPlan->findStableReceiver(varName)) {
+      stableReceiverSlots[varName] = slot;
+      variableStacks[varName].push_back(slot);
     }
   } else {
     // Local variable - create alloca in function entry block

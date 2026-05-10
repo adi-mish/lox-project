@@ -61,6 +61,10 @@ struct FieldBuffer {
 
 static std::unordered_map<size_t, std::vector<FieldBuffer>> field_buffer_pool;
 static ObjInstance *instance_pool_head = nullptr;
+static constexpr size_t INSTANCE_ARENA_CHUNK_SIZE = 16384;
+static std::vector<std::unique_ptr<ObjInstance[]>> instance_arena_chunks;
+static ObjInstance *instance_arena_cursor = nullptr;
+static ObjInstance *instance_arena_end = nullptr;
 
 static FieldBuffer acquireFieldBuffer(size_t slotCount) {
   if (slotCount == 0) {
@@ -143,7 +147,20 @@ static void resetInstanceFields(ObjInstance *instance, ObjShape *shape) {
 
 static ObjInstance *acquireInstanceObject() {
   ObjInstance *instance = nullptr;
-  if (instance_pool_head) {
+  if (!object_tracking_enabled) {
+    if (instance_arena_cursor == instance_arena_end) {
+      auto chunk =
+          std::unique_ptr<ObjInstance[]>(new ObjInstance[INSTANCE_ARENA_CHUNK_SIZE]);
+      instance_arena_cursor = chunk.get();
+      instance_arena_end = instance_arena_cursor + INSTANCE_ARENA_CHUNK_SIZE;
+      instance_arena_chunks.push_back(std::move(chunk));
+    }
+    instance = instance_arena_cursor++;
+    instance->fieldValues = nullptr;
+    instance->fieldInitialized = nullptr;
+    instance->fieldCapacity = 0;
+    instance->nextFree = nullptr;
+  } else if (instance_pool_head) {
     instance = instance_pool_head;
     instance_pool_head = instance->nextFree;
   } else {
