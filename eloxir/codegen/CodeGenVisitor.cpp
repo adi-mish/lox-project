@@ -478,6 +478,23 @@ CodeGenVisitor::getCallCacheGlobal(const std::string &prefix,
   return global;
 }
 
+llvm::GlobalVariable *
+CodeGenVisitor::getFunctionObjectSlot(const std::string &name) {
+  auto it = functionObjectSlots.find(name);
+  if (it != functionObjectSlots.end()) {
+    return it->second;
+  }
+
+  uint64_t nilBits = QNAN | (static_cast<uint64_t>(Tag::NIL) << 48);
+  auto *initial = llvm::ConstantInt::get(llvmValueTy(), nilBits);
+  auto *slot = new llvm::GlobalVariable(mod, llvmValueTy(), false,
+                                        llvm::GlobalValue::PrivateLinkage,
+                                        initial, "elx.fnobj." + name);
+  slot->setAlignment(llvm::Align(sizeof(uint64_t)));
+  functionObjectSlots.emplace(name, slot);
+  return slot;
+}
+
 std::size_t CodeGenVisitor::saturatingLoopAdd(std::size_t current,
                                               std::size_t increment) const {
   constexpr std::size_t sentinel = MAX_LOOP_BODY_INSTRUCTIONS + 1;
@@ -1246,6 +1263,13 @@ void CodeGenVisitor::visitVariableExpr(Variable *e) {
   // Check if this is a declared function that hasn't been fully processed yet
   auto funcIt = functions.find(varName);
   if (funcIt != functions.end()) {
+    auto slotIt = functionObjectSlots.find(varName);
+    if (slotIt != functionObjectSlots.end()) {
+      value = builder.CreateLoad(llvmValueTy(), slotIt->second,
+                                 (varName + "_fnobj").c_str());
+      return;
+    }
+
     // For forward-declared functions, we need to look them up at runtime
     // This is because function objects can't be created at compile time without
     // causing cross-function reference issues in LLVM IR
@@ -2334,6 +2358,7 @@ void CodeGenVisitor::declareFunctionSignature(Function *s) {
 
   // Track function for later object creation (methods are handled immediately)
   if (!isMethod && function_map_key_override.empty() && blockDepth == 0) {
+    getFunctionObjectSlot(baseFuncName);
     pendingFunctions.push_back({baseFuncName, arity});
   }
 }
@@ -2360,6 +2385,11 @@ llvm::Value *CodeGenVisitor::createFunctionObject(const std::string &funcName,
 
   auto funcObj =
       builder.CreateCall(allocFn, {nameStr, arityConst, funcPtr}, "funcobj");
+
+  auto slotIt = functionObjectSlots.find(funcName);
+  if (slotIt != functionObjectSlots.end()) {
+    builder.CreateStore(funcObj, slotIt->second);
+  }
 
   // Store in globals map for immediate access during compilation
   globals[funcName] = funcObj;
