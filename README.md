@@ -1,9 +1,10 @@
 # Lox Implementations
 
-This repository contains four implementations of the Lox language from
+This repository contains five implementations of the Lox language from
 Robert Nystrom's *Crafting Interpreters*:
 
 - `jlox`: Java tree-walking interpreter.
+- `loxpp`: C++23 tree-walking interpreter translated from `jlox`.
 - `clox`: C bytecode VM, based on the final reference implementation from
   `munificent/craftinginterpreters`.
 - `cpplox`: C++20 bytecode VM focused on fast execution and optional VM
@@ -39,6 +40,7 @@ Run a script:
 
 ```bash
 ./lox.py run jlox test/benchmark/fib.lox
+./lox.py run loxpp test/benchmark/fib.lox
 ./lox.py run clox test/benchmark/fib.lox
 ./lox.py run cpplox test/benchmark/fib.lox
 ./lox.py run eloxir test/benchmark/fib.lox
@@ -107,18 +109,18 @@ Supported commands:
 
 ```bash
 ./lox.py list
-./lox.py info [jlox|clox|cpplox|eloxir ...]
+./lox.py info [jlox|loxpp|clox|cpplox|eloxir ...]
 ./lox.py paths
-./lox.py build [--stats] [jlox|clox|cpplox|eloxir ...]
-./lox.py clean [jlox|clox|cpplox|eloxir ...]
+./lox.py build [--stats] [jlox|loxpp|clox|cpplox|eloxir ...]
+./lox.py clean [jlox|loxpp|clox|cpplox|eloxir ...]
 ./lox.py run <impl> [--scan|--print-ast] [script]
 ./lox.py run cpplox --stats [script]
 ./lox.py scan <impl> <script>
 ./lox.py ast <impl> <script>
-./lox.py test [jlox|clox|cpplox|eloxir ...]
-./lox.py smoke [jlox|clox|cpplox|eloxir ...]
-./lox.py bench [jlox|clox|cpplox|eloxir ...]
-./lox.py doctor [jlox|clox|cpplox|eloxir ...]
+./lox.py test [jlox|loxpp|clox|cpplox|eloxir ...]
+./lox.py smoke [jlox|loxpp|clox|cpplox|eloxir ...]
+./lox.py bench [jlox|loxpp|clox|cpplox|eloxir ...]
+./lox.py doctor [jlox|loxpp|clox|cpplox|eloxir ...]
 ```
 
 The runner parses the official inline expectations, executes each `.lox` file
@@ -183,6 +185,37 @@ JDK. It also exposes test harness modes:
 
 Expected official-suite skips: VM hard-limit tests that do not apply to the
 Java tree-walking implementation.
+
+## loxpp
+
+`loxpp` is a modern C++23 tree-walking interpreter under `loxpp/`. It is a
+close translation of `jlox`, keeping the same interpreter architecture while
+using the repository's CMake and root orchestration workflow.
+
+Build directly:
+
+```bash
+cmake -S loxpp -B loxpp/build -DCMAKE_BUILD_TYPE=Release
+cmake --build loxpp/build
+```
+
+The Release build uses C++23 with `-O3 -march=native -DNDEBUG` on GCC/Clang.
+
+Run directly:
+
+```bash
+./loxpp/build/Release/loxpp path/to/script.lox
+```
+
+It also supports scanner and AST-printer modes:
+
+```bash
+./lox.py run loxpp --scan test/scanning/numbers.lox
+./lox.py run loxpp --print-ast test/expressions/parse.lox
+```
+
+Expected official-suite skips: VM hard-limit tests that do not apply to the
+tree-walking implementation.
 
 ## clox
 
@@ -308,15 +341,17 @@ Useful knobs:
 Recent verification from the root orchestrator:
 
 ```text
-$ ./lox.py test jlox clox cpplox eloxir --skip-build --timeout 10
+$ ./lox.py test jlox loxpp clox cpplox eloxir --skip-build --timeout 600
 jlox: 259 passed, 0 failed, 6 skipped, 265 total
+loxpp: 259 passed, 0 failed, 6 skipped, 265 total
 clox: 263 passed, 0 failed, 2 skipped, 265 total
 cpplox: 263 passed, 0 failed, 2 skipped, 265 total
 eloxir: 265 passed, 0 failed, 0 skipped, 265 total
 ```
 
 The skips are implementation-surface differences described above, not known
-semantic failures.
+semantic failures. `loxpp` needs the larger timeout because the official
+benchmark fixtures run much longer on a tree-walking interpreter.
 
 Recent bytecode/JIT benchmark comparison:
 
