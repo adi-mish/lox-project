@@ -252,6 +252,7 @@ void elx_class_add_method(uint64_t class_bits, uint64_t name_bits,
                           uint64_t method_bits);
 uint64_t elx_class_find_method(uint64_t class_bits, uint64_t name_bits);
 uint64_t elx_instantiate_class(uint64_t class_bits);
+uint64_t elx_instantiate_known_class(uint64_t class_bits);
 uint64_t elx_get_instance_class(uint64_t instance_bits);
 uint64_t elx_get_instance_field(uint64_t instance_bits, uint64_t name_bits);
 uint64_t elx_set_instance_field(uint64_t instance_bits, uint64_t name_bits,

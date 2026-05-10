@@ -4,6 +4,7 @@
 #include "../frontend/Visitor.h"
 #include "../runtime/RuntimeAPI.h"
 #include "../runtime/Value.h"
+#include "CodeGenPlan.h"
 #include <cstddef>
 #include <cstdint>
 #include <llvm/IR/IRBuilder.h>
@@ -106,6 +107,8 @@ class CodeGenVisitor : public ExprVisitor, public StmtVisitor {
   std::unordered_map<std::string, llvm::GlobalVariable *> stringConstantSlots;
   std::vector<std::string> stringConstantOrder;
   int stringConstantCounter = 0;
+  const CodeGenPlan *codeGenPlan = nullptr;
+  std::unordered_map<std::string, llvm::Value *> stableClassSlots;
 
 public:
   CodeGenVisitor(llvm::Module &m);
@@ -175,6 +178,8 @@ public:
     syncAllGlobals = false;
   }
 
+  void setCodeGenPlan(const CodeGenPlan *plan) { codeGenPlan = plan; }
+
   // Helper to create global function objects outside of function contexts
   void createGlobalFunctionObjects();
 
@@ -213,6 +218,7 @@ private:
                                            const Expr *expr);
   llvm::GlobalVariable *getFunctionObjectSlot(const std::string &name);
   llvm::GlobalVariable *getStringConstantSlot(const std::string &value);
+  bool emitPlannedClassCall(Call *e);
   void emitLegacyGetExpr(Get *e, llvm::Value *objectValue,
                          llvm::Value *nameValue);
   void emitLegacySetExpr(Set *e, llvm::Value *objectValue);

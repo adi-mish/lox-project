@@ -1267,9 +1267,61 @@ void CodeGenVisitor::visitLogicalExpr(Logical *e) {
   value = phi;
 }
 
+bool CodeGenVisitor::emitPlannedClassCall(Call *e) {
+  if (!codeGenPlan) {
+    return false;
+  }
+
+  auto *calleeVar = dynamic_cast<Variable *>(e->callee.get());
+  if (!calleeVar) {
+    return false;
+  }
+
+  const std::string &className = calleeVar->name.getLexeme();
+  const PlannedClass *planned =
+      codeGenPlan->findStableTrivialClass(className);
+  if (!planned) {
+    return false;
+  }
+
+  if (planned->initializerArity != 0 || !e->arguments.empty()) {
+    return false;
+  }
+
+  auto slotIt = stableClassSlots.find(className);
+  if (slotIt == stableClassSlots.end()) {
+    return false;
+  }
+
+  auto *slot = slotIt->second;
+  auto *alloca = llvm::dyn_cast<llvm::AllocaInst>(slot);
+  auto *activeFn = builder.GetInsertBlock()->getParent();
+  if (!alloca || alloca->getFunction() != activeFn) {
+    return false;
+  }
+
+  llvm::Function *instantiateFn = mod.getFunction("elx_instantiate_known_class");
+  if (!instantiateFn) {
+    return false;
+  }
+
+  llvm::Value *classValue =
+      builder.CreateLoad(llvmValueTy(), slot, className + "_class");
+  for (auto &arg : e->arguments) {
+    arg->accept(this);
+  }
+
+  value = builder.CreateCall(instantiateFn, {classValue}, "direct_class");
+  return true;
+}
+
 void CodeGenVisitor::visitCallExpr(Call *e) {
   if (e->arguments.size() > static_cast<size_t>(MAX_PARAMETERS)) {
     throw CompileError("Can't have more than 255 arguments.");
+  }
+
+  if (emitPlannedClassCall(e)) {
+    return;
   }
 
   if (auto *get = dynamic_cast<Get *>(e->callee.get())) {
@@ -3268,6 +3320,9 @@ void CodeGenVisitor::visitClassStmt(Class *s) {
 
   if (isGlobal) {
     globalVariables.insert(className);
+    if (codeGenPlan && codeGenPlan->findStableTrivialClass(className)) {
+      stableClassSlots[className] = classSlot;
+    }
   }
 
   struct SyntheticBindingState {

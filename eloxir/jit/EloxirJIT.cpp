@@ -275,6 +275,10 @@ llvm::Expected<std::unique_ptr<EloxirJIT>> EloxirJIT::Create() {
       llvm::orc::ExecutorSymbolDef(
           llvm::orc::ExecutorAddr::fromPtr(&elx_instantiate_class),
           llvm::JITSymbolFlags::Exported);
+  runtimeSymbols[mangle("elx_instantiate_known_class")] =
+      llvm::orc::ExecutorSymbolDef(
+          llvm::orc::ExecutorAddr::fromPtr(&elx_instantiate_known_class),
+          llvm::JITSymbolFlags::Exported);
   runtimeSymbols[mangle("elx_get_instance_class")] =
       llvm::orc::ExecutorSymbolDef(
           llvm::orc::ExecutorAddr::fromPtr(&elx_get_instance_class),

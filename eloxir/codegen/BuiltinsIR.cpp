@@ -219,6 +219,8 @@ void declareRuntimeBuiltins(llvm::Module &module) {
           llvm::FunctionType::get(value, {value, value}, false));
   declare(module, "elx_instantiate_class",
           llvm::FunctionType::get(value, {value}, false));
+  declare(module, "elx_instantiate_known_class",
+          llvm::FunctionType::get(value, {value}, false));
   declare(module, "elx_get_instance_class",
           llvm::FunctionType::get(value, {value}, false));
   declare(module, "elx_get_instance_field",

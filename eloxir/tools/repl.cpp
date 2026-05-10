@@ -1,4 +1,5 @@
 #include "../codegen/CodeGenVisitor.h"
+#include "../codegen/CodeGenPlan.h"
 #include "../frontend/CompileError.h"
 #include "../frontend/Parser.h"
 #include "../frontend/Resolver.h"
@@ -538,6 +539,7 @@ int runFile(const std::string &filename) {
   }
   auto runtimeSyncedGlobals =
       GlobalSyncCollector(resolver.locals).collect(stmts);
+  auto codeGenPlan = eloxir::CodeGenPlan::analyze(stmts);
 
   // Clear any previous runtime errors
   elx_clear_runtime_error();
@@ -556,6 +558,7 @@ int runFile(const std::string &filename) {
     fileCG.setResolverUpvalues(&resolver.function_upvalues);
     fileCG.setResolverLocals(&resolver.locals);
     fileCG.setRuntimeSyncedGlobals(std::move(runtimeSyncedGlobals));
+    fileCG.setCodeGenPlan(&codeGenPlan);
 
     // Create main function
     auto fnTy = FunctionType::get(fileCG.llvmValueTy(), {}, false);

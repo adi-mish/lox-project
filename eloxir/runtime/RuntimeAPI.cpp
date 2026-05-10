@@ -2569,6 +2569,21 @@ uint64_t elx_instantiate_class(uint64_t class_bits) {
   return Value::object(instance).getBits();
 }
 
+uint64_t elx_instantiate_known_class(uint64_t class_bits) {
+  Value class_val = Value::fromBits(class_bits);
+  if (!class_val.isObj()) {
+    return Value::nil().getBits();
+  }
+
+  auto *klass = static_cast<ObjClass *>(class_val.asObj());
+  ObjInstance *instance = acquireInstanceObject();
+  instance->klass = klass;
+  resetInstanceFields(instance, klass ? klass->defaultShape : nullptr);
+
+  trackObject(instance);
+  return Value::object(instance).getBits();
+}
+
 uint64_t elx_get_instance_class(uint64_t instance_bits) {
   Value instance_val = Value::fromBits(instance_bits);
   ObjInstance *instance = getInstance(instance_val);
