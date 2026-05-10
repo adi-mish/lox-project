@@ -2,6 +2,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <array>
+
 #include "common.h"
 #include "compiler.h"
 #include "memory.h"
@@ -42,12 +44,12 @@ typedef struct {
 
 typedef struct {
   Token name;
-  int depth;
-  bool isCaptured;
+  int depth = 0;
+  bool isCaptured = false;
 } Local;
 typedef struct {
-  uint8_t index;
-  bool isLocal;
+  uint8_t index = 0;
+  bool isLocal = false;
 } Upvalue;
 typedef enum {
   TYPE_FUNCTION,
@@ -61,9 +63,9 @@ typedef struct Compiler {
   ObjFunction *function;
   FunctionType type;
 
-  Local locals[UINT8_COUNT];
+  std::array<Local, UINT8_COUNT> locals;
   int localCount;
-  Upvalue upvalues[UINT8_COUNT];
+  std::array<Upvalue, UINT8_COUNT> upvalues;
   int scopeDepth;
   int logicalByteCount;
 } Compiler;
@@ -82,7 +84,7 @@ Parser parser;
 static Scanner scanner;
 Compiler *current = NULL;
 ClassCompiler *currentClass = NULL;
-static ObjString *knownGlobals[UINT8_COUNT];
+static std::array<ObjString *, UINT8_COUNT> knownGlobals;
 static int knownGlobalCount = 0;
 
 static Chunk *currentChunk() { return &current->function->chunk; }
