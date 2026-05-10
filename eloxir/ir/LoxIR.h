@@ -65,6 +65,18 @@ enum class UnaryOp {
   Not,
 };
 
+enum class UpvalueSourceKind {
+  Local,
+  Upvalue,
+};
+
+struct Upvalue {
+  std::string name;
+  UpvalueSourceKind source = UpvalueSourceKind::Local;
+  std::string sourceSymbol;
+  uint32_t sourceIndex = 0;
+};
+
 enum class InstructionKind {
   ConstantNil,
   ConstantBool,
@@ -141,12 +153,23 @@ public:
   explicit LoxFunction(std::string name);
 
   const std::string &name() const { return name_; }
+  const std::string &displayName() const { return displayName_; }
+  void setDisplayName(std::string name) { displayName_ = std::move(name); }
+  int arity() const { return arity_; }
+  void setArity(int arity) { arity_ = arity; }
+  bool isInitializer() const { return isInitializer_; }
+  void setInitializer(bool isInitializer) { isInitializer_ = isInitializer; }
+  bool isMethod() const { return isMethod_; }
+  void setMethod(bool isMethod) { isMethod_ = isMethod; }
   std::vector<Parameter> &parameters() { return parameters_; }
   const std::vector<Parameter> &parameters() const { return parameters_; }
+  std::vector<Upvalue> &upvalues() { return upvalues_; }
+  const std::vector<Upvalue> &upvalues() const { return upvalues_; }
   std::vector<BasicBlock> &blocks() { return blocks_; }
   const std::vector<BasicBlock> &blocks() const { return blocks_; }
 
   Parameter &addParameter(std::string name, LoxType type = LoxType::Unknown);
+  Upvalue &addUpvalue(Upvalue upvalue);
   BasicBlock &addBlock(std::string name);
   BasicBlock *findBlock(BlockId id);
   const BasicBlock *findBlock(BlockId id) const;
@@ -154,7 +177,12 @@ public:
 
 private:
   std::string name_;
+  std::string displayName_;
+  int arity_ = 0;
+  bool isInitializer_ = false;
+  bool isMethod_ = false;
   std::vector<Parameter> parameters_;
+  std::vector<Upvalue> upvalues_;
   std::vector<BasicBlock> blocks_;
   uint32_t nextValueId_ = 0;
 };
@@ -180,6 +208,7 @@ bool isTerminator(InstructionKind kind);
 const char *toString(LoxType type);
 const char *toString(BinaryOp op);
 const char *toString(UnaryOp op);
+const char *toString(UpvalueSourceKind kind);
 const char *toString(InstructionKind kind);
 
 } // namespace eloxir::loxir

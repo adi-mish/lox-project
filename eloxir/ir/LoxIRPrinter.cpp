@@ -102,7 +102,34 @@ void printModule(std::ostream &out, const LoxModule &module) {
       out << '%' << parameter.value.id << ':' << toString(parameter.type)
           << ' ' << parameter.name;
     }
-    out << ") {\n";
+    out << ')';
+    if (function.displayName() != function.name()) {
+      out << " display=\"" << function.displayName() << '"';
+    }
+    out << " arity=" << function.arity();
+    if (function.isMethod()) {
+      out << " method";
+    }
+    if (function.isInitializer()) {
+      out << " initializer";
+    }
+    if (!function.upvalues().empty()) {
+      out << " captures(";
+      for (size_t i = 0; i < function.upvalues().size(); ++i) {
+        const Upvalue &upvalue = function.upvalues()[i];
+        if (i != 0) {
+          out << ", ";
+        }
+        out << upvalue.name << ':' << toString(upvalue.source);
+        if (upvalue.source == UpvalueSourceKind::Local) {
+          out << '@' << upvalue.sourceSymbol;
+        } else {
+          out << '#' << upvalue.sourceIndex;
+        }
+      }
+      out << ')';
+    }
+    out << " {\n";
 
     for (const BasicBlock &block : function.blocks()) {
       out << "  ^bb" << block.id().id << " " << block.name() << ":\n";

@@ -16,12 +16,18 @@ bool BasicBlock::hasTerminator() const {
   return !instructions_.empty() && isTerminator(instructions_.back().kind);
 }
 
-LoxFunction::LoxFunction(std::string name) : name_(std::move(name)) {}
+LoxFunction::LoxFunction(std::string name)
+    : name_(std::move(name)), displayName_(name_) {}
 
 Parameter &LoxFunction::addParameter(std::string name, LoxType type) {
   Parameter parameter{std::move(name), makeValue(), type};
   parameters_.push_back(std::move(parameter));
   return parameters_.back();
+}
+
+Upvalue &LoxFunction::addUpvalue(Upvalue upvalue) {
+  upvalues_.push_back(std::move(upvalue));
+  return upvalues_.back();
 }
 
 BasicBlock &LoxFunction::addBlock(std::string name) {
@@ -141,6 +147,16 @@ const char *toString(UnaryOp op) {
     return "!";
   }
   return "?";
+}
+
+const char *toString(UpvalueSourceKind kind) {
+  switch (kind) {
+  case UpvalueSourceKind::Local:
+    return "local";
+  case UpvalueSourceKind::Upvalue:
+    return "upvalue";
+  }
+  return "unknown";
 }
 
 const char *toString(InstructionKind kind) {

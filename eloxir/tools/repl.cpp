@@ -573,7 +573,8 @@ int runFile(const std::string &filename) {
   bool loxIRVerified = true;
   std::unique_ptr<eloxir::loxir::LoxModule> loxModule;
   if (wantLoxIR) {
-    eloxir::loxir::AstLowerer lowerer(&resolver.locals);
+    eloxir::loxir::AstLowerer lowerer(&resolver.locals,
+                                       &resolver.function_upvalues);
     loxModule = std::make_unique<eloxir::loxir::LoxModule>(
         lowerer.lower("file_module", stmts));
     if (hasOversizedLoxIRBlock(*loxModule)) {

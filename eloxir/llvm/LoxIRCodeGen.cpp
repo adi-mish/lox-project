@@ -45,13 +45,19 @@ public:
   }
 
   std::optional<std::string> emit(const LoxModule &loxModule) {
-    if (loxModule.functions().size() != 1 ||
-        loxModule.functions().front().name() != "main") {
-      return "module contains functions or methods outside the initial LoxIR "
-             "backend subset";
+    if (!loxModule.findFunction("main")) {
+      return "module does not contain a main function";
     }
 
-    return emitFunction(loxModule.functions().front());
+    for (const LoxFunction &function : loxModule.functions()) {
+      declareFunction(function);
+    }
+    for (const LoxFunction &function : loxModule.functions()) {
+      if (auto failure = emitFunction(function)) {
+        return failure;
+      }
+    }
+    return std::nullopt;
   }
 
 private:
@@ -59,10 +65,14 @@ private:
   llvm::LLVMContext &ctx_;
   llvm::IRBuilder<> builder_;
   llvm::Function *function_ = nullptr;
+  const LoxFunction *loxFunction_ = nullptr;
+  llvm::Value *upvalueArray_ = nullptr;
   std::unordered_map<uint32_t, llvm::BasicBlock *> blocks_;
   std::unordered_map<uint32_t, llvm::Value *> values_;
   std::unordered_map<uint32_t, LoxType> types_;
   std::unordered_map<std::string, llvm::Value *> locals_;
+  std::unordered_map<std::string, llvm::Function *> functions_;
+  std::unordered_map<std::string, const LoxFunction *> loxFunctions_;
 
   llvm::IntegerType *valueTy() { return llvm::Type::getInt64Ty(ctx_); }
   llvm::IntegerType *i32Ty() { return llvm::Type::getInt32Ty(ctx_); }
@@ -180,15 +190,55 @@ private:
     return storage;
   }
 
+  llvm::Function *declareFunction(const LoxFunction &function) {
+    std::vector<llvm::Type *> parameterTypes(function.parameters().size(),
+                                             valueTy());
+    if (!function.upvalues().empty()) {
+      parameterTypes.push_back(valuePtrTy());
+    }
+    auto *fnTy = llvm::FunctionType::get(valueTy(), parameterTypes, false);
+    auto *llvmFunction = llvm::Function::Create(
+        fnTy, llvm::Function::ExternalLinkage, function.name(), module_);
+    functions_[function.name()] = llvmFunction;
+    loxFunctions_[function.name()] = &function;
+    return llvmFunction;
+  }
+
   std::optional<std::string> emitFunction(const LoxFunction &function) {
-    auto *fnTy = llvm::FunctionType::get(valueTy(), {}, false);
-    function_ =
-        llvm::Function::Create(fnTy, llvm::Function::ExternalLinkage, "main",
-                               module_);
+    function_ = functions_.at(function.name());
+    loxFunction_ = &function;
+    upvalueArray_ = nullptr;
+    blocks_.clear();
+    values_.clear();
+    types_.clear();
+    locals_.clear();
 
     for (const auto &block : function.blocks()) {
       blocks_[block.id().id] =
           llvm::BasicBlock::Create(ctx_, block.name(), function_);
+    }
+
+    builder_.SetInsertPoint(blocks_.at(function.blocks().front().id().id));
+    auto argument = function_->arg_begin();
+    for (const auto &parameter : function.parameters()) {
+      if (argument == function_->arg_end()) {
+        return "function @" + function.name() + " has too few LLVM arguments";
+      }
+      argument->setName(parameter.name);
+      auto *slot = localSlot(parameter.name);
+      if (!slot) {
+        return "missing elx_allocate_value_slot";
+      }
+      builder_.CreateStore(&*argument, slot);
+      bindParameter(parameter, &*argument);
+      ++argument;
+    }
+    if (!function.upvalues().empty()) {
+      if (argument == function_->arg_end()) {
+        return "function @" + function.name() + " missing upvalue array";
+      }
+      argument->setName("upvalues");
+      upvalueArray_ = &*argument;
     }
 
     for (const auto &block : function.blocks()) {
@@ -204,6 +254,11 @@ private:
     }
 
     return std::nullopt;
+  }
+
+  void bindParameter(const Parameter &parameter, llvm::Value *value) {
+    values_[parameter.value.id] = value;
+    types_[parameter.value.id] = parameter.type;
   }
 
   llvm::Value *lookup(ValueId id) const {
@@ -275,6 +330,10 @@ private:
       return emitLoadLocal(instruction);
     case InstructionKind::StoreLocal:
       return emitStoreLocal(instruction);
+    case InstructionKind::LoadUpvalue:
+      return emitLoadUpvalue(instruction);
+    case InstructionKind::StoreUpvalue:
+      return emitStoreUpvalue(instruction);
     case InstructionKind::Binary:
       return emitBinary(instruction);
     case InstructionKind::Unary:
@@ -302,8 +361,7 @@ private:
     case InstructionKind::BindSuper:
       return emitBindSuper(instruction);
     case InstructionKind::DefineFunction:
-    case InstructionKind::LoadUpvalue:
-    case InstructionKind::StoreUpvalue:
+      return emitDefineFunction(instruction);
     case InstructionKind::Phi:
     case InstructionKind::CloseUpvalues:
       return unsupported(instruction, "not in the generic backend subset");
@@ -435,6 +493,64 @@ private:
     return std::nullopt;
   }
 
+  const Upvalue *findUpvalue(const std::string &name) const {
+    if (!loxFunction_) {
+      return nullptr;
+    }
+    for (const Upvalue &upvalue : loxFunction_->upvalues()) {
+      if (upvalue.name == name) {
+        return &upvalue;
+      }
+    }
+    return nullptr;
+  }
+
+  llvm::Value *loadUpvalueObject(uint32_t index) {
+    if (!upvalueArray_) {
+      return nullptr;
+    }
+    auto *slot = builder_.CreateGEP(valueTy(), upvalueArray_,
+                                    constantI32(static_cast<int>(index)),
+                                    "upvalue.slot");
+    return builder_.CreateLoad(valueTy(), slot, "upvalue.object");
+  }
+
+  std::optional<std::string> emitLoadUpvalue(const Instruction &instruction) {
+    const Upvalue *upvalue = findUpvalue(instruction.symbol);
+    auto *get = runtime("elx_get_upvalue_value");
+    if (!upvalue || !get) {
+      return unsupported(instruction, "missing upvalue runtime state");
+    }
+    auto *upvalueObject = loadUpvalueObject(
+        static_cast<uint32_t>(upvalue - loxFunction_->upvalues().data()));
+    if (!upvalueObject) {
+      return unsupported(instruction, "missing upvalue array");
+    }
+    auto *value = builder_.CreateCall(get, {upvalueObject}, "upvalue.value");
+    guardRuntimeError();
+    bind(instruction, value, instruction.resultType);
+    return std::nullopt;
+  }
+
+  std::optional<std::string> emitStoreUpvalue(const Instruction &instruction) {
+    if (auto failure = requireOperands(instruction, 1)) {
+      return failure;
+    }
+    const Upvalue *upvalue = findUpvalue(instruction.symbol);
+    auto *set = runtime("elx_set_upvalue_value");
+    if (!upvalue || !set) {
+      return unsupported(instruction, "missing upvalue runtime state");
+    }
+    auto *upvalueObject = loadUpvalueObject(
+        static_cast<uint32_t>(upvalue - loxFunction_->upvalues().data()));
+    if (!upvalueObject) {
+      return unsupported(instruction, "missing upvalue array");
+    }
+    builder_.CreateCall(set, {upvalueObject, lookup(instruction.operands[0])});
+    guardRuntimeError();
+    return std::nullopt;
+  }
+
   std::optional<std::string> emitStoreGlobal(const Instruction &instruction) {
     if (auto failure = requireOperands(instruction, 1)) {
       return failure;
@@ -471,6 +587,72 @@ private:
       builder_.SetInsertPoint(storeBlock);
     }
     builder_.CreateCall(store, {name, lookup(instruction.operands[0])});
+    return std::nullopt;
+  }
+
+  llvm::Value *captureUpvalue(const Upvalue &upvalue) {
+    if (upvalue.source == UpvalueSourceKind::Upvalue) {
+      return loadUpvalueObject(upvalue.sourceIndex);
+    }
+
+    auto *allocateUpvalue = runtime("elx_allocate_upvalue");
+    if (!allocateUpvalue) {
+      return nullptr;
+    }
+    auto *slot = localSlot(upvalue.sourceSymbol);
+    if (!slot) {
+      return nullptr;
+    }
+    return builder_.CreateCall(allocateUpvalue, {slot}, "captured.upvalue");
+  }
+
+  std::optional<std::string> emitDefineFunction(const Instruction &instruction) {
+    auto functionIt = functions_.find(instruction.symbol);
+    auto loxIt = loxFunctions_.find(instruction.symbol);
+    auto *allocateFunction = runtime("elx_allocate_function");
+    if (functionIt == functions_.end() || loxIt == loxFunctions_.end() ||
+        !allocateFunction) {
+      return unsupported(instruction, "missing function declaration");
+    }
+
+    const LoxFunction &target = *loxIt->second;
+    auto *name = stringPtr(target.displayName(), "function.name");
+    auto *arity = constantI32(target.arity());
+    auto *functionPtr = builder_.CreateBitCast(functionIt->second, i8PtrTy(),
+                                               "function.ptr");
+    auto *functionObject = builder_.CreateCall(
+        allocateFunction, {name, arity, functionPtr}, "function.object");
+    guardRuntimeError();
+
+    if (target.upvalues().empty() && !target.isMethod()) {
+      bind(instruction, functionObject, LoxType::Function);
+      return std::nullopt;
+    }
+
+    auto *allocateClosure = runtime("elx_allocate_closure");
+    auto *setUpvalue = runtime("elx_set_closure_upvalue");
+    if (!allocateClosure || !setUpvalue) {
+      return unsupported(instruction, "missing closure runtime helper");
+    }
+
+    auto *closure = builder_.CreateCall(
+        allocateClosure,
+        {functionObject, constantI32(static_cast<int>(target.upvalues().size()))},
+        "closure.object");
+    guardRuntimeError();
+
+    for (size_t index = 0; index < target.upvalues().size(); ++index) {
+      auto *captured = captureUpvalue(target.upvalues()[index]);
+      if (!captured) {
+        return unsupported(instruction, "failed to capture upvalue");
+      }
+      builder_.CreateCall(setUpvalue,
+                          {closure, constantI32(static_cast<int>(index)),
+                           captured});
+      guardRuntimeError();
+    }
+
+    bind(instruction, closure, LoxType::Closure);
     return std::nullopt;
   }
 

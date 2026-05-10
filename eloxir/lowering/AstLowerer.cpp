@@ -2,8 +2,11 @@
 
 #include "../frontend/Visitor.h"
 
+#include <algorithm>
+#include <optional>
 #include <stdexcept>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace eloxir::loxir {
 
@@ -48,10 +51,21 @@ class FunctionLowerer final : public ExprVisitor, public StmtVisitor {
 public:
   FunctionLowerer(LoxModule &module, LoxFunction &function,
                   const std::unordered_map<const Expr *, int> *resolvedLocals,
-                  int functionDepth)
+                  const std::unordered_map<const Function *,
+                                           std::vector<std::string>>
+                      *functionUpvalues,
+                  int functionDepth, uint32_t &functionCounter)
       : module_(module), function_(function), resolvedLocals_(resolvedLocals),
-        functionDepth_(functionDepth) {
+        functionUpvalues_(functionUpvalues), functionDepth_(functionDepth),
+        functionCounter_(functionCounter) {
     currentBlock_ = function_.addBlock("entry").id();
+    pushScope();
+    for (const auto &parameter : function_.parameters()) {
+      localScopes_.back()[parameter.name] = parameter.name;
+    }
+    for (uint32_t index = 0; index < function_.upvalues().size(); ++index) {
+      upvalueIndices_[function_.upvalues()[index].name] = index;
+    }
   }
 
   void lower(const std::vector<std::unique_ptr<Stmt>> &statements) {
@@ -122,13 +136,19 @@ public:
 
   void visitVariableExpr(Variable *expr) override {
     Instruction instruction;
-    instruction.kind = isResolvedLocal(expr) ? InstructionKind::LoadLocal
-                                             : InstructionKind::LoadGlobal;
+    auto local = lookupLocalSymbol(expr->name.getLexeme());
+    if (local) {
+      instruction.kind = InstructionKind::LoadLocal;
+      instruction.symbol = *local;
+    } else if (isUpvalue(expr->name.getLexeme())) {
+      instruction.kind = InstructionKind::LoadUpvalue;
+      instruction.symbol = expr->name.getLexeme();
+    } else {
+      instruction.kind = InstructionKind::LoadGlobal;
+      instruction.symbol = expr->name.getLexeme();
+    }
     instruction.source = sourceFromToken(expr->name);
     instruction.result = makeValue();
-    instruction.symbol = instruction.kind == InstructionKind::LoadLocal
-                             ? lookupLocal(expr->name.getLexeme())
-                             : expr->name.getLexeme();
     append(std::move(instruction));
   }
 
@@ -137,12 +157,18 @@ public:
     ValueId assigned = value_;
 
     Instruction instruction;
-    instruction.kind = isResolvedLocal(expr) ? InstructionKind::StoreLocal
-                                             : InstructionKind::StoreGlobal;
+    auto local = lookupLocalSymbol(expr->name.getLexeme());
+    if (local) {
+      instruction.kind = InstructionKind::StoreLocal;
+      instruction.symbol = *local;
+    } else if (isUpvalue(expr->name.getLexeme())) {
+      instruction.kind = InstructionKind::StoreUpvalue;
+      instruction.symbol = expr->name.getLexeme();
+    } else {
+      instruction.kind = InstructionKind::StoreGlobal;
+      instruction.symbol = expr->name.getLexeme();
+    }
     instruction.source = sourceFromToken(expr->name);
-    instruction.symbol = instruction.kind == InstructionKind::StoreLocal
-                             ? lookupLocal(expr->name.getLexeme())
-                             : expr->name.getLexeme();
     instruction.operands = {assigned};
     append(std::move(instruction));
   }
@@ -235,27 +261,33 @@ public:
 
   void visitThisExpr(This *expr) override {
     Instruction instruction;
-    instruction.kind = InstructionKind::LoadLocal;
+    auto local = lookupLocalSymbol("this");
+    instruction.kind =
+        local ? InstructionKind::LoadLocal : InstructionKind::LoadUpvalue;
     instruction.source = sourceFromToken(expr->keyword);
     instruction.result = makeValue();
-    instruction.symbol = "this";
+    instruction.symbol = local ? *local : "this";
     append(std::move(instruction));
   }
 
   void visitSuperExpr(Super *expr) override {
     Instruction loadThis;
-    loadThis.kind = InstructionKind::LoadLocal;
+    auto thisLocal = lookupLocalSymbol("this");
+    loadThis.kind =
+        thisLocal ? InstructionKind::LoadLocal : InstructionKind::LoadUpvalue;
     loadThis.source = sourceFromToken(expr->keyword);
     loadThis.result = makeValue();
-    loadThis.symbol = "this";
+    loadThis.symbol = thisLocal ? *thisLocal : "this";
     append(std::move(loadThis));
     ValueId thisValue = value_;
 
     Instruction loadSuper;
-    loadSuper.kind = InstructionKind::LoadLocal;
+    auto superLocal = lookupLocalSymbol("super");
+    loadSuper.kind =
+        superLocal ? InstructionKind::LoadLocal : InstructionKind::LoadUpvalue;
     loadSuper.source = sourceFromToken(expr->keyword);
     loadSuper.result = makeValue();
-    loadSuper.symbol = "super";
+    loadSuper.symbol = superLocal ? *superLocal : "super";
     append(std::move(loadSuper));
     ValueId superValue = value_;
 
@@ -383,12 +415,31 @@ public:
   }
 
   void visitFunctionStmt(Function *stmt) override {
-    LoxFunction &child = module_.addFunction(stmt->name.getLexeme());
-    FunctionLowerer childLowerer(module_, child, resolvedLocals_,
-                                 functionDepth_ + 1);
+    const bool topLevel = isTopLevel();
+    std::string localSymbol;
+    if (!topLevel) {
+      localSymbol = declareLocal(stmt->name.getLexeme());
+      emitNil();
+      Instruction placeholder;
+      placeholder.kind = InstructionKind::StoreLocal;
+      placeholder.source = sourceFromToken(stmt->name);
+      placeholder.symbol = localSymbol;
+      placeholder.operands = {value_};
+      append(std::move(placeholder));
+    }
+
+    LoxFunction &child =
+        module_.addFunction(uniqueFunctionName(stmt->name.getLexeme()));
+    child.setDisplayName(stmt->name.getLexeme());
+    child.setArity(static_cast<int>(stmt->params.size()));
     for (const Token &param : stmt->params) {
       child.addParameter(param.getLexeme());
     }
+    configureUpvalues(child, stmt, false);
+
+    FunctionLowerer childLowerer(module_, child, resolvedLocals_,
+                                 functionUpvalues_, functionDepth_ + 1,
+                                 functionCounter_);
     if (stmt->body) {
       childLowerer.lower(stmt->body->statements);
     }
@@ -402,18 +453,23 @@ public:
     append(std::move(instruction));
 
     Instruction store;
-    bool topLevel = isTopLevel();
     store.kind = topLevel ? InstructionKind::StoreGlobal
                           : InstructionKind::StoreLocal;
     store.source = sourceFromToken(stmt->name);
-    store.symbol = topLevel ? stmt->name.getLexeme()
-                            : declareLocal(stmt->name.getLexeme());
+    store.symbol = topLevel ? stmt->name.getLexeme() : localSymbol;
     store.declaresSymbol = topLevel;
     store.operands = {value_};
     append(std::move(store));
   }
 
   void visitReturnStmt(Return *stmt) override {
+    if (function_.isInitializer()) {
+      if (stmt->value) {
+        stmt->value->accept(this);
+      }
+      emitThisReturn(sourceFromToken(stmt->keyword));
+      return;
+    }
     if (stmt->value) {
       stmt->value->accept(this);
     } else {
@@ -427,10 +483,33 @@ public:
   }
 
   void visitClassStmt(Class *stmt) override {
+    const bool topLevel = isTopLevel();
+    std::string classSymbol;
+    if (!topLevel) {
+      classSymbol = declareLocal(stmt->name.getLexeme());
+      emitNil();
+      Instruction placeholder;
+      placeholder.kind = InstructionKind::StoreLocal;
+      placeholder.source = sourceFromToken(stmt->name);
+      placeholder.symbol = classSymbol;
+      placeholder.operands = {value_};
+      append(std::move(placeholder));
+    }
+
     std::vector<ValueId> operands;
+    bool hasSuperScope = false;
     if (stmt->superclass) {
       stmt->superclass->accept(this);
       operands.push_back(value_);
+      pushScope();
+      hasSuperScope = true;
+      std::string superSymbol = declareLocal("super");
+      Instruction superStore;
+      superStore.kind = InstructionKind::StoreLocal;
+      superStore.source = sourceFromToken(stmt->name);
+      superStore.symbol = superSymbol;
+      superStore.operands = {value_};
+      append(std::move(superStore));
     }
 
     Instruction classInstruction;
@@ -444,26 +523,33 @@ public:
     ValueId classValue = value_;
 
     Instruction store;
-    bool topLevel = isTopLevel();
     store.kind = topLevel ? InstructionKind::StoreGlobal
                           : InstructionKind::StoreLocal;
     store.source = sourceFromToken(stmt->name);
-    store.symbol = topLevel ? stmt->name.getLexeme()
-                            : declareLocal(stmt->name.getLexeme());
+    store.symbol = topLevel ? stmt->name.getLexeme() : classSymbol;
     store.declaresSymbol = topLevel;
     store.operands = {classValue};
     append(std::move(store));
 
     for (const auto &method : stmt->methods) {
-      LoxFunction &methodFn = module_.addFunction(stmt->name.getLexeme() +
-                                                  "::" +
-                                                  method->name.getLexeme());
+      const bool initializer = method->name.getLexeme() == "init";
+      std::string displayName = method->name.getLexeme();
+      LoxFunction &methodFn =
+          module_.addFunction(uniqueFunctionName(stmt->name.getLexeme() +
+                                                 "::" + displayName));
+      methodFn.setDisplayName(displayName);
+      methodFn.setMethod(true);
+      methodFn.setInitializer(initializer);
       methodFn.addParameter("this");
       for (const Token &param : method->params) {
         methodFn.addParameter(param.getLexeme());
       }
+      methodFn.setArity(static_cast<int>(methodFn.parameters().size()));
+      configureUpvalues(methodFn, method.get(), true);
+
       FunctionLowerer methodLowerer(module_, methodFn, resolvedLocals_,
-                                    functionDepth_ + 1);
+                                    functionUpvalues_, functionDepth_ + 1,
+                                    functionCounter_);
       if (method->body) {
         methodLowerer.lower(method->body->statements);
       }
@@ -484,25 +570,29 @@ public:
       defineMethod.operands = {classValue, methodValue};
       append(std::move(defineMethod));
     }
+
+    if (hasSuperScope) {
+      popScope();
+    }
   }
 
 private:
   LoxModule &module_;
   LoxFunction &function_;
   const std::unordered_map<const Expr *, int> *resolvedLocals_;
+  const std::unordered_map<const Function *, std::vector<std::string>>
+      *functionUpvalues_;
   int functionDepth_ = 0;
   int blockDepth_ = 0;
   BlockId currentBlock_;
   ValueId value_;
   std::vector<std::unordered_map<std::string, std::string>> localScopes_;
+  std::unordered_map<std::string, uint32_t> upvalueIndices_;
   uint32_t nextLocalId_ = 0;
+  uint32_t &functionCounter_;
 
   bool isTopLevel() const {
     return functionDepth_ == 0 && blockDepth_ == 0;
-  }
-
-  bool isResolvedLocal(const Expr *expr) const {
-    return resolvedLocals_ && resolvedLocals_->find(expr) != resolvedLocals_->end();
   }
 
   void pushScope() { localScopes_.emplace_back(); }
@@ -523,6 +613,11 @@ private:
   }
 
   std::string lookupLocal(const std::string &name) const {
+    auto symbol = lookupLocalSymbol(name);
+    return symbol ? *symbol : name;
+  }
+
+  std::optional<std::string> lookupLocalSymbol(const std::string &name) const {
     for (auto scope = localScopes_.rbegin(); scope != localScopes_.rend();
          ++scope) {
       auto it = scope->find(name);
@@ -530,7 +625,69 @@ private:
         return it->second;
       }
     }
-    return name;
+    return std::nullopt;
+  }
+
+  bool isUpvalue(const std::string &name) const {
+    return upvalueIndices_.find(name) != upvalueIndices_.end();
+  }
+
+  std::string uniqueFunctionName(const std::string &base) {
+    return base + "$fn" + std::to_string(functionCounter_++);
+  }
+
+  std::vector<std::string> resolverUpvaluesFor(const Function *function,
+                                               bool isMethod) const {
+    std::vector<std::string> upvalues;
+    if (functionUpvalues_) {
+      auto it = functionUpvalues_->find(function);
+      if (it != functionUpvalues_->end()) {
+        upvalues = it->second;
+      }
+    }
+
+    upvalues.erase(std::remove_if(upvalues.begin(), upvalues.end(),
+                                  [&](const std::string &name) {
+                                    if (isMethod && name == "this") {
+                                      return true;
+                                    }
+                                    return std::any_of(
+                                        function->params.begin(),
+                                        function->params.end(),
+                                        [&](const Token &param) {
+                                          return param.getLexeme() == name;
+                                        });
+                                  }),
+                   upvalues.end());
+
+    std::vector<std::string> unique;
+    std::unordered_set<std::string> seen;
+    for (const std::string &name : upvalues) {
+      if (seen.insert(name).second) {
+        unique.push_back(name);
+      }
+    }
+    return unique;
+  }
+
+  void configureUpvalues(LoxFunction &child, const Function *function,
+                         bool isMethod) const {
+    for (const std::string &name : resolverUpvaluesFor(function, isMethod)) {
+      Upvalue upvalue;
+      upvalue.name = name;
+      if (auto local = lookupLocalSymbol(name)) {
+        upvalue.source = UpvalueSourceKind::Local;
+        upvalue.sourceSymbol = *local;
+      } else {
+        auto parentUpvalue = upvalueIndices_.find(name);
+        if (parentUpvalue == upvalueIndices_.end()) {
+          continue;
+        }
+        upvalue.source = UpvalueSourceKind::Upvalue;
+        upvalue.sourceIndex = parentUpvalue->second;
+      }
+      child.addUpvalue(std::move(upvalue));
+    }
   }
 
   bool hasTerminator() { return block().hasTerminator(); }
@@ -564,9 +721,28 @@ private:
   }
 
   void emitNilReturn() {
+    if (function_.isInitializer()) {
+      emitThisReturn(SourceLocation{});
+      return;
+    }
     emitNil();
     Instruction instruction;
     instruction.kind = InstructionKind::Return;
+    instruction.operands = {value_};
+    append(std::move(instruction));
+  }
+
+  void emitThisReturn(SourceLocation source) {
+    Instruction loadThis;
+    loadThis.kind = InstructionKind::LoadLocal;
+    loadThis.source = source;
+    loadThis.result = makeValue();
+    loadThis.symbol = lookupLocal("this");
+    append(std::move(loadThis));
+
+    Instruction instruction;
+    instruction.kind = InstructionKind::Return;
+    instruction.source = source;
     instruction.operands = {value_};
     append(std::move(instruction));
   }
@@ -582,15 +758,19 @@ private:
 } // namespace
 
 AstLowerer::AstLowerer(
-    const std::unordered_map<const Expr *, int> *resolvedLocals)
-    : resolvedLocals_(resolvedLocals) {}
+    const std::unordered_map<const Expr *, int> *resolvedLocals,
+    const std::unordered_map<const Function *, std::vector<std::string>>
+        *functionUpvalues)
+    : resolvedLocals_(resolvedLocals), functionUpvalues_(functionUpvalues) {}
 
 LoxModule
 AstLowerer::lower(const std::string &moduleName,
                   const std::vector<std::unique_ptr<Stmt>> &statements) {
   LoxModule module(moduleName);
   LoxFunction &main = module.addFunction("main");
-  FunctionLowerer lowerer(module, main, resolvedLocals_, 0);
+  uint32_t functionCounter = 0;
+  FunctionLowerer lowerer(module, main, resolvedLocals_, functionUpvalues_, 0,
+                          functionCounter);
   lowerer.lower(statements);
   return module;
 }
