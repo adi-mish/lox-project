@@ -7,7 +7,7 @@
 
 namespace cpplox {
 
-#define TABLE_MAX_LOAD 0.75
+inline constexpr double TABLE_MAX_LOAD = 0.75;
 
 void Table::clear() {
   count_ = 0;
@@ -92,7 +92,7 @@ void Table::adjustCapacity(int capacity) {
 }
 bool Table::set(ObjString *key, Value value) {
   if (count_ + 1 > capacity() * TABLE_MAX_LOAD) {
-    int newCapacity = GROW_CAPACITY(capacity());
+    int newCapacity = growCapacity(capacity());
     adjustCapacity(newCapacity);
   }
 

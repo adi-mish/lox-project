@@ -438,13 +438,12 @@ static void ensureInstanceFieldCapacity(ObjInstance *instance, int slot) {
     return;
 
   int oldCapacity = instance->fieldCapacity;
-  int newCapacity = GROW_CAPACITY(oldCapacity);
+  int newCapacity = growCapacity(oldCapacity);
   while (newCapacity <= slot) {
-    newCapacity = GROW_CAPACITY(newCapacity);
+    newCapacity = growCapacity(newCapacity);
   }
 
-  instance->fields =
-      GROW_ARRAY(Value, instance->fields, oldCapacity, newCapacity);
+  instance->fields = growArray(instance->fields, oldCapacity, newCapacity);
   for (int i = oldCapacity; i < newCapacity; i++) {
     instance->fields[i] = UNINITIALIZED_VAL;
   }
@@ -620,7 +619,7 @@ static void concatenate() {
   ObjString *a = AS_STRING(peek(1));
 
   int length = a->length + b->length;
-  char *chars = ALLOCATE(char, length + 1);
+  char *chars = allocate<char>(length + 1);
   memcpy(chars, a->chars, a->length);
   memcpy(chars + a->length, b->chars, b->length);
   chars[length] = '\0';

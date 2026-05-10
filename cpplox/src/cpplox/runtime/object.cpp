@@ -11,32 +11,32 @@
 
 namespace cpplox {
 
-#define ALLOCATE_OBJ(vm, type, objectType)                                     \
-  (type *)allocateObject((vm), sizeof(type), objectType)
+template <typename Object>
+static Object *allocateObject(Vm &vm, ObjectKind type) {
+  Object *object = allocate<Object>();
+  Obj *header = reinterpret_cast<Obj *>(object);
+  header->type = type;
+  header->isMarked = false;
 
-static Obj *allocateObject(Vm &vm, size_t size, ObjectKind type) {
-  Obj *object = (Obj *)reallocate(NULL, 0, size);
-  object->type = type;
-  object->isMarked = false;
-
-  object->next = vm.objects;
-  vm.objects = object;
+  header->next = vm.objects;
+  vm.objects = header;
 
 #ifdef DEBUG_LOG_GC
-  printf("%p allocate %zu for %d\n", (void *)object, size,
+  printf("%p allocate %zu for %d\n", (void *)object, sizeof(Object),
          objectKindIndex(type));
 #endif
 
   return object;
 }
 ObjBoundMethod *Vm::newBoundMethod(Value receiver, ObjClosure *method) {
-  ObjBoundMethod *bound = ALLOCATE_OBJ(*this, ObjBoundMethod, OBJ_BOUND_METHOD);
+  ObjBoundMethod *bound =
+      allocateObject<ObjBoundMethod>(*this, OBJ_BOUND_METHOD);
   bound->receiver = receiver;
   bound->method = method;
   return bound;
 }
 ObjClass *Vm::newClass(ObjString *name) {
-  ObjClass *klass = ALLOCATE_OBJ(*this, ObjClass, OBJ_CLASS);
+  ObjClass *klass = allocateObject<ObjClass>(*this, OBJ_CLASS);
   new (&klass->methods) Table();
   new (&klass->fieldSlots) Table();
   klass->name = name;
@@ -46,19 +46,19 @@ ObjClass *Vm::newClass(ObjString *name) {
   return klass;
 }
 ObjClosure *Vm::newClosure(ObjFunction *function) {
-  ObjUpvalue **upvalues = ALLOCATE(ObjUpvalue *, function->upvalueCount);
+  ObjUpvalue **upvalues = allocate<ObjUpvalue *>(function->upvalueCount);
   for (int i = 0; i < function->upvalueCount; i++) {
     upvalues[i] = NULL;
   }
 
-  ObjClosure *closure = ALLOCATE_OBJ(*this, ObjClosure, OBJ_CLOSURE);
+  ObjClosure *closure = allocateObject<ObjClosure>(*this, OBJ_CLOSURE);
   closure->function = function;
   closure->upvalues = upvalues;
   closure->upvalueCount = function->upvalueCount;
   return closure;
 }
 ObjFunction *Vm::newFunction() {
-  ObjFunction *function = ALLOCATE_OBJ(*this, ObjFunction, OBJ_FUNCTION);
+  ObjFunction *function = allocateObject<ObjFunction>(*this, OBJ_FUNCTION);
   function->arity = 0;
   function->upvalueCount = 0;
   function->name = NULL;
@@ -66,21 +66,21 @@ ObjFunction *Vm::newFunction() {
   return function;
 }
 ObjInstance *Vm::newInstance(ObjClass *klass) {
-  ObjInstance *instance = ALLOCATE_OBJ(*this, ObjInstance, OBJ_INSTANCE);
+  ObjInstance *instance = allocateObject<ObjInstance>(*this, OBJ_INSTANCE);
   instance->klass = klass;
   instance->fields = NULL;
   instance->fieldCapacity = 0;
   return instance;
 }
 ObjNative *Vm::newNative(NativeFn function) {
-  ObjNative *native = ALLOCATE_OBJ(*this, ObjNative, OBJ_NATIVE);
+  ObjNative *native = allocateObject<ObjNative>(*this, OBJ_NATIVE);
   native->function = function;
   return native;
 }
 
 static ObjString *allocateString(Vm &vm, char *chars, int length,
                                  uint32_t hash) {
-  ObjString *string = ALLOCATE_OBJ(vm, ObjString, OBJ_STRING);
+  ObjString *string = allocateObject<ObjString>(vm, OBJ_STRING);
   string->length = length;
   string->chars = chars;
   string->hash = hash;
@@ -103,7 +103,7 @@ ObjString *Vm::takeString(char *chars, int length) {
   uint32_t hash = hashString(chars, length);
   ObjString *interned = strings.findString(chars, length, hash);
   if (interned != NULL) {
-    FREE_ARRAY(char, chars, length + 1);
+    freeArray(chars, length + 1);
     return interned;
   }
 
@@ -115,14 +115,14 @@ ObjString *Vm::copyString(const char *chars, int length) {
   if (interned != NULL)
     return interned;
 
-  char *heapChars = ALLOCATE(char, length + 1);
+  char *heapChars = allocate<char>(length + 1);
   memcpy(heapChars, chars, length);
   heapChars[length] = '\0';
 
   return allocateString(*this, heapChars, length, hash);
 }
 ObjUpvalue *Vm::newUpvalue(Value *slot) {
-  ObjUpvalue *upvalue = ALLOCATE_OBJ(*this, ObjUpvalue, OBJ_UPVALUE);
+  ObjUpvalue *upvalue = allocateObject<ObjUpvalue>(*this, OBJ_UPVALUE);
   upvalue->closed = NIL_VAL;
   upvalue->location = slot;
   upvalue->next = NULL;

@@ -6,21 +6,27 @@
 
 namespace cpplox {
 
-#define ALLOCATE(type, count)                                                  \
-  (type *)reallocate(NULL, 0, sizeof(type) * (count))
-
-#define FREE(type, pointer) reallocate(pointer, sizeof(type), 0)
-
-#define GROW_CAPACITY(capacity) ((capacity) < 8 ? 8 : (capacity)*2)
-
-#define GROW_ARRAY(type, pointer, oldCount, newCount)                          \
-  (type *)reallocate(pointer, sizeof(type) * (oldCount),                       \
-                     sizeof(type) * (newCount))
-
-#define FREE_ARRAY(type, pointer, oldCount)                                    \
-  reallocate(pointer, sizeof(type) * (oldCount), 0)
-
 void *reallocate(void *pointer, size_t oldSize, size_t newSize);
+
+inline int growCapacity(int capacity) { return capacity < 8 ? 8 : capacity * 2; }
+
+template <typename T> T *allocate(int count = 1) {
+  return static_cast<T *>(reallocate(NULL, 0, sizeof(T) * count));
+}
+
+template <typename T> void release(T *pointer) {
+  reallocate(pointer, sizeof(T), 0);
+}
+
+template <typename T> T *growArray(T *pointer, int oldCount, int newCount) {
+  return static_cast<T *>(
+      reallocate(pointer, sizeof(T) * oldCount, sizeof(T) * newCount));
+}
+
+template <typename T> void freeArray(T *pointer, int oldCount) {
+  reallocate(pointer, sizeof(T) * oldCount, 0);
+}
+
 void markObject(Obj *object);
 void markValue(Value value);
 void collectGarbage();

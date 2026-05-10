@@ -1,4 +1,4 @@
-#include <stdlib.h>
+#include <cstdlib>
 
 #include "compiler.h"
 #include "memory.h"
@@ -11,7 +11,7 @@
 
 namespace cpplox {
 
-#define GC_HEAP_GROW_FACTOR 2
+inline constexpr size_t GC_HEAP_GROW_FACTOR = 2;
 
 void *reallocate(void *pointer, size_t oldSize, size_t newSize) {
   Vm &vm = currentVm();
@@ -27,13 +27,13 @@ void *reallocate(void *pointer, size_t oldSize, size_t newSize) {
   }
 
   if (newSize == 0) {
-    free(pointer);
+    std::free(pointer);
     return NULL;
   }
 
-  void *result = realloc(pointer, newSize);
+  void *result = std::realloc(pointer, newSize);
   if (result == NULL)
-    exit(1);
+    std::exit(1);
   return result;
 }
 void markObject(Obj *object) {
@@ -52,12 +52,12 @@ void markObject(Obj *object) {
   object->isMarked = true;
 
   if (vm.grayCapacity < vm.grayCount + 1) {
-    vm.grayCapacity = GROW_CAPACITY(vm.grayCapacity);
+    vm.grayCapacity = growCapacity(vm.grayCapacity);
     vm.grayStack =
-        (Obj **)realloc(vm.grayStack, sizeof(Obj *) * vm.grayCapacity);
+        (Obj **)std::realloc(vm.grayStack, sizeof(Obj *) * vm.grayCapacity);
 
     if (vm.grayStack == NULL)
-      exit(1);
+      std::exit(1);
   }
 
   vm.grayStack[vm.grayCount++] = object;
@@ -145,44 +145,44 @@ static void freeObject(Obj *object) {
 
   switch (object->type) {
   case OBJ_BOUND_METHOD:
-    FREE(ObjBoundMethod, object);
+    release(reinterpret_cast<ObjBoundMethod *>(object));
     break;
   case OBJ_CLASS: {
     ObjClass *klass = (ObjClass *)object;
     klass->methods.~Table();
     klass->fieldSlots.~Table();
-    FREE(ObjClass, object);
+    release(klass);
     break;
   }
   case OBJ_CLOSURE: {
     ObjClosure *closure = (ObjClosure *)object;
-    FREE_ARRAY(ObjUpvalue *, closure->upvalues, closure->upvalueCount);
-    FREE(ObjClosure, object);
+    freeArray(closure->upvalues, closure->upvalueCount);
+    release(closure);
     break;
   }
   case OBJ_FUNCTION: {
     ObjFunction *function = (ObjFunction *)object;
     freeChunk(&function->chunk);
-    FREE(ObjFunction, object);
+    release(function);
     break;
   }
   case OBJ_INSTANCE: {
     ObjInstance *instance = (ObjInstance *)object;
-    FREE_ARRAY(Value, instance->fields, instance->fieldCapacity);
-    FREE(ObjInstance, object);
+    freeArray(instance->fields, instance->fieldCapacity);
+    release(instance);
     break;
   }
   case OBJ_NATIVE:
-    FREE(ObjNative, object);
+    release(reinterpret_cast<ObjNative *>(object));
     break;
   case OBJ_STRING: {
     ObjString *string = (ObjString *)object;
-    FREE_ARRAY(char, string->chars, string->length + 1);
-    FREE(ObjString, object);
+    freeArray(string->chars, string->length + 1);
+    release(string);
     break;
   }
   case OBJ_UPVALUE:
-    FREE(ObjUpvalue, object);
+    release(reinterpret_cast<ObjUpvalue *>(object));
     break;
   }
 }
@@ -263,7 +263,7 @@ void freeObjects() {
     object = next;
   }
 
-  free(vm.grayStack);
+  std::free(vm.grayStack);
 }
 
 } // namespace cpplox
