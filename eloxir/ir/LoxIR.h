@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <deque>
 #include <optional>
 #include <string>
 #include <utility>
@@ -104,6 +105,7 @@ struct Instruction {
   std::string symbol;
   double numberValue = 0.0;
   bool boolValue = false;
+  bool declaresSymbol = false;
   BinaryOp binaryOp = BinaryOp::Add;
   UnaryOp unaryOp = UnaryOp::Not;
   BlockId target;
@@ -162,8 +164,8 @@ public:
   explicit LoxModule(std::string name);
 
   const std::string &name() const { return name_; }
-  std::vector<LoxFunction> &functions() { return functions_; }
-  const std::vector<LoxFunction> &functions() const { return functions_; }
+  std::deque<LoxFunction> &functions() { return functions_; }
+  const std::deque<LoxFunction> &functions() const { return functions_; }
 
   LoxFunction &addFunction(std::string name);
   LoxFunction *findFunction(const std::string &name);
@@ -171,7 +173,7 @@ public:
 
 private:
   std::string name_;
-  std::vector<LoxFunction> functions_;
+  std::deque<LoxFunction> functions_;
 };
 
 bool isTerminator(InstructionKind kind);

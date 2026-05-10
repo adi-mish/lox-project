@@ -283,10 +283,13 @@ bool isPure(const Instruction &instruction) {
   case InstructionKind::ConstantNumber:
   case InstructionKind::ConstantString:
   case InstructionKind::Phi:
-  case InstructionKind::Binary:
-  case InstructionKind::Unary:
   case InstructionKind::IsTruthy:
     return true;
+  case InstructionKind::Binary:
+    return instruction.binaryOp == BinaryOp::Equal ||
+           instruction.binaryOp == BinaryOp::NotEqual;
+  case InstructionKind::Unary:
+    return instruction.unaryOp == UnaryOp::Not;
   default:
     return false;
   }

@@ -43,6 +43,20 @@ enum class ExitCode : int {
   kRuntimeError = 70,
 };
 
+bool hasOversizedLoxIRBlock(const eloxir::loxir::LoxModule &module) {
+  static constexpr std::size_t kMaxLoopBodyInstructions = 65535;
+  static constexpr std::size_t kConservativeLoxIRInstructionLimit =
+      kMaxLoopBodyInstructions / 2;
+  for (const auto &function : module.functions()) {
+    for (const auto &block : function.blocks()) {
+      if (block.instructions().size() > kConservativeLoxIRInstructionLimit) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 class AstPrinter : public eloxir::ExprVisitor {
 public:
   std::string print(const eloxir::Expr *expr) {
@@ -552,16 +566,31 @@ int runFile(const std::string &filename) {
   const bool wantLoxIR =
       useLoxIRBackend || eloxir::loxir::loxirEnvFlag("ELOXIR_PRINT_LOXIR") ||
       std::getenv("ELOXIR_DUMP_LOXIR") != nullptr;
+  const bool traceLoxIR =
+      eloxir::loxir::loxirEnvFlag("ELOXIR_TRACE_PASSES") ||
+      eloxir::loxir::loxirEnvFlag("ELOXIR_PRINT_LOXIR") ||
+      std::getenv("ELOXIR_DUMP_LOXIR") != nullptr;
+  bool loxIRVerified = true;
   std::unique_ptr<eloxir::loxir::LoxModule> loxModule;
   if (wantLoxIR) {
     eloxir::loxir::AstLowerer lowerer(&resolver.locals);
     loxModule = std::make_unique<eloxir::loxir::LoxModule>(
         lowerer.lower("file_module", stmts));
+    if (hasOversizedLoxIRBlock(*loxModule)) {
+      loxIRVerified = false;
+      if (traceLoxIR) {
+        std::cerr << "eloxir-loxir: falling back to legacy LLVM backend: "
+                     "oversized block needs legacy diagnostics\n";
+      }
+    }
     auto verification = eloxir::loxir::verifyModule(*loxModule);
     if (!verification.ok) {
-      std::cerr << "LoxIR verification warnings:\n";
-      for (const auto &message : verification.errors) {
-        std::cerr << "  " << message << '\n';
+      loxIRVerified = false;
+      if (traceLoxIR) {
+        std::cerr << "LoxIR verification warnings:\n";
+        for (const auto &message : verification.errors) {
+          std::cerr << "  " << message << '\n';
+        }
       }
     }
     eloxir::loxir::dumpModuleIfRequested(*loxModule, "lowered");
@@ -570,9 +599,12 @@ int runFile(const std::string &filename) {
     passManager.run(*loxModule);
     auto optimizedVerification = eloxir::loxir::verifyModule(*loxModule);
     if (!optimizedVerification.ok) {
-      std::cerr << "Optimized LoxIR verification warnings:\n";
-      for (const auto &message : optimizedVerification.errors) {
-        std::cerr << "  " << message << '\n';
+      loxIRVerified = false;
+      if (traceLoxIR) {
+        std::cerr << "Optimized LoxIR verification warnings:\n";
+        for (const auto &message : optimizedVerification.errors) {
+          std::cerr << "  " << message << '\n';
+        }
       }
     }
     eloxir::loxir::dumpModuleIfRequested(*loxModule, "optimized");
@@ -582,7 +614,7 @@ int runFile(const std::string &filename) {
   elx_clear_runtime_error();
 
   try {
-    if (useLoxIRBackend && loxModule) {
+    if (useLoxIRBackend && loxModule && loxIRVerified) {
       auto jit = cantFail(eloxir::EloxirJIT::Create());
       auto fileCtx = std::make_unique<LLVMContext>();
       auto fileMod = std::make_unique<Module>("file_module", *fileCtx);
@@ -615,6 +647,10 @@ int runFile(const std::string &filename) {
                   << *unsupported << '\n';
       }
       elx_clear_runtime_error();
+    } else if (useLoxIRBackend && loxModule && !loxIRVerified &&
+               traceLoxIR) {
+      std::cerr << "eloxir-loxir: falling back to legacy LLVM backend: "
+                   "LoxIR verification failed\n";
     }
 
     auto jit = cantFail(eloxir::EloxirJIT::Create());

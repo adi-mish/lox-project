@@ -295,6 +295,7 @@ public:
     instruction.source = sourceFromToken(stmt->name);
     instruction.symbol = topLevel ? stmt->name.getLexeme()
                                   : declareLocal(stmt->name.getLexeme());
+    instruction.declaresSymbol = topLevel;
     instruction.operands = {initial};
     append(std::move(instruction));
   }
@@ -407,6 +408,7 @@ public:
     store.source = sourceFromToken(stmt->name);
     store.symbol = topLevel ? stmt->name.getLexeme()
                             : declareLocal(stmt->name.getLexeme());
+    store.declaresSymbol = topLevel;
     store.operands = {value_};
     append(std::move(store));
   }
@@ -448,6 +450,7 @@ public:
     store.source = sourceFromToken(stmt->name);
     store.symbol = topLevel ? stmt->name.getLexeme()
                             : declareLocal(stmt->name.getLexeme());
+    store.declaresSymbol = topLevel;
     store.operands = {classValue};
     append(std::move(store));
 

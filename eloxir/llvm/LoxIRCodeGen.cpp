@@ -266,13 +266,71 @@ private:
   }
 
   std::optional<std::string> emitLoadGlobal(const Instruction &instruction) {
-    auto *load = runtime("elx_get_global_variable");
-    if (!load) {
-      return unsupported(instruction, "missing elx_get_global_variable");
+    auto *hasVariable = runtime("elx_has_global_variable");
+    auto *loadVariable = runtime("elx_get_global_variable");
+    auto *hasFunction = runtime("elx_has_global_function");
+    auto *loadFunction = runtime("elx_get_global_function");
+    auto *loadBuiltin = runtime("elx_get_global_builtin");
+    auto *runtimeError = runtime("elx_runtime_error");
+    if (!hasVariable || !loadVariable || !hasFunction || !loadFunction ||
+        !loadBuiltin || !runtimeError) {
+      return unsupported(instruction, "missing global runtime helper");
     }
     auto *name = stringPtr(instruction.symbol, "global.name");
-    auto *value = builder_.CreateCall(load, {name}, "global");
-    bind(instruction, value, instruction.resultType);
+    auto *hasVar = builder_.CreateICmpNE(
+        builder_.CreateCall(hasVariable, {name}, "has.global.var"),
+        constantI32(0), "has.global.var.bool");
+
+    auto *varBlock = llvm::BasicBlock::Create(ctx_, "global.var", function_);
+    auto *functionCheckBlock =
+        llvm::BasicBlock::Create(ctx_, "global.func.check", function_);
+    auto *functionBlock =
+        llvm::BasicBlock::Create(ctx_, "global.func", function_);
+    auto *builtinBlock =
+        llvm::BasicBlock::Create(ctx_, "global.builtin", function_);
+    auto *missingBlock =
+        llvm::BasicBlock::Create(ctx_, "global.missing", function_);
+    auto *doneBlock = llvm::BasicBlock::Create(ctx_, "global.done", function_);
+    builder_.CreateCondBr(hasVar, varBlock, functionCheckBlock);
+
+    builder_.SetInsertPoint(varBlock);
+    auto *varValue = builder_.CreateCall(loadVariable, {name}, "global.var");
+    builder_.CreateBr(doneBlock);
+    varBlock = builder_.GetInsertBlock();
+
+    builder_.SetInsertPoint(functionCheckBlock);
+    auto *hasFunc = builder_.CreateICmpNE(
+        builder_.CreateCall(hasFunction, {name}, "has.global.func"),
+        constantI32(0), "has.global.func.bool");
+    builder_.CreateCondBr(hasFunc, functionBlock, builtinBlock);
+
+    builder_.SetInsertPoint(functionBlock);
+    auto *functionValue =
+        builder_.CreateCall(loadFunction, {name}, "global.func");
+    builder_.CreateBr(doneBlock);
+    functionBlock = builder_.GetInsertBlock();
+
+    builder_.SetInsertPoint(builtinBlock);
+    auto *builtinValue =
+        builder_.CreateCall(loadBuiltin, {name}, "global.builtin");
+    auto *hasBuiltin =
+        builder_.CreateICmpNE(builtinValue, constantValue(nilBits()),
+                              "has.global.builtin");
+    builder_.CreateCondBr(hasBuiltin, doneBlock, missingBlock);
+    builtinBlock = builder_.GetInsertBlock();
+
+    builder_.SetInsertPoint(missingBlock);
+    std::string message = "Undefined variable '" + instruction.symbol + "'.";
+    builder_.CreateCall(runtimeError,
+                        {stringPtr(message, "undefined.global.message")});
+    builder_.CreateRet(nilValue());
+
+    builder_.SetInsertPoint(doneBlock);
+    auto *phi = builder_.CreatePHI(valueTy(), 3, "global");
+    phi->addIncoming(varValue, varBlock);
+    phi->addIncoming(functionValue, functionBlock);
+    phi->addIncoming(builtinValue, builtinBlock);
+    bind(instruction, phi, instruction.resultType);
     return std::nullopt;
   }
 
@@ -303,10 +361,36 @@ private:
       return failure;
     }
     auto *store = runtime("elx_set_global_variable");
-    if (!store) {
-      return unsupported(instruction, "missing elx_set_global_variable");
+    auto *hasVariable = runtime("elx_has_global_variable");
+    auto *hasFunction = runtime("elx_has_global_function");
+    auto *runtimeError = runtime("elx_runtime_error");
+    if (!store || !hasVariable || !hasFunction || !runtimeError) {
+      return unsupported(instruction, "missing global runtime helper");
     }
     auto *name = stringPtr(instruction.symbol, "global.name");
+    if (!instruction.declaresSymbol) {
+      auto *hasVar = builder_.CreateICmpNE(
+          builder_.CreateCall(hasVariable, {name}, "has.assign.var"),
+          constantI32(0), "has.assign.var.bool");
+      auto *hasFunc = builder_.CreateICmpNE(
+          builder_.CreateCall(hasFunction, {name}, "has.assign.func"),
+          constantI32(0), "has.assign.func.bool");
+      auto *defined = builder_.CreateOr(hasVar, hasFunc, "assign.defined");
+
+      auto *storeBlock =
+          llvm::BasicBlock::Create(ctx_, "assign.store", function_);
+      auto *missingBlock =
+          llvm::BasicBlock::Create(ctx_, "assign.missing", function_);
+      builder_.CreateCondBr(defined, storeBlock, missingBlock);
+
+      builder_.SetInsertPoint(missingBlock);
+      std::string message = "Undefined variable '" + instruction.symbol + "'.";
+      builder_.CreateCall(runtimeError,
+                          {stringPtr(message, "undefined.assign.message")});
+      builder_.CreateRet(nilValue());
+
+      builder_.SetInsertPoint(storeBlock);
+    }
     builder_.CreateCall(store, {name, lookup(instruction.operands[0])});
     return std::nullopt;
   }
