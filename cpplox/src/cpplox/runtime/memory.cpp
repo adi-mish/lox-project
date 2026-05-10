@@ -185,7 +185,7 @@ static void freeObject(Obj *object) {
   }
 }
 static void markRoots() {
-  for (Value *slot = vm.stack; slot < vm.stackTop; slot++) {
+  for (Value *slot = vm.stack.data(); slot < vm.stackTop; slot++) {
     markValue(*slot);
   }
 

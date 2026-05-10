@@ -1,6 +1,8 @@
 #ifndef clox_vm_h
 #define clox_vm_h
 
+#include <array>
+
 #include "object.h"
 #include "table.h"
 #include "value.h"
@@ -10,19 +12,18 @@ namespace cpplox {
 #define FRAMES_MAX 64
 #define STACK_MAX (FRAMES_MAX * UINT8_COUNT)
 
-typedef struct {
-
+struct CallFrame {
   ObjClosure *closure;
   uint8_t *ip;
   Value *slots;
-} CallFrame;
+};
 
-typedef struct {
-
-  CallFrame frames[FRAMES_MAX];
+class Vm {
+public:
+  std::array<CallFrame, FRAMES_MAX> frames;
   int frameCount;
 
-  Value stack[STACK_MAX];
+  std::array<Value, STACK_MAX> stack;
   Value *stackTop;
   Table globals;
   Table strings;
@@ -38,7 +39,7 @@ typedef struct {
 #ifdef CPPLOX_ENABLE_VM_STATS
   bool statsEnabled;
   uint64_t instructionsExecuted;
-  uint64_t opcodeCounts[OP_COUNT];
+  std::array<uint64_t, OP_COUNT> opcodeCounts;
   uint64_t maxStackDepth;
   uint64_t closureCalls;
   uint64_t nativeCalls;
@@ -52,7 +53,7 @@ typedef struct {
   uint64_t fieldCacheHits;
   uint64_t fieldCacheMisses;
 #endif
-} VM;
+};
 
 typedef enum {
   INTERPRET_OK,
@@ -60,7 +61,7 @@ typedef enum {
   INTERPRET_RUNTIME_ERROR
 } InterpretResult;
 
-extern VM vm;
+extern Vm vm;
 
 void initVM();
 void freeVM();

@@ -15,7 +15,7 @@
 
 namespace cpplox {
 
-VM vm;
+Vm vm;
 
 #ifdef CPPLOX_ENABLE_VM_STATS
 static const char *opcodeName(int opcode) {
@@ -150,7 +150,7 @@ void setVMStatsEnabled(bool enabled) { vm.statsEnabled = enabled; }
 
 void resetVMStats() {
   bool enabled = vm.statsEnabled;
-  memset(vm.opcodeCounts, 0, sizeof(vm.opcodeCounts));
+  vm.opcodeCounts.fill(0);
   vm.instructionsExecuted = 0;
   vm.maxStackDepth = 0;
   vm.closureCalls = 0;
@@ -172,7 +172,7 @@ static void recordInstruction(uint8_t opcode) {
     return;
   vm.instructionsExecuted++;
   vm.opcodeCounts[opcode]++;
-  uint64_t depth = (uint64_t)(vm.stackTop - vm.stack);
+  uint64_t depth = (uint64_t)(vm.stackTop - vm.stack.data());
   if (depth > vm.maxStackDepth)
     vm.maxStackDepth = depth;
 }
@@ -249,7 +249,7 @@ static Value clockNative(int argCount, Value *args) {
   return NUMBER_VAL((double)clock() / CLOCKS_PER_SEC);
 }
 static void resetStack() {
-  vm.stackTop = vm.stack;
+  vm.stackTop = vm.stack.data();
   vm.frameCount = 0;
   vm.openUpvalues = NULL;
 }
@@ -637,7 +637,7 @@ static InterpretResult run() {
   for (;;) {
 #ifdef DEBUG_TRACE_EXECUTION
     printf("          ");
-    for (Value *slot = vm.stack; slot < vm.stackTop; slot++) {
+    for (Value *slot = vm.stack.data(); slot < vm.stackTop; slot++) {
       printf("[ ");
       printValue(*slot);
       printf(" ]");
