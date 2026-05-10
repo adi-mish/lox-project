@@ -52,6 +52,21 @@ IMPLEMENTATIONS: dict[str, Implementation] = {
         supports_scan=True,
         expectation_marker="c",
     ),
+    "cpplox": Implementation(
+        name="cpplox",
+        description="C++20 bytecode VM",
+        build_steps=(
+            command("cmake", "-S", "cpplox", "-B", "cpplox/build", "-DCMAKE_BUILD_TYPE=Release"),
+            command("cmake", "--build", "cpplox/build", "-j", max_parallel_jobs()),
+        ),
+        executable_candidates=(
+            repo_path("cpplox", "build", "Release", "cpplox"),
+            repo_path("cpplox", "build", "cpplox"),
+        ),
+        clean_paths=(repo_path("cpplox", "build"),),
+        supports_scan=True,
+        expectation_marker="c",
+    ),
     "eloxir": Implementation(
         name="eloxir",
         description="C++17 LLVM ORC JIT implementation",
