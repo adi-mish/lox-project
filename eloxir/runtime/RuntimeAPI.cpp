@@ -832,6 +832,8 @@ static uint64_t findMethodOnClass(ObjClass *klass, ObjString *name);
 static uint64_t callMethodWithoutBinding(uint64_t receiver_bits,
                                          uint64_t method_bits, uint64_t *args,
                                          int arg_count) {
+  elx_clear_runtime_error();
+
   Value method_val = Value::fromBits(method_bits);
   ObjClosure *closure = getClosure(method_val);
   ObjFunction *func = closure ? closure->function : getFunction(method_val);
@@ -861,31 +863,101 @@ static uint64_t callMethodWithoutBinding(uint64_t receiver_bits,
     }
   }
 
-  constexpr size_t kSmallArgCapacity = 16;
-  std::array<uint64_t, kSmallArgCapacity> small_args{};
-  std::vector<uint64_t> heap_args;
   size_t total_arg_count = static_cast<size_t>(arg_count) + 1;
-  uint64_t *method_args = small_args.data();
-  if (total_arg_count > small_args.size()) {
-    heap_args.resize(total_arg_count);
-    method_args = heap_args.data();
-  }
+  constexpr size_t kSmallArgCapacity = 16;
+  uint64_t inline_arg = receiver_bits;
+  std::array<uint64_t, kSmallArgCapacity> small_args;
+  std::vector<uint64_t> heap_args;
+  uint64_t *method_args = &inline_arg;
 
-  method_args[0] = receiver_bits;
-  for (int i = 0; i < arg_count; ++i) {
-    method_args[i + 1] = args ? args[i] : Value::nil().getBits();
+  if (arg_count != 0) {
+    method_args = small_args.data();
+    if (total_arg_count > small_args.size()) {
+      heap_args.resize(total_arg_count);
+      method_args = heap_args.data();
+    }
+
+    method_args[0] = receiver_bits;
+    for (int i = 0; i < arg_count; ++i) {
+      method_args[i + 1] = args ? args[i] : Value::nil().getBits();
+    }
   }
 
   int call_arg_count = static_cast<int>(total_arg_count);
+
+  if (func && call_arg_count > 255) {
+    std::string error_msg = "Function arity (" +
+                            std::to_string(call_arg_count) +
+                            ") exceeds Lox limit of 255 parameters.";
+    elx_runtime_error(error_msg.c_str());
+    return Value::nil().getBits();
+  }
+
+  CallDepthGuard depth_guard;
+  if (!depth_guard.entered()) {
+    elx_runtime_error("Stack overflow.");
+    return Value::nil().getBits();
+  }
+
   if (closure) {
-    return elx_call_closure(method_bits, method_args, call_arg_count);
+    void *target = func ? func->llvm_function : nullptr;
+    if (!target) {
+      elx_runtime_error("Closure function has no implementation.");
+      return Value::nil().getBits();
+    }
+
+    if (closure->upvalue_count == 0) {
+      return invoke_function_pointer(target, method_args, call_arg_count);
+    }
+
+    uint64_t *upvalue_args = static_cast<uint64_t *>(
+        malloc(sizeof(uint64_t) * closure->upvalue_count));
+    if (!upvalue_args) {
+      elx_runtime_error("Failed to allocate upvalue arguments.");
+      return Value::nil().getBits();
+    }
+
+    for (int i = 0; i < closure->upvalue_count; i++) {
+      if (closure->upvalues[i] != nullptr) {
+        upvalue_args[i] = Value::object(closure->upvalues[i]).getBits();
+      } else {
+        upvalue_args[i] = Value::nil().getBits();
+      }
+    }
+
+    return invoke_closure_pointer(target, method_args, call_arg_count,
+                                  upvalue_args);
   }
+
   if (func) {
-    return elx_call_function(method_bits, method_args, call_arg_count);
+    if (!func->llvm_function) {
+      elx_runtime_error("Function has no implementation.");
+      return Value::nil().getBits();
+    }
+
+    return invoke_function_pointer(func->llvm_function, method_args,
+                                   call_arg_count);
   }
+
   if (native) {
-    return elx_call_native(method_bits, method_args, call_arg_count);
+    if (!native->function) {
+      elx_runtime_error("Can only call functions and classes.");
+      return Value::nil().getBits();
+    }
+
+    try {
+      return native->function(method_args, call_arg_count);
+    } catch (const std::exception &e) {
+      std::string error_msg =
+          "Exception during native call: " + std::string(e.what());
+      elx_runtime_error(error_msg.c_str());
+      return Value::nil().getBits();
+    } catch (...) {
+      elx_runtime_error("Unknown exception during native call.");
+      return Value::nil().getBits();
+    }
   }
+
   return elx_call_value(method_bits, method_args, call_arg_count);
 }
 
