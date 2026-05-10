@@ -79,6 +79,7 @@ typedef struct ClassCompiler {
 } ClassCompiler;
 
 Parser parser;
+static Scanner scanner;
 Compiler *current = NULL;
 ClassCompiler *currentClass = NULL;
 static ObjString *knownGlobals[UINT8_COUNT];
@@ -118,7 +119,7 @@ static void advance() {
   parser.previous = parser.current;
 
   for (;;) {
-    parser.current = scanToken();
+    parser.current = scanner.scanToken();
     if (parser.current.type != TOKEN_ERROR)
       break;
 
@@ -1047,7 +1048,7 @@ static void statement() {
 }
 
 ObjFunction *compile(const char *source) {
-  initScanner(source);
+  scanner.reset(source);
   knownGlobalCount = 0;
 
   Compiler compiler;

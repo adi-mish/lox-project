@@ -56,7 +56,36 @@ typedef struct {
   int line;
 } Token;
 
-void initScanner(const char *source);
-Token scanToken();
+class Scanner {
+public:
+  Scanner() = default;
+  explicit Scanner(const char *source) { reset(source); }
+
+  void reset(const char *source);
+  Token scanToken();
+
+private:
+  static bool isAlpha(char c);
+  static bool isDigit(char c);
+
+  bool isAtEnd() const;
+  char advance();
+  char peek() const;
+  char peekNext() const;
+  bool match(char expected);
+  Token makeToken(TokenType type) const;
+  Token errorToken(const char *message) const;
+  void skipWhitespace();
+  TokenType checkKeyword(int start, int length, const char *rest,
+                         TokenType type) const;
+  TokenType identifierType() const;
+  Token identifier();
+  Token number();
+  Token string();
+
+  const char *start_ = "";
+  const char *current_ = "";
+  int line_ = 1;
+};
 
 #endif

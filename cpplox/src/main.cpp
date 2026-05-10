@@ -185,11 +185,11 @@ void printScanToken(Token token) {
 }
 
 int scanSource(const std::string &source) {
-  initScanner(source.c_str());
+  Scanner scanner(source.c_str());
   bool hadError = false;
 
   for (;;) {
-    Token token = scanToken();
+    Token token = scanner.scanToken();
     if (token.type == TOKEN_ERROR) {
       std::cerr << "[line " << token.line << "] Error: ";
       std::cerr.write(token.start, token.length);
