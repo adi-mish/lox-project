@@ -21,36 +21,78 @@ struct ObjString;
 #define TAG_TRUE 3
 #define TAG_UNINITIALIZED 4
 
-using Value = uint64_t;
+class Value {
+public:
+  constexpr Value() : bits_(QNAN | TAG_NIL) {}
 
-#define IS_BOOL(value) (((value) | 1) == TRUE_VAL)
-#define IS_NIL(value) ((value) == NIL_VAL)
-#define IS_NUMBER(value) (((value)&QNAN) != QNAN)
-#define IS_OBJ(value) (((value) & (QNAN | SIGN_BIT)) == (QNAN | SIGN_BIT))
-#define IS_UNINITIALIZED(value) ((value) == UNINITIALIZED_VAL)
+  static constexpr Value fromBits(uint64_t bits) { return Value(bits); }
+  static constexpr Value boolean(bool value) {
+    return fromBits(QNAN | (value ? TAG_TRUE : TAG_FALSE));
+  }
+  static constexpr Value nil() { return fromBits(QNAN | TAG_NIL); }
+  static constexpr Value uninitialized() {
+    return fromBits(QNAN | TAG_UNINITIALIZED);
+  }
+  static constexpr Value object(Obj *object) {
+    return fromBits(SIGN_BIT | QNAN | (uint64_t)(uintptr_t)(object));
+  }
 
-#define AS_BOOL(value) ((value) == TRUE_VAL)
+  constexpr uint64_t bits() const { return bits_; }
+
+  constexpr bool isBool() const { return (bits_ | 1) == (QNAN | TAG_TRUE); }
+  constexpr bool isNil() const { return bits_ == (QNAN | TAG_NIL); }
+  constexpr bool isNumber() const { return (bits_ & QNAN) != QNAN; }
+  constexpr bool isObj() const {
+    return (bits_ & (QNAN | SIGN_BIT)) == (QNAN | SIGN_BIT);
+  }
+  constexpr bool isUninitialized() const {
+    return bits_ == (QNAN | TAG_UNINITIALIZED);
+  }
+
+  constexpr bool asBool() const { return bits_ == (QNAN | TAG_TRUE); }
+  Obj *asObj() const { return (Obj *)(uintptr_t)(bits_ & ~(SIGN_BIT | QNAN)); }
+
+private:
+  explicit constexpr Value(uint64_t bits) : bits_(bits) {}
+
+  uint64_t bits_;
+};
+
+inline constexpr bool operator==(Value a, Value b) {
+  return a.bits() == b.bits();
+}
+
+inline constexpr bool operator!=(Value a, Value b) { return !(a == b); }
+
+#define IS_BOOL(value) ((value).isBool())
+#define IS_NIL(value) ((value).isNil())
+#define IS_NUMBER(value) ((value).isNumber())
+#define IS_OBJ(value) ((value).isObj())
+#define IS_UNINITIALIZED(value) ((value).isUninitialized())
+
+#define AS_BOOL(value) ((value).asBool())
 #define AS_NUMBER(value) valueToNum(value)
-#define AS_OBJ(value) ((Obj *)(uintptr_t)((value) & ~(SIGN_BIT | QNAN)))
+#define AS_OBJ(value) ((value).asObj())
 
-#define BOOL_VAL(b) ((b) ? TRUE_VAL : FALSE_VAL)
-#define FALSE_VAL ((Value)(uint64_t)(QNAN | TAG_FALSE))
-#define TRUE_VAL ((Value)(uint64_t)(QNAN | TAG_TRUE))
-#define NIL_VAL ((Value)(uint64_t)(QNAN | TAG_NIL))
-#define UNINITIALIZED_VAL ((Value)(uint64_t)(QNAN | TAG_UNINITIALIZED))
+#define BOOL_VAL(b) Value::boolean(b)
+#define FALSE_VAL Value::fromBits(QNAN | TAG_FALSE)
+#define TRUE_VAL Value::fromBits(QNAN | TAG_TRUE)
+#define NIL_VAL Value::nil()
+#define UNINITIALIZED_VAL Value::uninitialized()
 #define NUMBER_VAL(num) numToValue(num)
-#define OBJ_VAL(obj) (Value)(SIGN_BIT | QNAN | (uint64_t)(uintptr_t)(obj))
+#define OBJ_VAL(obj) Value::object((Obj *)obj)
 
 static inline double valueToNum(Value value) {
   double num;
-  std::memcpy(&num, &value, sizeof(Value));
+  uint64_t bits = value.bits();
+  std::memcpy(&num, &bits, sizeof(bits));
   return num;
 }
 
 static inline Value numToValue(double num) {
-  Value value;
-  std::memcpy(&value, &num, sizeof(double));
-  return value;
+  uint64_t bits;
+  std::memcpy(&bits, &num, sizeof(double));
+  return Value::fromBits(bits);
 }
 
 #else
