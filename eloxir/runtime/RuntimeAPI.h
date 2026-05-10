@@ -318,4 +318,5 @@ uint64_t elx_less_equal_values(uint64_t a_bits, uint64_t b_bits);
 uint64_t elx_equal_values(uint64_t a_bits, uint64_t b_bits);
 uint64_t elx_not_equal_values(uint64_t a_bits, uint64_t b_bits);
 uint64_t elx_negate_value(uint64_t value_bits);
+uint64_t *elx_allocate_value_slot(uint64_t initial_value);
 }

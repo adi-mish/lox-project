@@ -62,7 +62,7 @@ private:
   std::unordered_map<uint32_t, llvm::BasicBlock *> blocks_;
   std::unordered_map<uint32_t, llvm::Value *> values_;
   std::unordered_map<uint32_t, LoxType> types_;
-  std::unordered_map<std::string, llvm::AllocaInst *> locals_;
+  std::unordered_map<std::string, llvm::Value *> locals_;
 
   llvm::IntegerType *valueTy() { return llvm::Type::getInt64Ty(ctx_); }
   llvm::IntegerType *i32Ty() { return llvm::Type::getInt32Ty(ctx_); }
@@ -109,16 +109,20 @@ private:
     return module_.getFunction(name);
   }
 
-  llvm::AllocaInst *localSlot(const std::string &name) {
+  llvm::Value *localSlot(const std::string &name) {
     auto it = locals_.find(name);
     if (it != locals_.end()) {
       return it->second;
     }
 
+    auto *allocate = runtime("elx_allocate_value_slot");
+    if (!allocate) {
+      return nullptr;
+    }
     llvm::IRBuilder<> entryBuilder(
         &function_->getEntryBlock(), function_->getEntryBlock().begin());
-    auto *slot = entryBuilder.CreateAlloca(valueTy(), nullptr, name);
-    entryBuilder.CreateStore(nilValue(), slot);
+    auto *slot =
+        entryBuilder.CreateCall(allocate, {nilValue()}, name + ".slot");
     locals_[name] = slot;
     return slot;
   }
@@ -408,6 +412,9 @@ private:
       return unsupported(instruction, "missing local symbol");
     }
     auto *slot = localSlot(instruction.symbol);
+    if (!slot) {
+      return unsupported(instruction, "missing elx_allocate_value_slot");
+    }
     auto *value = builder_.CreateLoad(valueTy(), slot, instruction.symbol);
     bind(instruction, value, instruction.resultType);
     return std::nullopt;
@@ -420,8 +427,11 @@ private:
     if (instruction.symbol.empty()) {
       return unsupported(instruction, "missing local symbol");
     }
-    builder_.CreateStore(lookup(instruction.operands[0]),
-                         localSlot(instruction.symbol));
+    auto *slot = localSlot(instruction.symbol);
+    if (!slot) {
+      return unsupported(instruction, "missing elx_allocate_value_slot");
+    }
+    builder_.CreateStore(lookup(instruction.operands[0]), slot);
     return std::nullopt;
   }
 

@@ -3206,3 +3206,13 @@ uint64_t elx_negate_value(uint64_t value_bits) {
   }
   return Value::number(-value.asNum()).getBits();
 }
+
+uint64_t *elx_allocate_value_slot(uint64_t initial_value) {
+  auto *slot = static_cast<uint64_t *>(malloc(sizeof(uint64_t)));
+  if (!slot) {
+    elx_runtime_error("Out of memory.");
+    return nullptr;
+  }
+  *slot = initial_value;
+  return slot;
+}

@@ -185,6 +185,8 @@ const RuntimeFunctionDescriptor kRuntimeFunctions[] = {
     ELX_RUNTIME_FUNCTION(elx_not_equal_values, Value_Value_Value,
                          RuntimeNoUnwind),
     ELX_RUNTIME_FUNCTION(elx_negate_value, Value_Value, RuntimeNoUnwind),
+    ELX_RUNTIME_FUNCTION(elx_allocate_value_slot, ValuePtr_Value,
+                         RuntimeNoFlags),
 };
 
 #undef ELX_RUNTIME_FUNCTION
