@@ -14,6 +14,7 @@
 void initTable(Table* table) {
   table->count = 0;
   table->capacity = 0;
+  table->version = 0;
   table->entries = NULL;
 }
 //> free-table
@@ -81,6 +82,14 @@ bool tableGet(Table* table, ObjString* key, Value* value) {
   return true;
 }
 //< table-get
+Entry* tableGetEntry(Table* table, ObjString* key) {
+  if (table->count == 0) return NULL;
+
+  Entry* entry = findEntry(table->entries, table->capacity, key);
+  if (entry->key == NULL) return NULL;
+  return entry;
+}
+
 //> table-adjust-capacity
 static void adjustCapacity(Table* table, int capacity) {
   Entry* entries = ALLOCATE(Entry, capacity);
@@ -111,6 +120,7 @@ static void adjustCapacity(Table* table, int capacity) {
 //< Hash Tables free-old-array
   table->entries = entries;
   table->capacity = capacity;
+  table->version++;
 }
 //< table-adjust-capacity
 //> table-set

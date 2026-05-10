@@ -104,6 +104,8 @@ void resetVMStats() {
   vm.classCalls = 0;
   vm.boundMethodCalls = 0;
   vm.invokes = 0;
+  vm.globalCacheHits = 0;
+  vm.globalCacheMisses = 0;
   vm.statsEnabled = enabled;
 }
 
@@ -125,6 +127,8 @@ void printVMStats() {
   fprintf(stderr, "  class_calls: %" PRIu64 "\n", vm.classCalls);
   fprintf(stderr, "  bound_method_calls: %" PRIu64 "\n", vm.boundMethodCalls);
   fprintf(stderr, "  invokes: %" PRIu64 "\n", vm.invokes);
+  fprintf(stderr, "  global_cache_hits: %" PRIu64 "\n", vm.globalCacheHits);
+  fprintf(stderr, "  global_cache_misses: %" PRIu64 "\n", vm.globalCacheMisses);
   fprintf(stderr, "  opcodes:\n");
   for (int i = 0; i < OP_COUNT; i++) {
     if (vm.opcodeCounts[i] == 0) continue;
@@ -133,6 +137,20 @@ void printVMStats() {
 }
 #else
 #define recordInstruction(opcode) ((void)0)
+#endif
+
+#ifdef CPPLOX_ENABLE_VM_STATS
+#define RECORD_GLOBAL_CACHE_HIT() \
+    do { \
+      if (vm.statsEnabled) vm.globalCacheHits++; \
+    } while (false)
+#define RECORD_GLOBAL_CACHE_MISS() \
+    do { \
+      if (vm.statsEnabled) vm.globalCacheMisses++; \
+    } while (false)
+#else
+#define RECORD_GLOBAL_CACHE_HIT() ((void)0)
+#define RECORD_GLOBAL_CACHE_MISS() ((void)0)
 #endif
 
 //> Calls and Functions clock-native
@@ -674,32 +692,79 @@ static InterpretResult run() {
       case OP_SET_LOCAL_7: frame->slots[7] = vm.stackTop[-1]; break;
 //> Global Variables interpret-get-global
       case OP_GET_GLOBAL: {
-        ObjString* name = READ_STRING();
-        Value value;
-        if (!tableGet(&vm.globals, name, &value)) {
+        uint8_t constant = READ_BYTE();
+        Chunk* chunk = &frame->closure->function->chunk;
+        ObjString* name = AS_STRING(chunk->constants.values[constant]);
+        GlobalCache* cache = &chunk->globalCaches[constant];
+
+        Entry* entry = cache->entry;
+        if (cache->key == name &&
+            cache->tableVersion == vm.globals.version &&
+            entry != NULL &&
+            entry->key == name) {
+          RECORD_GLOBAL_CACHE_HIT();
+          PUSH_VALUE(entry->value);
+          break;
+        }
+
+        RECORD_GLOBAL_CACHE_MISS();
+        entry = tableGetEntry(&vm.globals, name);
+        if (entry == NULL) {
           runtimeError("Undefined variable '%s'.", name->chars);
           return INTERPRET_RUNTIME_ERROR;
         }
-        PUSH_VALUE(value);
+
+        cache->key = name;
+        cache->entry = entry;
+        cache->tableVersion = vm.globals.version;
+        PUSH_VALUE(entry->value);
         break;
       }
 //< Global Variables interpret-get-global
 //> Global Variables interpret-define-global
       case OP_DEFINE_GLOBAL: {
-        ObjString* name = READ_STRING();
+        uint8_t constant = READ_BYTE();
+        Chunk* chunk = &frame->closure->function->chunk;
+        ObjString* name = AS_STRING(chunk->constants.values[constant]);
         tableSet(&vm.globals, name, vm.stackTop[-1]);
+        GlobalCache* cache = &chunk->globalCaches[constant];
+        cache->key = name;
+        cache->entry = tableGetEntry(&vm.globals, name);
+        cache->tableVersion = vm.globals.version;
         vm.stackTop--;
         break;
       }
 //< Global Variables interpret-define-global
 //> Global Variables interpret-set-global
       case OP_SET_GLOBAL: {
-        ObjString* name = READ_STRING();
-        if (tableSet(&vm.globals, name, vm.stackTop[-1])) {
-          tableDelete(&vm.globals, name); // [delete]
+        uint8_t constant = READ_BYTE();
+        Chunk* chunk = &frame->closure->function->chunk;
+        ObjString* name = AS_STRING(chunk->constants.values[constant]);
+        GlobalCache* cache = &chunk->globalCaches[constant];
+
+        Entry* entry = cache->entry;
+        if (!(cache->key == name &&
+              cache->tableVersion == vm.globals.version &&
+              entry != NULL &&
+              entry->key == name)) {
+          RECORD_GLOBAL_CACHE_MISS();
+          entry = tableGetEntry(&vm.globals, name);
+          if (entry == NULL) {
+            runtimeError("Undefined variable '%s'.", name->chars);
+            return INTERPRET_RUNTIME_ERROR;
+          }
+          cache->key = name;
+          cache->entry = entry;
+          cache->tableVersion = vm.globals.version;
+        } else {
+          RECORD_GLOBAL_CACHE_HIT();
+        }
+
+        if (entry == NULL) {
           runtimeError("Undefined variable '%s'.", name->chars);
           return INTERPRET_RUNTIME_ERROR;
         }
+        entry->value = vm.stackTop[-1];
         break;
       }
 //< Global Variables interpret-set-global

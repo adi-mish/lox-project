@@ -89,6 +89,8 @@ typedef struct {
   uint64_t classCalls;
   uint64_t boundMethodCalls;
   uint64_t invokes;
+  uint64_t globalCacheHits;
+  uint64_t globalCacheMisses;
 #endif
 } VM;
 

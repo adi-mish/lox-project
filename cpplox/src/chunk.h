@@ -6,6 +6,14 @@
 //> chunk-h-include-value
 #include "value.h"
 //< chunk-h-include-value
+struct Entry;
+
+typedef struct {
+  ObjString* key;
+  Entry* entry;
+  uint32_t tableVersion;
+} GlobalCache;
+
 //> op-enum
 
 typedef enum {
@@ -130,6 +138,8 @@ typedef struct {
 //> chunk-lines
   int* lines;
 //< chunk-lines
+  GlobalCache* globalCaches;
+  int globalCacheCapacity;
 //> chunk-constants
   ValueArray constants;
 //< chunk-constants

@@ -16,6 +16,8 @@ void initChunk(Chunk* chunk) {
 //> chunk-null-lines
   chunk->lines = NULL;
 //< chunk-null-lines
+  chunk->globalCaches = NULL;
+  chunk->globalCacheCapacity = 0;
 //> chunk-init-constant-array
   initValueArray(&chunk->constants);
 //< chunk-init-constant-array
@@ -26,6 +28,7 @@ void freeChunk(Chunk* chunk) {
 //> chunk-free-lines
   FREE_ARRAY(int, chunk->lines, chunk->capacity);
 //< chunk-free-lines
+  FREE_ARRAY(GlobalCache, chunk->globalCaches, chunk->globalCacheCapacity);
 //> chunk-free-constants
   freeValueArray(&chunk->constants);
 //< chunk-free-constants
@@ -68,7 +71,22 @@ int addConstant(Chunk* chunk, Value value) {
 //> Garbage Collection add-constant-push
   push(value);
 //< Garbage Collection add-constant-push
+  int oldCapacity = chunk->constants.capacity;
   writeValueArray(&chunk->constants, value);
+  if (chunk->constants.capacity != oldCapacity) {
+    chunk->globalCaches = GROW_ARRAY(GlobalCache, chunk->globalCaches,
+        chunk->globalCacheCapacity, chunk->constants.capacity);
+    for (int i = chunk->globalCacheCapacity;
+         i < chunk->constants.capacity; i++) {
+      chunk->globalCaches[i].key = NULL;
+      chunk->globalCaches[i].entry = NULL;
+      chunk->globalCaches[i].tableVersion = 0;
+    }
+    chunk->globalCacheCapacity = chunk->constants.capacity;
+  }
+  chunk->globalCaches[chunk->constants.count - 1].key = NULL;
+  chunk->globalCaches[chunk->constants.count - 1].entry = NULL;
+  chunk->globalCaches[chunk->constants.count - 1].tableVersion = 0;
 //> Garbage Collection add-constant-pop
   pop();
 //< Garbage Collection add-constant-pop

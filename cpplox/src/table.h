@@ -6,7 +6,7 @@
 #include "value.h"
 //> entry
 
-typedef struct {
+typedef struct Entry {
   ObjString* key;
   Value value;
 } Entry;
@@ -15,6 +15,7 @@ typedef struct {
 typedef struct {
   int count;
   int capacity;
+  uint32_t version;
   Entry* entries;
 } Table;
 
@@ -25,6 +26,7 @@ void freeTable(Table* table);
 //< free-table-h
 //> table-get-h
 bool tableGet(Table* table, ObjString* key, Value* value);
+Entry* tableGetEntry(Table* table, ObjString* key);
 //< table-get-h
 //> table-set-h
 bool tableSet(Table* table, ObjString* key, Value value);
