@@ -6,7 +6,9 @@
 
 #include "ast_printer.h"
 #include "error_reporter.h"
+#include "interpreter.h"
 #include "parser.h"
+#include "resolver.h"
 #include "scanner.h"
 
 namespace {
@@ -55,6 +57,9 @@ class LoxApp {
     if (reporter_.hadError()) {
       std::exit(65);
     }
+    if (reporter_.hadRuntimeError()) {
+      std::exit(70);
+    }
   }
 
   void runPrompt() {
@@ -92,10 +97,23 @@ class LoxApp {
       return;
     }
 
-    reporter_.error(1, "Execution is not implemented yet.");
+    loxpp::Parser parser(tokens, reporter_);
+    const auto statements = parser.parse();
+    if (reporter_.hadError()) {
+      return;
+    }
+
+    loxpp::Resolver resolver(interpreter_, reporter_);
+    resolver.resolve(statements);
+    if (reporter_.hadError()) {
+      return;
+    }
+
+    interpreter_.interpret(statements);
   }
 
   loxpp::ErrorReporter reporter_;
+  loxpp::Interpreter interpreter_{reporter_};
 };
 
 }  // namespace

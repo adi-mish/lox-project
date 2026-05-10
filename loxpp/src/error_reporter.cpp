@@ -2,6 +2,8 @@
 
 #include <iostream>
 
+#include "runtime_error.h"
+
 namespace loxpp {
 
 void ErrorReporter::error(int line, std::string_view message) {
@@ -22,6 +24,11 @@ void ErrorReporter::report(int line,
   std::cerr << "[line " << line << "] Error" << where << ": " << message
             << '\n';
   had_error_ = true;
+}
+
+void ErrorReporter::runtimeError(const RuntimeError& error) {
+  std::cerr << error.what() << "\n[line " << error.token.line << "]\n";
+  had_runtime_error_ = true;
 }
 
 }  // namespace loxpp

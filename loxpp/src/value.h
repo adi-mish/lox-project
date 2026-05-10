@@ -17,5 +17,8 @@ using Value = std::variant<std::monostate,
                            std::shared_ptr<LoxInstance>>;
 
 std::string astLiteralToString(const Value& value);
+std::string stringifyValue(const Value& value);
+bool isTruthy(const Value& value);
+bool isEqual(const Value& left, const Value& right);
 
 }  // namespace loxpp

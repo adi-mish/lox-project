@@ -47,7 +47,7 @@ class StmtStringVisitor {
   virtual std::string visitWhileStmt(WhileStmt& stmt) = 0;
 };
 
-class Stmt {
+class Stmt : public std::enable_shared_from_this<Stmt> {
  public:
   virtual ~Stmt() = default;
   virtual void accept(StmtVoidVisitor& visitor) = 0;
