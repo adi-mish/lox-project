@@ -748,8 +748,7 @@ static InterpretResult run() {
 
       Entry *entry = cache->entry;
       if (cache->kind == CACHE_GLOBAL && cache->key == name &&
-          cache->tableVersion == vm.globals.version && entry != NULL &&
-          entry->key == name) {
+          cache->tableVersion == vm.globals.version && entry != NULL) {
         RECORD_GLOBAL_CACHE_HIT();
         PUSH_VALUE(entry->value);
         break;
@@ -790,8 +789,7 @@ static InterpretResult run() {
 
       Entry *entry = cache->entry;
       if (!(cache->kind == CACHE_GLOBAL && cache->key == name &&
-            cache->tableVersion == vm.globals.version && entry != NULL &&
-            entry->key == name)) {
+            cache->tableVersion == vm.globals.version && entry != NULL)) {
         RECORD_GLOBAL_CACHE_MISS();
         entry = tableGetEntry(&vm.globals, name);
         if (entry == NULL) {
@@ -806,10 +804,6 @@ static InterpretResult run() {
         RECORD_GLOBAL_CACHE_HIT();
       }
 
-      if (entry == NULL) {
-        runtimeError("Undefined variable '%s'.", name->chars);
-        return INTERPRET_RUNTIME_ERROR;
-      }
       entry->value = vm.stackTop[-1];
       break;
     }
