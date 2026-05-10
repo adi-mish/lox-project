@@ -1,4 +1,3 @@
-#include <cstdarg>
 #include <cstdio>
 #include <cstring>
 #include <iostream>
@@ -247,23 +246,19 @@ static void resetStack(Vm &vm) {
   vm.frameCount = 0;
   vm.openUpvalues = nullptr;
 }
-static void runtimeError(Vm &vm, const char *format, ...) {
-  va_list args;
-  va_start(args, format);
-  std::vfprintf(stderr, format, args);
-  va_end(args);
-  std::fputs("\n", stderr);
+template <typename... Parts> static void runtimeError(Vm &vm, Parts &&...parts) {
+  (std::cerr << ... << parts) << '\n';
 
   for (int i = vm.frameCount - 1; i >= 0; i--) {
     CallFrame *frame = &vm.frames[i];
 
     ObjFunction *function = frame->closure->function;
     size_t instruction = frame->ip - function->chunk.codeData() - 1;
-    std::fprintf(stderr, "[line %d] in ", function->chunk.lineAt(instruction));
+    std::cerr << "[line " << function->chunk.lineAt(instruction) << "] in ";
     if (function->name == nullptr) {
-      std::fprintf(stderr, "script\n");
+      std::cerr << "script\n";
     } else {
-      std::fprintf(stderr, "%s()\n", function->name->chars);
+      std::cerr << function->name->chars << "()\n";
     }
   }
 
@@ -329,8 +324,8 @@ static Value peek(Vm &vm, int distance) {
 
 static bool call(Vm &vm, ObjClosure *closure, int argCount) {
   if (argCount != closure->function->arity) {
-    runtimeError(vm, "Expected %d arguments but got %d.",
-                 closure->function->arity, argCount);
+    runtimeError(vm, "Expected ", closure->function->arity,
+                 " arguments but got ", argCount, ".");
     return false;
   }
 
@@ -368,7 +363,7 @@ static bool callValue(Vm &vm, Value callee, int argCount) {
       if (klass->initializer != nullptr) {
         return call(vm, klass->initializer, argCount);
       } else if (argCount != 0) {
-        runtimeError(vm, "Expected 0 arguments but got %d.", argCount);
+        runtimeError(vm, "Expected 0 arguments but got ", argCount, ".");
         return false;
       }
       return true;
@@ -438,7 +433,7 @@ static bool findMethodCached(Vm &vm, ObjClass *klass, ObjString *name,
 
   recordMethodCacheMiss(vm);
   if (!klass->methods.get(name, method)) {
-    runtimeError(vm, "Undefined property '%s'.", name->chars);
+    runtimeError(vm, "Undefined property '", name->chars, "'.");
     return false;
   }
 
@@ -731,7 +726,7 @@ static InterpretResult run(Vm &vm) {
       recordGlobalCacheMiss(vm);
       entry = vm.globals.getEntry(name);
       if (entry == nullptr) {
-        runtimeError(vm, "Undefined variable '%s'.", name->chars);
+        runtimeError(vm, "Undefined variable '", name->chars, "'.");
         return INTERPRET_RUNTIME_ERROR;
       }
 
@@ -767,7 +762,7 @@ static InterpretResult run(Vm &vm) {
         recordGlobalCacheMiss(vm);
         entry = vm.globals.getEntry(name);
         if (entry == nullptr) {
-          runtimeError(vm, "Undefined variable '%s'.", name->chars);
+          runtimeError(vm, "Undefined variable '", name->chars, "'.");
           return INTERPRET_RUNTIME_ERROR;
         }
         cache->kind = CACHE_GLOBAL;
