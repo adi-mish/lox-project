@@ -1,8 +1,8 @@
 #include <charconv>
-#include <cstdio>
 #include <cstring>
 
 #include <array>
+#include <iostream>
 #include <string_view>
 
 #include "common.h"
@@ -195,17 +195,19 @@ void Compiler::errorAt(Token *token, const char *message) {
   if (parser.panicMode)
     return;
   parser.panicMode = true;
-  std::fprintf(stderr, "[line %d] Error", token->line);
+  std::cerr << "[line " << token->line << "] Error";
 
   if (token->type == TOKEN_EOF) {
-    std::fprintf(stderr, " at end");
+    std::cerr << " at end";
   } else if (token->type == TOKEN_ERROR) {
 
   } else {
-    std::fprintf(stderr, " at '%.*s'", token->length, token->start);
+    std::cerr << " at '";
+    std::cerr.write(token->start, token->length);
+    std::cerr << "'";
   }
 
-  std::fprintf(stderr, ": %s\n", message);
+  std::cerr << ": " << message << '\n';
   parser.hadError = true;
 }
 void Compiler::error(const char *message) { errorAt(&parser.previous, message); }
