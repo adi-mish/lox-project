@@ -408,18 +408,15 @@ static void ensureInstanceFieldCapacity(ObjInstance *instance, int slot) {
 
   instance->fields =
       GROW_ARRAY(Value, instance->fields, oldCapacity, newCapacity);
-  instance->fieldInitialized = GROW_ARRAY(uint8_t, instance->fieldInitialized,
-                                         oldCapacity, newCapacity);
   for (int i = oldCapacity; i < newCapacity; i++) {
-    instance->fields[i] = NIL_VAL;
-    instance->fieldInitialized[i] = 0;
+    instance->fields[i] = UNINITIALIZED_VAL;
   }
   instance->fieldCapacity = newCapacity;
 }
 
 static bool readInstanceField(ObjInstance *instance, int slot, Value *value) {
   if (slot < 0 || slot >= instance->fieldCapacity ||
-      !instance->fieldInitialized[slot]) {
+      IS_UNINITIALIZED(instance->fields[slot])) {
     return false;
   }
   *value = instance->fields[slot];
@@ -429,7 +426,6 @@ static bool readInstanceField(ObjInstance *instance, int slot, Value *value) {
 static void writeInstanceField(ObjInstance *instance, int slot, Value value) {
   ensureInstanceFieldCapacity(instance, slot);
   instance->fields[slot] = value;
-  instance->fieldInitialized[slot] = 1;
 }
 
 static bool findMethodCached(ObjClass *klass, ObjString *name,

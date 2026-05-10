@@ -51,6 +51,9 @@ void printValue(Value value) {
   case VAL_OBJ:
     printObject(value);
     break;
+  case VAL_UNINITIALIZED:
+    printf("<uninitialized>");
+    break;
   }
 #endif
 }

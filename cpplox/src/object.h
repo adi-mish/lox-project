@@ -90,7 +90,6 @@ typedef struct {
   Obj obj;
   ObjClass *klass;
   Value *fields;
-  uint8_t *fieldInitialized;
   int fieldCapacity;
 } ObjInstance;
 

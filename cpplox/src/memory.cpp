@@ -120,7 +120,7 @@ static void blackenObject(Obj *object) {
     ObjInstance *instance = (ObjInstance *)object;
     markObject((Obj *)instance->klass);
     for (int i = 0; i < instance->fieldCapacity; i++) {
-      if (instance->fieldInitialized[i]) {
+      if (!IS_UNINITIALIZED(instance->fields[i])) {
         markValue(instance->fields[i]);
       }
     }
@@ -165,7 +165,6 @@ static void freeObject(Obj *object) {
   case OBJ_INSTANCE: {
     ObjInstance *instance = (ObjInstance *)object;
     FREE_ARRAY(Value, instance->fields, instance->fieldCapacity);
-    FREE_ARRAY(uint8_t, instance->fieldInitialized, instance->fieldCapacity);
     FREE(ObjInstance, object);
     break;
   }

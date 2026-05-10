@@ -64,7 +64,6 @@ ObjInstance *newInstance(ObjClass *klass) {
   ObjInstance *instance = ALLOCATE_OBJ(ObjInstance, OBJ_INSTANCE);
   instance->klass = klass;
   instance->fields = NULL;
-  instance->fieldInitialized = NULL;
   instance->fieldCapacity = 0;
   return instance;
 }

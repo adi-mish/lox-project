@@ -16,6 +16,7 @@ typedef struct ObjString ObjString;
 #define TAG_NIL 1
 #define TAG_FALSE 2
 #define TAG_TRUE 3
+#define TAG_UNINITIALIZED 4
 
 typedef uint64_t Value;
 
@@ -23,6 +24,7 @@ typedef uint64_t Value;
 #define IS_NIL(value) ((value) == NIL_VAL)
 #define IS_NUMBER(value) (((value)&QNAN) != QNAN)
 #define IS_OBJ(value) (((value) & (QNAN | SIGN_BIT)) == (QNAN | SIGN_BIT))
+#define IS_UNINITIALIZED(value) ((value) == UNINITIALIZED_VAL)
 
 #define AS_BOOL(value) ((value) == TRUE_VAL)
 #define AS_NUMBER(value) valueToNum(value)
@@ -32,6 +34,7 @@ typedef uint64_t Value;
 #define FALSE_VAL ((Value)(uint64_t)(QNAN | TAG_FALSE))
 #define TRUE_VAL ((Value)(uint64_t)(QNAN | TAG_TRUE))
 #define NIL_VAL ((Value)(uint64_t)(QNAN | TAG_NIL))
+#define UNINITIALIZED_VAL ((Value)(uint64_t)(QNAN | TAG_UNINITIALIZED))
 #define NUMBER_VAL(num) numToValue(num)
 #define OBJ_VAL(obj) (Value)(SIGN_BIT | QNAN | (uint64_t)(uintptr_t)(obj))
 
@@ -49,7 +52,13 @@ static inline Value numToValue(double num) {
 
 #else
 
-typedef enum { VAL_BOOL, VAL_NIL, VAL_NUMBER, VAL_OBJ } ValueType;
+typedef enum {
+  VAL_BOOL,
+  VAL_NIL,
+  VAL_NUMBER,
+  VAL_OBJ,
+  VAL_UNINITIALIZED
+} ValueType;
 
 typedef struct {
   ValueType type;
@@ -64,6 +73,7 @@ typedef struct {
 #define IS_NIL(value) ((value).type == VAL_NIL)
 #define IS_NUMBER(value) ((value).type == VAL_NUMBER)
 #define IS_OBJ(value) ((value).type == VAL_OBJ)
+#define IS_UNINITIALIZED(value) ((value).type == VAL_UNINITIALIZED)
 
 #define AS_OBJ(value) ((value).as.obj)
 #define AS_BOOL(value) ((value).as.boolean)
@@ -71,6 +81,7 @@ typedef struct {
 
 #define BOOL_VAL(value) ((Value){VAL_BOOL, {.boolean = value}})
 #define NIL_VAL ((Value){VAL_NIL, {.number = 0}})
+#define UNINITIALIZED_VAL ((Value){VAL_UNINITIALIZED, {.number = 0}})
 #define NUMBER_VAL(value) ((Value){VAL_NUMBER, {.number = value}})
 #define OBJ_VAL(object) ((Value){VAL_OBJ, {.obj = (Obj *)object}})
 
@@ -100,6 +111,8 @@ static inline bool valuesEqual(Value a, Value b) {
     return AS_NUMBER(a) == AS_NUMBER(b);
   case VAL_OBJ:
     return AS_OBJ(a) == AS_OBJ(b);
+  case VAL_UNINITIALIZED:
+    return true;
   default:
     return false;
   }
