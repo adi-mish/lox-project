@@ -76,6 +76,7 @@ private:
   std::unordered_set<std::string> capturedLocals_;
   std::unordered_map<std::string, llvm::Function *> functions_;
   std::unordered_map<std::string, const LoxFunction *> loxFunctions_;
+  std::unordered_map<std::string, llvm::GlobalVariable *> internedStrings_;
 
   llvm::IntegerType *valueTy() { return llvm::Type::getInt64Ty(ctx_); }
   llvm::IntegerType *i32Ty() { return llvm::Type::getInt32Ty(ctx_); }
@@ -229,6 +230,54 @@ private:
 
   llvm::Value *stringPtr(const std::string &text, const std::string &name) {
     return builder_.CreateGlobalStringPtr(text, name);
+  }
+
+  llvm::GlobalVariable *internedStringSlot(const std::string &text) {
+    auto it = internedStrings_.find(text);
+    if (it != internedStrings_.end()) {
+      return it->second;
+    }
+
+    auto *slot = new llvm::GlobalVariable(
+        module_, valueTy(), false, llvm::GlobalValue::PrivateLinkage,
+        constantValue(0), "elx.intern.cache." +
+                              std::to_string(internedStrings_.size()));
+    internedStrings_[text] = slot;
+    return slot;
+  }
+
+  llvm::Value *cachedInternedString(const std::string &text,
+                                    const std::string &name) {
+    auto *intern = runtime("elx_intern_string");
+    if (!intern) {
+      return nilValue();
+    }
+
+    auto *slot = internedStringSlot(text);
+    auto *cached = builder_.CreateLoad(valueTy(), slot, name + ".cached");
+    auto *hasCached = builder_.CreateICmpNE(cached, constantValue(0),
+                                            name + ".is.cached");
+    auto *hitBlock = builder_.GetInsertBlock();
+    auto *missBlock =
+        llvm::BasicBlock::Create(ctx_, name + ".intern", function_);
+    auto *readyBlock =
+        llvm::BasicBlock::Create(ctx_, name + ".ready", function_);
+    builder_.CreateCondBr(hasCached, readyBlock, missBlock);
+
+    builder_.SetInsertPoint(missBlock);
+    auto *fresh = builder_.CreateCall(
+        intern, {stringPtr(text, name),
+                 constantI32(static_cast<int>(text.size()))},
+        name + ".interned.fresh");
+    builder_.CreateStore(fresh, slot);
+    auto *missEnd = builder_.GetInsertBlock();
+    builder_.CreateBr(readyBlock);
+
+    builder_.SetInsertPoint(readyBlock);
+    auto *result = builder_.CreatePHI(valueTy(), 2, name + ".interned");
+    result->addIncoming(cached, hitBlock);
+    result->addIncoming(fresh, missEnd);
+    return result;
   }
 
   llvm::Value *nullValuePtr() {
@@ -488,27 +537,17 @@ private:
   }
 
   std::optional<std::string> emitString(const Instruction &instruction) {
-    auto *intern = runtime("elx_intern_string");
-    if (!intern) {
+    if (!runtime("elx_intern_string")) {
       return unsupported(instruction, "missing elx_intern_string");
     }
-    auto *text = stringPtr(instruction.symbol, "lox.str");
-    auto *value = builder_.CreateCall(
-        intern, {text, constantI32(static_cast<int>(instruction.symbol.size()))},
-        "str");
+    auto *value = cachedInternedString(instruction.symbol, "lox.str");
     bind(instruction, value, LoxType::String);
     return std::nullopt;
   }
 
   llvm::Value *emitInternedName(const std::string &text,
                                 const std::string &name) {
-    auto *intern = runtime("elx_intern_string");
-    if (!intern) {
-      return nilValue();
-    }
-    return builder_.CreateCall(
-        intern, {stringPtr(text, name), constantI32(static_cast<int>(text.size()))},
-        name + ".interned");
+    return cachedInternedString(text, name);
   }
 
   std::optional<std::string> emitLoadGlobal(const Instruction &instruction) {
