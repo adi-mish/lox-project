@@ -25,21 +25,35 @@ void freeChunk(Chunk *chunk) {
   chunk->~Chunk();
 }
 
-void writeChunk(Chunk *chunk, uint8_t byte, int line) {
-  chunk->code.push_back(byte);
-  chunk->lines.push_back(line);
+void Chunk::write(uint8_t byte, int line) {
+  code_.push_back(byte);
+  lines_.push_back(line);
 }
-int addConstant(Chunk *chunk, Value value) {
+
+void Chunk::truncate(int size) {
+  code_.resize(size);
+  lines_.resize(size);
+}
+
+int Chunk::addConstant(Value value) {
   if (IS_OBJ(value)) {
-    for (int i = 0; i < static_cast<int>(chunk->constants.size()); i++) {
-      if (valuesEqual(chunk->constants[i], value))
+    for (int i = 0; i < static_cast<int>(constants_.size()); i++) {
+      if (valuesEqual(constants_[i], value))
         return i;
     }
   }
 
   push(value);
-  writeValueArray(&chunk->constants, value);
-  chunk->inlineCaches.push_back(emptyInlineCache());
+  writeValueArray(&constants_, value);
+  inlineCaches_.push_back(emptyInlineCache());
   pop();
-  return static_cast<int>(chunk->constants.size()) - 1;
+  return static_cast<int>(constants_.size()) - 1;
+}
+
+void writeChunk(Chunk *chunk, uint8_t byte, int line) {
+  chunk->write(byte, line);
+}
+
+int addConstant(Chunk *chunk, Value value) {
+  return chunk->addConstant(value);
 }

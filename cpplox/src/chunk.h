@@ -92,12 +92,36 @@ typedef enum {
   OP_COUNT
 } OpCode;
 
-typedef struct {
-  std::vector<uint8_t> code;
-  std::vector<int> lines;
-  std::vector<InlineCache> inlineCaches;
-  ValueArray constants;
-} Chunk;
+class Chunk {
+public:
+  int size() const { return static_cast<int>(code_.size()); }
+  bool empty() const { return code_.empty(); }
+
+  uint8_t *codeData() { return code_.data(); }
+  const uint8_t *codeData() const { return code_.data(); }
+  uint8_t byteAt(int offset) const { return code_[offset]; }
+  uint8_t &byteAt(int offset) { return code_[offset]; }
+  int lineAt(size_t offset) const { return lines_[offset]; }
+
+  void write(uint8_t byte, int line);
+  void truncate(int size);
+  int addConstant(Value value);
+
+  Value constantAt(int index) const { return constants_[index]; }
+  Value *constantsData() { return constants_.data(); }
+  const ValueArray &constants() const { return constants_; }
+  ValueArray &constants() { return constants_; }
+
+  InlineCache &inlineCache(int index) { return inlineCaches_[index]; }
+  const std::vector<InlineCache> &inlineCaches() const { return inlineCaches_; }
+  std::vector<InlineCache> &inlineCaches() { return inlineCaches_; }
+
+private:
+  std::vector<uint8_t> code_;
+  std::vector<int> lines_;
+  std::vector<InlineCache> inlineCaches_;
+  ValueArray constants_;
+};
 
 void initChunk(Chunk *chunk);
 void freeChunk(Chunk *chunk);

@@ -89,7 +89,7 @@ static int knownGlobalCount = 0;
 
 static Chunk *currentChunk() { return &current->function->chunk; }
 static int chunkSize(Chunk *chunk) {
-  return static_cast<int>(chunk->code.size());
+  return chunk->size();
 }
 static LoopStart currentLoopStart() {
   LoopStart start;
@@ -209,8 +209,8 @@ static void patchJump(int offset) {
     error("Too much code to jump over.");
   }
 
-  currentChunk()->code[offset] = (jump >> 8) & 0xff;
-  currentChunk()->code[offset + 1] = jump & 0xff;
+  currentChunk()->byteAt(offset) = (jump >> 8) & 0xff;
+  currentChunk()->byteAt(offset + 1) = jump & 0xff;
 }
 
 static void initCompiler(Compiler *compiler, FunctionType type) {
@@ -282,7 +282,7 @@ static bool discardPureExpression(int start) {
   Chunk *chunk = currentChunk();
   int depth = 0;
   for (int offset = start; offset < chunkSize(chunk);) {
-    switch (chunk->code[offset]) {
+    switch (chunk->byteAt(offset)) {
     case OP_CONSTANT:
       depth++;
       offset += 2;
@@ -322,7 +322,7 @@ static bool discardPureExpression(int start) {
       break;
     case OP_GET_GLOBAL: {
       ObjString *name =
-          AS_STRING(chunk->constants[chunk->code[offset + 1]]);
+          AS_STRING(chunk->constantAt(chunk->byteAt(offset + 1)));
       bool known = name->length == 5 && memcmp(name->chars, "clock", 5) == 0;
       for (int i = 0; !known && i < knownGlobalCount; i++) {
         known = knownGlobals[i] == name;
@@ -349,15 +349,14 @@ static bool discardPureExpression(int start) {
     }
   }
   if (depth == 1) {
-    chunk->code.resize(start);
-    chunk->lines.resize(start);
+    chunk->truncate(start);
     return true;
   }
   return false;
 }
 
 static void rememberGlobal(uint8_t constant) {
-  ObjString *name = AS_STRING(currentChunk()->constants[constant]);
+  ObjString *name = AS_STRING(currentChunk()->constantAt(constant));
   for (int i = 0; i < knownGlobalCount; i++) {
     if (knownGlobals[i] == name)
       return;

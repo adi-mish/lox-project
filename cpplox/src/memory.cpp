@@ -62,14 +62,14 @@ void markValue(Value value) {
   if (IS_OBJ(value))
     markObject(AS_OBJ(value));
 }
-static void markArray(ValueArray *array) {
-  for (Value value : *array) {
+static void markArray(const ValueArray &array) {
+  for (Value value : array) {
     markValue(value);
   }
 }
 static void markInlineCaches(Chunk *chunk) {
-  for (int i = 0; i < static_cast<int>(chunk->constants.size()); i++) {
-    InlineCache *cache = &chunk->inlineCaches[i];
+  for (int i = 0; i < static_cast<int>(chunk->constants().size()); i++) {
+    InlineCache *cache = &chunk->inlineCache(i);
     if ((cache->kind == CACHE_FIELD || cache->kind == CACHE_METHOD) &&
         cache->owner != NULL) {
       markObject((Obj *)cache->owner);
@@ -112,7 +112,7 @@ static void blackenObject(Obj *object) {
   case OBJ_FUNCTION: {
     ObjFunction *function = (ObjFunction *)object;
     markObject((Obj *)function->name);
-    markArray(&function->chunk.constants);
+    markArray(function->chunk.constants());
     markInlineCaches(&function->chunk);
     break;
   }
