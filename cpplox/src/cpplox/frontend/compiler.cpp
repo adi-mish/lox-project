@@ -230,6 +230,7 @@ static void initCompiler(FunctionCompiler *compiler, FunctionType type) {
   compiler->logicalByteCount = 0;
   current = compiler;
   compiler->function = compilingVm->newFunction();
+  compilingVm->addCompilerRoot(compiler->function);
   if (type != TYPE_SCRIPT) {
     current->function->name =
         compilingVm->copyString(parser.previous.start, parser.previous.length);
@@ -262,6 +263,7 @@ static ObjFunction *endCompiler() {
 #endif
 
   current = current->enclosing;
+  compilingVm->popCompilerRoot();
   return function;
 }
 static void beginScope() { current->scopeDepth++; }
@@ -1082,13 +1084,6 @@ ObjFunction *compile(Vm &vm, const char *source) {
   ObjFunction *function = endCompiler();
   compilingVm = NULL;
   return parser.hadError ? NULL : function;
-}
-void markCompilerRoots() {
-  FunctionCompiler *compiler = current;
-  while (compiler != NULL) {
-    markObject((Obj *)compiler->function);
-    compiler = compiler->enclosing;
-  }
 }
 
 } // namespace cpplox

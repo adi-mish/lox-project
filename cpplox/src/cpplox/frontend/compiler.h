@@ -7,7 +7,6 @@
 namespace cpplox {
 
 ObjFunction *compile(Vm &vm, const char *source);
-void markCompilerRoots();
 
 } // namespace cpplox
 

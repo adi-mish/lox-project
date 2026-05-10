@@ -2,6 +2,7 @@
 #define clox_vm_h
 
 #include <array>
+#include <vector>
 
 #include "object.h"
 #include "table.h"
@@ -48,6 +49,9 @@ public:
   ObjString *takeString(char *chars, int length);
   ObjString *copyString(const char *chars, int length);
   ObjUpvalue *newUpvalue(Value *slot);
+  void addCompilerRoot(ObjFunction *function);
+  void popCompilerRoot();
+  void markCompilerRoots();
 
 #ifdef CPPLOX_ENABLE_VM_STATS
   void setStatsEnabled(bool enabled);
@@ -71,6 +75,7 @@ public:
   int grayCount;
   int grayCapacity;
   Obj **grayStack;
+  std::vector<ObjFunction *> compilerRoots;
 #ifdef CPPLOX_ENABLE_VM_STATS
   bool statsEnabled;
   uint64_t instructionsExecuted;

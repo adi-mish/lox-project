@@ -334,6 +334,19 @@ Value Vm::pop() {
   stackTop--;
   return *stackTop;
 }
+
+void Vm::addCompilerRoot(ObjFunction *function) {
+  compilerRoots.push_back(function);
+}
+
+void Vm::popCompilerRoot() { compilerRoots.pop_back(); }
+
+void Vm::markCompilerRoots() {
+  for (ObjFunction *function : compilerRoots) {
+    markObject(reinterpret_cast<Obj *>(function));
+  }
+}
+
 static Value peek(int distance) {
   Vm &vm = currentVm();
   return vm.stackTop[-1 - distance];

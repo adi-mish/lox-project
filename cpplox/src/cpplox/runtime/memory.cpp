@@ -1,6 +1,5 @@
 #include <cstdlib>
 
-#include "compiler.h"
 #include "memory.h"
 #include "vm.h"
 
@@ -202,7 +201,7 @@ static void markRoots() {
   }
 
   vm.globals.mark();
-  markCompilerRoots();
+  vm.markCompilerRoots();
   markObject((Obj *)vm.initString);
 }
 static void traceReferences() {
