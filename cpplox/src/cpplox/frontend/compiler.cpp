@@ -774,7 +774,7 @@ static void parsePrecedence(Precedence precedence) {
     error("Invalid assignment target.");
   }
 }
-static ParseRule *getRule(TokenType type) { return &rules[type]; }
+static ParseRule *getRule(TokenType type) { return &rules[tokenIndex(type)]; }
 static void expression() { parsePrecedence(PREC_ASSIGNMENT); }
 static void block() {
   while (!check(TOKEN_RIGHT_BRACE) && !check(TOKEN_EOF)) {
