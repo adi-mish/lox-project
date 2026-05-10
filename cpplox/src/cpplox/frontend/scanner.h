@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string_view>
 
 namespace cpplox {
 
@@ -106,9 +107,9 @@ struct Token {
 class Scanner {
 public:
   Scanner() = default;
-  explicit Scanner(const char *source) { reset(source); }
+  explicit Scanner(std::string_view source) { reset(source); }
 
-  void reset(const char *source);
+  void reset(std::string_view source);
   Token scanToken();
 
 private:
@@ -132,8 +133,8 @@ private:
 
   const char *start_ = "";
   const char *current_ = "";
+  const char *end_ = "";
   int line_ = 1;
 };
 
 } // namespace cpplox
-

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <string_view>
 #include <vector>
 
 #include "memory.h"
@@ -36,7 +37,7 @@ public:
   void initialize();
   void shutdown();
 
-  InterpretResult interpret(const char *source);
+  InterpretResult interpret(std::string_view source);
   void push(Value value);
   Value pop();
 

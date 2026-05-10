@@ -1,12 +1,14 @@
 #include <cstring>
+#include <string_view>
 
 #include "scanner.h"
 
 namespace cpplox {
 
-void Scanner::reset(const char *source) {
-  start_ = source;
-  current_ = source;
+void Scanner::reset(std::string_view source) {
+  start_ = source.data();
+  current_ = source.data();
+  end_ = source.data() + source.size();
   line_ = 1;
 }
 
@@ -16,17 +18,17 @@ bool Scanner::isAlpha(char c) {
 
 bool Scanner::isDigit(char c) { return c >= '0' && c <= '9'; }
 
-bool Scanner::isAtEnd() const { return *current_ == '\0'; }
+bool Scanner::isAtEnd() const { return current_ >= end_; }
 
 char Scanner::advance() {
   current_++;
   return current_[-1];
 }
 
-char Scanner::peek() const { return *current_; }
+char Scanner::peek() const { return isAtEnd() ? '\0' : *current_; }
 
 char Scanner::peekNext() const {
-  if (isAtEnd())
+  if (current_ + 1 >= end_)
     return '\0';
   return current_[1];
 }

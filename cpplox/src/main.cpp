@@ -1,4 +1,3 @@
-#include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <iterator>
@@ -39,7 +38,7 @@ std::string readFile(std::string_view path) {
 }
 
 int runSource(Vm &vm, const std::string &source) {
-  InterpretResult result = vm.interpret(source.c_str());
+  InterpretResult result = vm.interpret(source);
   if (result == INTERPRET_COMPILE_ERROR)
     return 65;
   if (result == INTERPRET_RUNTIME_ERROR)
@@ -64,7 +63,7 @@ void repl(Vm &vm) {
       std::cout << '\n';
       break;
     }
-    vm.interpret(line.c_str());
+    vm.interpret(line);
   }
 }
 
@@ -192,7 +191,7 @@ void printScanToken(Token token) {
 }
 
 int scanSource(const std::string &source) {
-  Scanner scanner(source.c_str());
+  Scanner scanner(source);
   bool hadError = false;
 
   for (;;) {

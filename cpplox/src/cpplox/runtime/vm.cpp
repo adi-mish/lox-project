@@ -1,6 +1,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <string_view>
 #include <ctime>
 #ifdef CPPLOX_ENABLE_VM_STATS
 #include <cinttypes>
@@ -1022,7 +1023,7 @@ static InterpretResult run(Vm &vm) {
   }
 }
 
-InterpretResult Vm::interpret(const char *source) {
+InterpretResult Vm::interpret(std::string_view source) {
   Vm &vm = *this;
 
   ObjFunction *function = compile(vm, source);

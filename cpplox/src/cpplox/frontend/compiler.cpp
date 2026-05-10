@@ -1,8 +1,9 @@
+#include <charconv>
 #include <cstdio>
-#include <cstdlib>
 #include <cstring>
 
 #include <array>
+#include <string_view>
 
 #include "common.h"
 #include "compiler.h"
@@ -94,7 +95,7 @@ static int chunkSize(Chunk *chunk) {
 
 class Compiler {
 public:
-  Compiler(Vm &vm, const char *source);
+  Compiler(Vm &vm, std::string_view source);
   ObjFunction *compile();
 
 private:
@@ -177,7 +178,7 @@ private:
   int knownGlobalCount = 0;
 };
 
-Compiler::Compiler(Vm &vm, const char *source) : vm(vm) {
+Compiler::Compiler(Vm &vm, std::string_view source) : vm(vm) {
   scanner.reset(source);
 }
 
@@ -669,7 +670,9 @@ void Compiler::grouping(bool canAssign) {
 }
 
 void Compiler::number(bool canAssign) {
-  double value = std::strtod(parser.previous.start, nullptr);
+  double value = 0;
+  std::from_chars(parser.previous.start,
+                  parser.previous.start + parser.previous.length, value);
 
   emitConstant(numberValue(value));
 }
@@ -1161,7 +1164,7 @@ ObjFunction *Compiler::compile() {
   return parser.hadError ? nullptr : function;
 }
 
-ObjFunction *compile(Vm &vm, const char *source) {
+ObjFunction *compile(Vm &vm, std::string_view source) {
   Compiler compiler(vm, source);
   return compiler.compile();
 }
