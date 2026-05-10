@@ -188,7 +188,12 @@ static uint8_t makeConstant(Value value) {
   return (uint8_t)constant;
 }
 static void emitConstant(Value value) {
-  emitBytes(OP_CONSTANT, makeConstant(value));
+  uint8_t constant = makeConstant(value);
+  if (constant <= 7) {
+    emitByte((uint8_t)(OP_CONSTANT_0 + constant));
+  } else {
+    emitBytes(OP_CONSTANT, constant);
+  }
 }
 static void patchJump(int offset) {
 
@@ -275,6 +280,17 @@ static bool discardPureExpression(int start) {
     case OP_CONSTANT:
       depth++;
       offset += 2;
+      break;
+    case OP_CONSTANT_0:
+    case OP_CONSTANT_1:
+    case OP_CONSTANT_2:
+    case OP_CONSTANT_3:
+    case OP_CONSTANT_4:
+    case OP_CONSTANT_5:
+    case OP_CONSTANT_6:
+    case OP_CONSTANT_7:
+      depth++;
+      offset++;
       break;
     case OP_NIL:
     case OP_TRUE:

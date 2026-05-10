@@ -27,6 +27,14 @@ typedef struct {
 
 typedef enum {
   OP_CONSTANT,
+  OP_CONSTANT_0,
+  OP_CONSTANT_1,
+  OP_CONSTANT_2,
+  OP_CONSTANT_3,
+  OP_CONSTANT_4,
+  OP_CONSTANT_5,
+  OP_CONSTANT_6,
+  OP_CONSTANT_7,
   OP_NIL,
   OP_TRUE,
   OP_FALSE,

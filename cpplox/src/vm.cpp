@@ -20,6 +20,22 @@ static const char *opcodeName(int opcode) {
   switch (opcode) {
   case OP_CONSTANT:
     return "OP_CONSTANT";
+  case OP_CONSTANT_0:
+    return "OP_CONSTANT_0";
+  case OP_CONSTANT_1:
+    return "OP_CONSTANT_1";
+  case OP_CONSTANT_2:
+    return "OP_CONSTANT_2";
+  case OP_CONSTANT_3:
+    return "OP_CONSTANT_3";
+  case OP_CONSTANT_4:
+    return "OP_CONSTANT_4";
+  case OP_CONSTANT_5:
+    return "OP_CONSTANT_5";
+  case OP_CONSTANT_6:
+    return "OP_CONSTANT_6";
+  case OP_CONSTANT_7:
+    return "OP_CONSTANT_7";
   case OP_NIL:
     return "OP_NIL";
   case OP_TRUE:
@@ -638,6 +654,18 @@ static InterpretResult run() {
       Value constant = READ_CONSTANT();
 
       PUSH_VALUE(constant);
+      break;
+    }
+    case OP_CONSTANT_0:
+    case OP_CONSTANT_1:
+    case OP_CONSTANT_2:
+    case OP_CONSTANT_3:
+    case OP_CONSTANT_4:
+    case OP_CONSTANT_5:
+    case OP_CONSTANT_6:
+    case OP_CONSTANT_7: {
+      Value *constants = frame->closure->function->chunk.constants.values;
+      PUSH_VALUE(constants[instruction - OP_CONSTANT_0]);
       break;
     }
     case OP_NIL:

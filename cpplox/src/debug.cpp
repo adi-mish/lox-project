@@ -18,6 +18,13 @@ static int constantInstruction(const char *name, Chunk *chunk, int offset) {
   printf("'\n");
   return offset + 2;
 }
+static int shortConstantInstruction(const char *name, Chunk *chunk, int offset,
+                                    uint8_t constant) {
+  printf("%-16s %4d '", name, constant);
+  printValue(chunk->constants.values[constant]);
+  printf("'\n");
+  return offset + 1;
+}
 static int invokeInstruction(const char *name, Chunk *chunk, int offset) {
   uint8_t constant = chunk->code[offset + 1];
   uint8_t argCount = chunk->code[offset + 2];
@@ -54,6 +61,22 @@ int disassembleInstruction(Chunk *chunk, int offset) {
   switch (instruction) {
   case OP_CONSTANT:
     return constantInstruction("OP_CONSTANT", chunk, offset);
+  case OP_CONSTANT_0:
+    return shortConstantInstruction("OP_CONSTANT_0", chunk, offset, 0);
+  case OP_CONSTANT_1:
+    return shortConstantInstruction("OP_CONSTANT_1", chunk, offset, 1);
+  case OP_CONSTANT_2:
+    return shortConstantInstruction("OP_CONSTANT_2", chunk, offset, 2);
+  case OP_CONSTANT_3:
+    return shortConstantInstruction("OP_CONSTANT_3", chunk, offset, 3);
+  case OP_CONSTANT_4:
+    return shortConstantInstruction("OP_CONSTANT_4", chunk, offset, 4);
+  case OP_CONSTANT_5:
+    return shortConstantInstruction("OP_CONSTANT_5", chunk, offset, 5);
+  case OP_CONSTANT_6:
+    return shortConstantInstruction("OP_CONSTANT_6", chunk, offset, 6);
+  case OP_CONSTANT_7:
+    return shortConstantInstruction("OP_CONSTANT_7", chunk, offset, 7);
   case OP_NIL:
     return simpleInstruction("OP_NIL", offset);
   case OP_TRUE:
