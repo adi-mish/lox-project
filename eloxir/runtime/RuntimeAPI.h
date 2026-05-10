@@ -250,6 +250,7 @@ uint64_t elx_validate_superclass(uint64_t superclass_bits);
 uint64_t elx_allocate_class(uint64_t name_bits, uint64_t superclass_bits);
 void elx_class_add_method(uint64_t class_bits, uint64_t name_bits,
                           uint64_t method_bits);
+void elx_class_prepare_field_shape(uint64_t class_bits, uint64_t name_bits);
 uint64_t elx_class_find_method(uint64_t class_bits, uint64_t name_bits);
 uint64_t elx_instantiate_class(uint64_t class_bits);
 uint64_t elx_instantiate_known_class(uint64_t class_bits);
@@ -257,6 +258,9 @@ uint64_t elx_get_instance_class(uint64_t instance_bits);
 uint64_t elx_get_instance_field(uint64_t instance_bits, uint64_t name_bits);
 uint64_t elx_set_instance_field(uint64_t instance_bits, uint64_t name_bits,
                                 uint64_t value_bits);
+uint64_t elx_set_instance_field_slot(uint64_t instance_bits,
+                                     uint64_t name_bits, uint32_t slot,
+                                     uint64_t value_bits);
 int elx_try_get_instance_field(uint64_t instance_bits, uint64_t name_bits,
                                uint64_t *out_value);
 int elx_try_get_instance_field_cached(uint64_t instance_bits,

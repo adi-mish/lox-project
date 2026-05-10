@@ -2434,6 +2434,20 @@ void elx_class_add_method(uint64_t class_bits, uint64_t name_bits,
   klass->methods[method_name] = method_bits;
 }
 
+void elx_class_prepare_field_shape(uint64_t class_bits, uint64_t name_bits) {
+  Value class_val = Value::fromBits(class_bits);
+  ObjClass *klass = getClass(class_val);
+  if (!klass)
+    return;
+
+  ObjString *field_name = extractStringKey(name_bits, nullptr);
+  if (!field_name)
+    return;
+
+  ObjShape *shape = klass->defaultShape ? klass->defaultShape : klass->rootShape;
+  klass->defaultShape = shapeEnsureTransition(shape, field_name);
+}
+
 uint64_t elx_class_find_method(uint64_t class_bits, uint64_t name_bits) {
   Value class_val = Value::fromBits(class_bits);
   ObjClass *klass = getClass(class_val);
@@ -2648,10 +2662,56 @@ uint64_t elx_get_instance_field(uint64_t instance_bits, uint64_t name_bits) {
   return Value::nil().getBits();
 }
 
+static bool ensureSlotForWrite(ObjInstance *instance, ObjString *field_key,
+                               uint64_t *cached_shape_bits,
+                               uint64_t *cached_slot, size_t *out_slot);
+
 uint64_t elx_set_instance_field(uint64_t instance_bits, uint64_t name_bits,
                                 uint64_t value_bits) {
   return elx_set_instance_field_cached(instance_bits, name_bits, value_bits,
                                        nullptr, nullptr);
+}
+
+uint64_t elx_set_instance_field_slot(uint64_t instance_bits,
+                                     uint64_t name_bits, uint32_t slot,
+                                     uint64_t value_bits) {
+  Value instance_val = Value::fromBits(instance_bits);
+  ObjInstance *instance = getInstance(instance_val);
+  if (!instance) {
+    elx_runtime_error("Only instances have fields.");
+    return Value::nil().getBits();
+  }
+
+  ObjShape *shape = ensureInstanceShape(instance);
+  if (!shape || slot >= shape->slotCount) {
+    ObjString *field_key = extractStringKey(name_bits, nullptr);
+    if (!field_key) {
+      elx_runtime_error("Property name must be a string.");
+      return Value::nil().getBits();
+    }
+
+    size_t dynamicSlot = 0;
+    if (!ensureSlotForWrite(instance, field_key, nullptr, nullptr,
+                            &dynamicSlot)) {
+      return Value::nil().getBits();
+    }
+    slot = static_cast<uint32_t>(dynamicSlot);
+    shape = instance->shape;
+  }
+
+  size_t required = shape->slotCount;
+  if (slot >= instance->fieldCapacity) {
+    ensureInstanceCapacity(instance, required, true);
+  }
+
+  if (!instance->fieldValues || !instance->fieldInitialized ||
+      slot >= instance->fieldCapacity) {
+    return Value::nil().getBits();
+  }
+
+  instance->fieldValues[slot] = value_bits;
+  instance->fieldInitialized[slot] = 1;
+  return value_bits;
 }
 
 int elx_try_get_instance_field(uint64_t instance_bits, uint64_t name_bits,

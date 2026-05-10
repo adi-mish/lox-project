@@ -111,6 +111,7 @@ class CodeGenVisitor : public ExprVisitor, public StmtVisitor {
   std::unordered_map<std::string, llvm::Value *> stableClassSlots;
   std::unordered_map<std::string, llvm::Value *> stableReceiverSlots;
   std::unordered_map<std::string, llvm::Function *> stableInitializers;
+  std::string plannedInitializerClass;
 
 public:
   CodeGenVisitor(llvm::Module &m);
@@ -224,6 +225,7 @@ private:
   bool isDiscardablePlannedReceiverCall(const Expr *expr) const;
   bool emitPlannedClassCall(Call *e);
   bool emitPlannedReceiverCall(Call *e);
+  bool emitPlannedInitializerFieldSet(Set *e);
   void emitLegacyGetExpr(Get *e, llvm::Value *objectValue,
                          llvm::Value *nameValue);
   void emitLegacySetExpr(Set *e, llvm::Value *objectValue);

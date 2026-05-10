@@ -378,6 +378,9 @@ CodeGenPlan CodeGenPlan::analyze(
         break;
       }
       candidate.planned.linearInitializer = initializerSlotsStable;
+      if (initializerSlotsStable) {
+        candidate.planned.fieldSlots = initializerSlots;
+      }
 
       if (!candidate.planned.hasSuperclass) {
         for (const auto &method : klass->methods) {
@@ -388,10 +391,8 @@ CodeGenPlan CodeGenPlan::analyze(
           }
 
           PlannedMethod plannedMethod;
-          const auto &slots = initializerSlotsStable
-                                  ? initializerSlots
-                                  : std::unordered_map<std::string, uint32_t>{};
-          if (classifyMethod(*method, slots, plannedMethod)) {
+          if (classifyMethod(*method, candidate.planned.fieldSlots,
+                             plannedMethod)) {
             candidate.planned.methods.emplace(methodName,
                                              std::move(plannedMethod));
           }

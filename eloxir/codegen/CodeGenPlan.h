@@ -25,6 +25,7 @@ struct PlannedClass {
   bool trivialInitializer = false;
   bool hasSuperclass = false;
   bool linearInitializer = false;
+  std::unordered_map<std::string, uint32_t> fieldSlots;
   std::unordered_map<std::string, PlannedMethod> methods;
   std::unordered_set<std::string> omittableMethods;
 };

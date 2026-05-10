@@ -3030,6 +3030,10 @@ void CodeGenVisitor::visitGetExpr(Get *e) {
 }
 
 void CodeGenVisitor::visitSetExpr(Set *e) {
+  if (emitPlannedInitializerFieldSet(e)) {
+    return;
+  }
+
   e->object->accept(this);
   llvm::Value *objectValue = value;
 
@@ -3238,6 +3242,8 @@ void CodeGenVisitor::visitSuperExpr(Super *e) {
 
 void CodeGenVisitor::visitClassStmt(Class *s) {
   const std::string className = s->name.getLexeme();
+  const PlannedClass *plannedClass =
+      codeGenPlan ? codeGenPlan->findStableClass(className) : nullptr;
   addLoopInstructions(1);
 
   auto currentBlock = builder.GetInsertBlock();
@@ -3292,7 +3298,7 @@ void CodeGenVisitor::visitClassStmt(Class *s) {
 
   if (isGlobal) {
     globalVariables.insert(className);
-    if (codeGenPlan && codeGenPlan->findStableClass(className)) {
+    if (plannedClass) {
       stableClassSlots[className] = classSlot;
     }
   }
@@ -3364,8 +3370,7 @@ void CodeGenVisitor::visitClassStmt(Class *s) {
     function_map_key_override = uniqueMapKey;
 
     declareFunctionSignature(method.get());
-    if (codeGenPlan && codeGenPlan->findStableClass(className) &&
-        methodName == "init") {
+    if (plannedClass && methodName == "init") {
       auto initIt = functions.find(uniqueMapKey);
       if (initIt != functions.end()) {
         stableInitializers[className] = initIt->second;
@@ -3373,15 +3378,22 @@ void CodeGenVisitor::visitClassStmt(Class *s) {
     }
 
     llvm::Value *methodValue = nullptr;
+    std::string previousPlannedInitializerClass = plannedInitializerClass;
+    if (plannedClass && plannedClass->linearInitializer &&
+        methodName == "init") {
+      plannedInitializerClass = className;
+    }
     try {
       method->accept(this);
       methodValue = value;
     } catch (...) {
+      plannedInitializerClass = previousPlannedInitializerClass;
       function_map_key_override = previousKeyOverride;
       method_context_override = previousOverride;
       throw;
     }
 
+    plannedInitializerClass = previousPlannedInitializerClass;
     method_context_override = previousOverride;
     function_map_key_override = previousKeyOverride;
     methodTable.emplace_back(methodName, methodValue);
@@ -3398,6 +3410,22 @@ void CodeGenVisitor::visitClassStmt(Class *s) {
       allocateClassFn, {classNameValue, hasSuper ? superValue : nilConst()},
       "klass");
   checkRuntimeError(classValue);
+
+  if (plannedClass && plannedClass->linearInitializer &&
+      !plannedClass->fieldSlots.empty()) {
+    if (auto prepareShapeFn = mod.getFunction("elx_class_prepare_field_shape")) {
+      std::vector<std::pair<std::string, uint32_t>> fields(
+          plannedClass->fieldSlots.begin(), plannedClass->fieldSlots.end());
+      std::sort(fields.begin(), fields.end(),
+                [](const auto &left, const auto &right) {
+                  return left.second < right.second;
+                });
+      for (const auto &field : fields) {
+        auto fieldNameValue = stringConst(field.first, true);
+        builder.CreateCall(prepareShapeFn, {classValue, fieldNameValue});
+      }
+    }
+  }
 
   builder.CreateStore(classValue, classSlot);
   globals[className] = classValue;

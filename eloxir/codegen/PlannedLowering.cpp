@@ -278,4 +278,69 @@ bool CodeGenVisitor::emitPlannedReceiverCall(Call *e) {
   return true;
 }
 
+bool CodeGenVisitor::emitPlannedInitializerFieldSet(Set *e) {
+  if (!codeGenPlan || plannedInitializerClass.empty()) {
+    return false;
+  }
+
+  if (!dynamic_cast<This *>(e->object.get())) {
+    return false;
+  }
+
+  const PlannedClass *planned =
+      codeGenPlan->findStableClass(plannedInitializerClass);
+  if (!planned || !planned->linearInitializer) {
+    return false;
+  }
+
+  auto slotIt = planned->fieldSlots.find(e->name.getLexeme());
+  if (slotIt == planned->fieldSlots.end()) {
+    return false;
+  }
+
+  llvm::Function *hasErrorFn = mod.getFunction("elx_has_runtime_error");
+  llvm::Function *setSlotFn = mod.getFunction("elx_set_instance_field_slot");
+  if (!hasErrorFn || !setSlotFn) {
+    return false;
+  }
+
+  e->object->accept(this);
+  llvm::Value *receiver = value;
+  auto errorFlag = builder.CreateCall(hasErrorFn, {}, "direct_set_object_error");
+  auto hasError = builder.CreateICmpNE(errorFlag, builder.getInt32(0),
+                                       "direct_set_object_failed");
+
+  llvm::Function *fn = builder.GetInsertBlock()->getParent();
+  auto skipValueBB = llvm::BasicBlock::Create(ctx, "direct.set.skip", fn);
+  auto evalValueBB = llvm::BasicBlock::Create(ctx, "direct.set.eval", fn);
+  auto contBB = llvm::BasicBlock::Create(ctx, "direct.set.cont", fn);
+  builder.CreateCondBr(hasError, skipValueBB, evalValueBB);
+
+  builder.SetInsertPoint(evalValueBB);
+  e->value->accept(this);
+  llvm::Value *assignedValue = value;
+  llvm::Value *nameValue = stringConst(e->name.getLexeme(), true);
+  llvm::Value *slot =
+      builder.getInt32(static_cast<uint32_t>(slotIt->second));
+  llvm::Value *setResult =
+      builder.CreateCall(setSlotFn, {receiver, nameValue, slot, assignedValue},
+                         "direct_field_set");
+  checkRuntimeError(setResult);
+  llvm::Value *successValue = value;
+  builder.CreateBr(contBB);
+  llvm::BasicBlock *successBB = builder.GetInsertBlock();
+
+  builder.SetInsertPoint(skipValueBB);
+  llvm::Value *skipValue = nilConst();
+  builder.CreateBr(contBB);
+  llvm::BasicBlock *skipEndBB = builder.GetInsertBlock();
+
+  builder.SetInsertPoint(contBB);
+  auto phi = builder.CreatePHI(llvmValueTy(), 2, "direct_set_result");
+  phi->addIncoming(successValue, successBB);
+  phi->addIncoming(skipValue, skipEndBB);
+  value = phi;
+  return true;
+}
+
 } // namespace eloxir

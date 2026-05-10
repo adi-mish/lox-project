@@ -215,6 +215,8 @@ void declareRuntimeBuiltins(llvm::Module &module) {
           llvm::FunctionType::get(value, {value, value}, false));
   declare(module, "elx_class_add_method",
           llvm::FunctionType::get(voidTy, {value, value, value}, false));
+  declare(module, "elx_class_prepare_field_shape",
+          llvm::FunctionType::get(voidTy, {value, value}, false));
   declare(module, "elx_class_find_method",
           llvm::FunctionType::get(value, {value, value}, false));
   declare(module, "elx_instantiate_class",
@@ -227,6 +229,8 @@ void declareRuntimeBuiltins(llvm::Module &module) {
           llvm::FunctionType::get(value, {value, value}, false));
   declare(module, "elx_set_instance_field",
           llvm::FunctionType::get(value, {value, value, value}, false));
+  declare(module, "elx_set_instance_field_slot",
+          llvm::FunctionType::get(value, {value, value, i32, value}, false));
   declare(module, "elx_try_get_instance_field",
           llvm::FunctionType::get(i32, {value, value, valuePtr}, false));
   declare(module, "elx_try_get_instance_field_cached",
