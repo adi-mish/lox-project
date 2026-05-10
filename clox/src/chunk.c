@@ -59,6 +59,12 @@ void writeChunk(Chunk* chunk, uint8_t byte, int line) {
 //< write-chunk
 //> add-constant
 int addConstant(Chunk* chunk, Value value) {
+  if (IS_OBJ(value)) {
+    for (int i = 0; i < chunk->constants.count; i++) {
+      if (valuesEqual(chunk->constants.values[i], value)) return i;
+    }
+  }
+
 //> Garbage Collection add-constant-push
   push(value);
 //< Garbage Collection add-constant-push

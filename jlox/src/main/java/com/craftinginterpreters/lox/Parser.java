@@ -26,6 +26,18 @@ class Parser {
         return statements;
     }
 
+    Expr parseExpression() {
+        try {
+            Expr expr = expression();
+            if (!isAtEnd()) {
+                throw error(peek(), "Expect end of expression.");
+            }
+            return expr;
+        } catch (ParseError error) {
+            return null;
+        }
+    }
+
     private Expr expression() {
         return assignment();
     }
