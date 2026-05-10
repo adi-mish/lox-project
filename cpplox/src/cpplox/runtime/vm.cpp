@@ -241,6 +241,11 @@ static void recordFieldCacheMiss(Vm &) {}
 static Value clockNative(int argCount, Value *args) {
   return numberValue((double)std::clock() / CLOCKS_PER_SEC);
 }
+
+Vm::Vm() { initialize(); }
+
+Vm::~Vm() { shutdown(); }
+
 static void resetStack(Vm &vm) {
   vm.stackTop = vm.stack.data();
   vm.frameCount = 0;

@@ -34,8 +34,11 @@ struct CallFrame {
 
 class Vm {
 public:
-  void initialize();
-  void shutdown();
+  Vm();
+  ~Vm();
+
+  Vm(const Vm &) = delete;
+  Vm &operator=(const Vm &) = delete;
 
   InterpretResult interpret(std::string_view source);
   void push(Value value);
@@ -89,6 +92,10 @@ public:
   uint64_t fieldCacheHits;
   uint64_t fieldCacheMisses;
 #endif
+
+private:
+  void initialize();
+  void shutdown();
 };
 
 } // namespace cpplox

@@ -12,20 +12,6 @@ using namespace cpplox;
 
 namespace {
 
-class VmSession {
-public:
-  VmSession() { vm_.initialize(); }
-  ~VmSession() { vm_.shutdown(); }
-
-  VmSession(const VmSession &) = delete;
-  VmSession &operator=(const VmSession &) = delete;
-
-  Vm &vm() { return vm_; }
-
-private:
-  Vm vm_;
-};
-
 std::string readFile(std::string_view path) {
   std::ifstream file(std::string(path), std::ios::binary);
   if (!file) {
@@ -224,7 +210,7 @@ int scanFile(std::string_view path) {
 } // namespace
 
 int main(int argc, const char *argv[]) {
-  VmSession vm;
+  Vm vm;
   bool scan = false;
   bool stats = false;
   const char *path = nullptr;
@@ -244,8 +230,8 @@ int main(int argc, const char *argv[]) {
   }
 
 #ifdef CPPLOX_ENABLE_VM_STATS
-  vm.vm().setStatsEnabled(stats);
-  vm.vm().resetStats();
+  vm.setStatsEnabled(stats);
+  vm.resetStats();
 #else
   if (stats) {
     std::cerr << "cpplox was built without CPPLOX_ENABLE_VM_STATS.\n";
@@ -261,14 +247,14 @@ int main(int argc, const char *argv[]) {
     }
     exitCode = scanFile(path);
   } else if (path == nullptr) {
-    repl(vm.vm());
+    repl(vm);
   } else {
-    exitCode = runFile(vm.vm(), path);
+    exitCode = runFile(vm, path);
   }
 
 #ifdef CPPLOX_ENABLE_VM_STATS
   if (stats) {
-    vm.vm().printStats();
+    vm.printStats();
   }
 #endif
   return exitCode;
