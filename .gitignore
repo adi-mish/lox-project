@@ -89,6 +89,17 @@ nb-configuration.xml
 ##############################
 *.log
 
+##############################
+## Python
+##############################
+__pycache__/
+*.py[cod]
+*.egg-info/
+.python-version
+.venv/
+.ruff_cache/
+.mypy_cache/
+
 ##### Windows
 # Windows thumbnail cache files
 Thumbs.db
