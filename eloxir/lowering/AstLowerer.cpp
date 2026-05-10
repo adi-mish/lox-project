@@ -109,12 +109,13 @@ public:
 
   void visitUnaryExpr(Unary *expr) override {
     expr->right->accept(this);
+    ValueId operand = value_;
     Instruction instruction;
     instruction.kind = InstructionKind::Unary;
     instruction.source = sourceFromToken(expr->op);
     instruction.result = makeValue();
     instruction.unaryOp = toUnaryOp(expr->op.getType());
-    instruction.operands = {value_};
+    instruction.operands = {operand};
     append(std::move(instruction));
   }
 

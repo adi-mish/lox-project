@@ -9,6 +9,7 @@
 #include "../lowering/AstLowerer.h"
 #include "../ir/LoxIRVerifier.h"
 #include "../ir/LoxPassManager.h"
+#include "../llvm/LoxIRCodeGen.h"
 #include "../opt/LoxOptimizationPasses.h"
 #include "../runtime/RuntimeAPI.h"
 #include <fstream>
@@ -546,35 +547,76 @@ int runFile(const std::string &filename) {
       GlobalSyncCollector(resolver.locals).collect(stmts);
   auto codeGenPlan = eloxir::CodeGenPlan::analyze(stmts);
 
-  if (eloxir::loxir::loxirEnvFlag("ELOXIR_PRINT_LOXIR") ||
-      std::getenv("ELOXIR_DUMP_LOXIR")) {
+  const bool useLoxIRBackend =
+      eloxir::loxir::loxirEnvFlag("ELOXIR_USE_LOXIR_BACKEND");
+  const bool wantLoxIR =
+      useLoxIRBackend || eloxir::loxir::loxirEnvFlag("ELOXIR_PRINT_LOXIR") ||
+      std::getenv("ELOXIR_DUMP_LOXIR") != nullptr;
+  std::unique_ptr<eloxir::loxir::LoxModule> loxModule;
+  if (wantLoxIR) {
     eloxir::loxir::AstLowerer lowerer(&resolver.locals);
-    auto loxModule = lowerer.lower("file_module", stmts);
-    auto verification = eloxir::loxir::verifyModule(loxModule);
+    loxModule = std::make_unique<eloxir::loxir::LoxModule>(
+        lowerer.lower("file_module", stmts));
+    auto verification = eloxir::loxir::verifyModule(*loxModule);
     if (!verification.ok) {
       std::cerr << "LoxIR verification warnings:\n";
       for (const auto &message : verification.errors) {
         std::cerr << "  " << message << '\n';
       }
     }
-    eloxir::loxir::dumpModuleIfRequested(loxModule, "lowered");
+    eloxir::loxir::dumpModuleIfRequested(*loxModule, "lowered");
 
     auto passManager = eloxir::loxir::createDefaultLoxPassPipeline();
-    passManager.run(loxModule);
-    auto optimizedVerification = eloxir::loxir::verifyModule(loxModule);
+    passManager.run(*loxModule);
+    auto optimizedVerification = eloxir::loxir::verifyModule(*loxModule);
     if (!optimizedVerification.ok) {
       std::cerr << "Optimized LoxIR verification warnings:\n";
       for (const auto &message : optimizedVerification.errors) {
         std::cerr << "  " << message << '\n';
       }
     }
-    eloxir::loxir::dumpModuleIfRequested(loxModule, "optimized");
+    eloxir::loxir::dumpModuleIfRequested(*loxModule, "optimized");
   }
 
   // Clear any previous runtime errors
   elx_clear_runtime_error();
 
   try {
+    if (useLoxIRBackend && loxModule) {
+      auto jit = cantFail(eloxir::EloxirJIT::Create());
+      auto fileCtx = std::make_unique<LLVMContext>();
+      auto fileMod = std::make_unique<Module>("file_module", *fileCtx);
+      fileMod->setDataLayout(jit->getDataLayout());
+      fileMod->setTargetTriple(jit->getTargetTriple().str());
+
+      auto unsupported =
+          eloxir::loxir::emitLoxIRModuleToLLVM(*loxModule, *fileMod);
+      if (!unsupported) {
+        if (llvm::verifyModule(*fileMod, &llvm::errs())) {
+          std::cerr << "Generated invalid LoxIR LLVM module. Cannot execute.\n";
+          return static_cast<int>(ExitCode::kCompileError);
+        }
+
+        cantFail(jit->addModule(
+            makeThreadSafeModule(std::move(fileMod), std::move(fileCtx))));
+        auto sym = cantFail(jit->lookup("main"));
+        using FnTy = uint64_t (*)();
+        reinterpret_cast<FnTy>(sym.getAddress())();
+
+        if (elx_has_runtime_error()) {
+          elx_clear_runtime_error();
+          return static_cast<int>(ExitCode::kRuntimeError);
+        }
+        return static_cast<int>(ExitCode::kOk);
+      }
+
+      if (eloxir::loxir::loxirEnvFlag("ELOXIR_TRACE_PASSES")) {
+        std::cerr << "eloxir-loxir: falling back to legacy LLVM backend: "
+                  << *unsupported << '\n';
+      }
+      elx_clear_runtime_error();
+    }
+
     auto jit = cantFail(eloxir::EloxirJIT::Create());
 
     // Create context and module for the entire file

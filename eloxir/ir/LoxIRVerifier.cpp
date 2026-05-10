@@ -41,7 +41,6 @@ void verifyInstruction(const LoxFunction &function, const BasicBlock &block,
       addError(result, "duplicate value " + valueName(*instruction.result) +
                            " in function @" + function.name());
     }
-    definedValues.insert(*instruction.result);
   }
 
   auto verifyOperand = [&](ValueId value) {
@@ -57,6 +56,10 @@ void verifyInstruction(const LoxFunction &function, const BasicBlock &block,
   }
   for (ValueId argument : instruction.arguments) {
     verifyOperand(argument);
+  }
+
+  if (instruction.result) {
+    definedValues.insert(*instruction.result);
   }
 
   if ((instruction.kind == InstructionKind::Jump ||
