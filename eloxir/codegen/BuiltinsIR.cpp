@@ -1,5 +1,6 @@
 #include "BuiltinsIR.h"
 #include "../runtime/RuntimeAPI.h"
+#include "../runtime/RuntimeSymbols.h"
 
 #include <llvm/IR/Attributes.h>
 #include <llvm/IR/Function.h>
@@ -22,6 +23,10 @@ llvm::PointerType *valuePtrTy(llvm::LLVMContext &ctx) {
   return llvm::PointerType::get(valueTy(ctx), 0);
 }
 
+llvm::PointerType *presencePtrTy(llvm::LLVMContext &ctx) {
+  return llvm::PointerType::get(llvm::Type::getInt8Ty(ctx), 0);
+}
+
 llvm::Function *declare(llvm::Module &module, const char *name,
                         llvm::FunctionType *type) {
   auto callee = module.getOrInsertFunction(name, type);
@@ -40,6 +45,124 @@ void markReadOnly(llvm::Module &module, const char *name) {
     fn->setWillReturn();
     fn->setOnlyReadsMemory();
   }
+}
+
+llvm::FunctionType *runtimeFunctionType(llvm::Module &module,
+                                        RuntimeSignature signature) {
+  auto &ctx = module.getContext();
+  auto *value = valueTy(ctx);
+  auto *i8Ptr = i8PtrTy(ctx);
+  auto *i32 = llvm::Type::getInt32Ty(ctx);
+  auto *voidTy = llvm::Type::getVoidTy(ctx);
+  auto *valuePtr = valuePtrTy(ctx);
+  auto *presencePtr = presencePtrTy(ctx);
+  auto *cachePtr =
+      llvm::PointerType::get(getOrCreatePropertyCacheIRType(ctx), 0);
+  auto *callCachePtr =
+      llvm::PointerType::get(getOrCreateCallInlineCacheIRType(ctx), 0);
+
+  switch (signature) {
+  case RuntimeSignature::Void_None:
+    return llvm::FunctionType::get(voidTy, {}, false);
+  case RuntimeSignature::Void_Value:
+    return llvm::FunctionType::get(voidTy, {value}, false);
+  case RuntimeSignature::Void_ValuePtr:
+    return llvm::FunctionType::get(voidTy, {valuePtr}, false);
+  case RuntimeSignature::Void_I8Ptr:
+    return llvm::FunctionType::get(voidTy, {i8Ptr}, false);
+  case RuntimeSignature::Void_I32:
+    return llvm::FunctionType::get(voidTy, {i32}, false);
+  case RuntimeSignature::Void_I32_I32:
+    return llvm::FunctionType::get(voidTy, {i32, i32}, false);
+  case RuntimeSignature::Void_Value_Value:
+    return llvm::FunctionType::get(voidTy, {value, value}, false);
+  case RuntimeSignature::Void_Value_Value_Value:
+    return llvm::FunctionType::get(voidTy, {value, value, value}, false);
+  case RuntimeSignature::Void_I8Ptr_Value:
+    return llvm::FunctionType::get(voidTy, {i8Ptr, value}, false);
+  case RuntimeSignature::Void_Value_I32_Value:
+    return llvm::FunctionType::get(voidTy, {value, i32, value}, false);
+  case RuntimeSignature::Value_None:
+    return llvm::FunctionType::get(value, {}, false);
+  case RuntimeSignature::Value_Value:
+    return llvm::FunctionType::get(value, {value}, false);
+  case RuntimeSignature::I8Ptr_Value:
+    return llvm::FunctionType::get(i8Ptr, {value}, false);
+  case RuntimeSignature::Value_I8Ptr:
+    return llvm::FunctionType::get(value, {i8Ptr}, false);
+  case RuntimeSignature::ValuePtr_Value:
+    return llvm::FunctionType::get(valuePtr, {value}, false);
+  case RuntimeSignature::PresencePtr_Value:
+    return llvm::FunctionType::get(presencePtr, {value}, false);
+  case RuntimeSignature::Value_ValuePtr:
+    return llvm::FunctionType::get(value, {valuePtr}, false);
+  case RuntimeSignature::Value_Value_Value:
+    return llvm::FunctionType::get(value, {value, value}, false);
+  case RuntimeSignature::Value_I8Ptr_I32:
+    return llvm::FunctionType::get(value, {i8Ptr, i32}, false);
+  case RuntimeSignature::Value_Value_I32:
+    return llvm::FunctionType::get(value, {value, i32}, false);
+  case RuntimeSignature::Value_Value_Value_Value:
+    return llvm::FunctionType::get(value, {value, value, value}, false);
+  case RuntimeSignature::Value_Value_ValuePtr_I32:
+    return llvm::FunctionType::get(value, {value, valuePtr, i32}, false);
+  case RuntimeSignature::Value_Value_Value_ValuePtr_I32:
+    return llvm::FunctionType::get(value, {value, value, valuePtr, i32},
+                                   false);
+  case RuntimeSignature::Value_Value_Value_I32_Value:
+    return llvm::FunctionType::get(value, {value, value, i32, value}, false);
+  case RuntimeSignature::Value_Value_Value_ValuePtr_ValuePtr:
+    return llvm::FunctionType::get(value,
+                                   {value, value, value, valuePtr, valuePtr},
+                                   false);
+  case RuntimeSignature::Value_Value_Value_CachePtr_I32:
+    return llvm::FunctionType::get(value, {value, value, cachePtr, i32},
+                                   false);
+  case RuntimeSignature::Value_Value_Value_Value_CachePtr_I32:
+    return llvm::FunctionType::get(value,
+                                   {value, value, value, cachePtr, i32},
+                                   false);
+  case RuntimeSignature::Value_I8Ptr_I32_I8Ptr:
+    return llvm::FunctionType::get(value, {i8Ptr, i32, i8Ptr}, false);
+  case RuntimeSignature::Value_I32_Value_Value_ValuePtr_I32:
+    return llvm::FunctionType::get(value, {i32, value, value, valuePtr, i32},
+                                   false);
+  case RuntimeSignature::Value_Value_ValuePtr_I32_I8Ptr_I32:
+    return llvm::FunctionType::get(value, {value, valuePtr, i32, i8Ptr, i32},
+                                   false);
+  case RuntimeSignature::
+      Value_Value_ValuePtr_I32_Value_I8Ptr_I32_Value_I32:
+    return llvm::FunctionType::get(
+        value, {value, valuePtr, i32, value, i8Ptr, i32, value, i32}, false);
+  case RuntimeSignature::Value_Value_ValuePtr_I32_Value_I8Ptr_I32_I32:
+    return llvm::FunctionType::get(
+        value, {value, valuePtr, i32, value, i8Ptr, i32, i32}, false);
+  case RuntimeSignature::I32_None:
+    return llvm::FunctionType::get(i32, {}, false);
+  case RuntimeSignature::I32_Value:
+    return llvm::FunctionType::get(i32, {value}, false);
+  case RuntimeSignature::I32_Value_Value:
+    return llvm::FunctionType::get(i32, {value, value}, false);
+  case RuntimeSignature::I32_I8Ptr:
+    return llvm::FunctionType::get(i32, {i8Ptr}, false);
+  case RuntimeSignature::I32_Value_Value_Value:
+    return llvm::FunctionType::get(i32, {value, value, value}, false);
+  case RuntimeSignature::I32_Value_Value_ValuePtr:
+    return llvm::FunctionType::get(i32, {value, value, valuePtr}, false);
+  case RuntimeSignature::I32_Value_Value_CallCachePtr_ValuePtr:
+    return llvm::FunctionType::get(i32, {value, value, callCachePtr, valuePtr},
+                                   false);
+  case RuntimeSignature::I32_Value_Value_ValuePtr_ValuePtr_ValuePtr:
+    return llvm::FunctionType::get(i32,
+                                   {value, value, valuePtr, valuePtr,
+                                    valuePtr},
+                                   false);
+  case RuntimeSignature::Void_CallCachePtr:
+    return llvm::FunctionType::get(voidTy, {callCachePtr}, false);
+  case RuntimeSignature::Void_CallCachePtr_Value:
+    return llvm::FunctionType::get(voidTy, {callCachePtr, value}, false);
+  }
+  return llvm::FunctionType::get(voidTy, {}, false);
 }
 
 } // namespace
@@ -88,233 +211,21 @@ llvm::StructType *getOrCreateCallInlineCacheIRType(llvm::LLVMContext &ctx) {
 }
 
 void declareRuntimeBuiltins(llvm::Module &module) {
-  auto &ctx = module.getContext();
-  auto *value = valueTy(ctx);
-  auto *i8Ptr = i8PtrTy(ctx);
-  auto *i32 = llvm::Type::getInt32Ty(ctx);
-  auto *voidTy = llvm::Type::getVoidTy(ctx);
-  auto *valuePtr = valuePtrTy(ctx);
-  auto *presencePtr = llvm::PointerType::get(llvm::Type::getInt8Ty(ctx), 0);
-  auto *cachePtr =
-      llvm::PointerType::get(getOrCreatePropertyCacheIRType(ctx), 0);
-  auto *callCachePtr =
-      llvm::PointerType::get(getOrCreateCallInlineCacheIRType(ctx), 0);
-
-  declare(module, "elx_print",
-          llvm::FunctionType::get(value, {value}, false));
-  declare(module, "elx_clock", llvm::FunctionType::get(value, {}, false));
-  declare(module, "elx_readLine", llvm::FunctionType::get(value, {}, false));
-
-  auto *stringAllocTy =
-      llvm::FunctionType::get(value, {i8Ptr, i32}, false);
-  declare(module, "elx_allocate_string", stringAllocTy);
-  declare(module, "elx_intern_string", stringAllocTy);
-  declare(module, "elx_debug_string_address",
-          llvm::FunctionType::get(value, {value}, false));
-  declare(module, "elx_free_object",
-          llvm::FunctionType::get(voidTy, {value}, false));
-  declare(module, "elx_concatenate_strings",
-          llvm::FunctionType::get(value, {value, value}, false));
-
-  auto *binaryPredicateTy =
-      llvm::FunctionType::get(i32, {value, value}, false);
-  declare(module, "elx_strings_equal", binaryPredicateTy);
-  declare(module, "elx_strings_equal_interned", binaryPredicateTy);
-  declare(module, "elx_value_is_string",
-          llvm::FunctionType::get(i32, {value}, false));
-
-  declare(module, "elx_allocate_function",
-          llvm::FunctionType::get(value, {i8Ptr, i32, i8Ptr}, false));
-  auto *callValueTy =
-      llvm::FunctionType::get(value, {value, valuePtr, i32}, false);
-  declare(module, "elx_call_function", callValueTy);
-  declare(module, "elx_call_value", callValueTy);
-  declare(module, "elx_call_property",
-          llvm::FunctionType::get(value, {value, value, valuePtr, i32},
-                                  false));
-  declare(module, "elx_prepare_property_call",
-          llvm::FunctionType::get(i32, {value, value, valuePtr}, false));
-  declare(module, "elx_prepare_property_call_cached",
-          llvm::FunctionType::get(i32, {value, value, callCachePtr, valuePtr},
-                                  false));
-  declare(module, "elx_call_prepared_property",
-          llvm::FunctionType::get(value, {i32, value, value, valuePtr, i32},
-                                  false));
-
-  auto *valuePredicateTy = llvm::FunctionType::get(i32, {value}, false);
-  declare(module, "elx_is_function", valuePredicateTy);
-  declare(module, "elx_is_closure", valuePredicateTy);
-  declare(module, "elx_is_native", valuePredicateTy);
-  declare(module, "elx_is_class", valuePredicateTy);
-  declare(module, "elx_is_bound_method", valuePredicateTy);
-  declare(module, "elx_allocate_native",
-          llvm::FunctionType::get(value, {i8Ptr, i32, i8Ptr}, false));
-  declare(module, "elx_call_native", callValueTy);
-
-  auto *fastCallTy =
-      llvm::FunctionType::get(value, {value, valuePtr, i32, i8Ptr, i32},
-                              false);
-  declare(module, "elx_call_function_fast", fastCallTy);
-  declare(module, "elx_call_closure_fast", fastCallTy);
-  declare(module, "elx_call_native_fast", fastCallTy);
-  declare(module, "elx_call_bound_method_fast",
-          llvm::FunctionType::get(value,
-                                  {value, valuePtr, i32, value, i8Ptr, i32,
-                                   value, i32},
-                                  false));
-  declare(module, "elx_call_class_fast",
-          llvm::FunctionType::get(value,
-                                  {value, valuePtr, i32, value, i8Ptr, i32,
-                                   i32},
-                                  false));
-  declare(module, "elx_bound_method_matches",
-          llvm::FunctionType::get(i32, {value, value, value}, false));
-  declare(module, "elx_call_cache_invalidate",
-          llvm::FunctionType::get(voidTy, {callCachePtr}, false));
-  declare(module, "elx_call_cache_update",
-          llvm::FunctionType::get(voidTy, {callCachePtr, value}, false));
-
-  declare(module, "elx_cache_stats_enabled",
-          llvm::FunctionType::get(i32, {}, false));
-  declare(module, "elx_cache_stats_reset",
-          llvm::FunctionType::get(voidTy, {}, false));
-#ifdef ELOXIR_ENABLE_CACHE_STATS
-  declare(module, "elx_cache_stats_record_property_hit",
-          llvm::FunctionType::get(voidTy, {i32}, false));
-  declare(module, "elx_cache_stats_record_property_miss",
-          llvm::FunctionType::get(voidTy, {i32}, false));
-  declare(module, "elx_cache_stats_record_property_shape_transition",
-          llvm::FunctionType::get(voidTy, {i32}, false));
-  declare(module, "elx_cache_stats_record_call_hit",
-          llvm::FunctionType::get(voidTy, {i32}, false));
-  declare(module, "elx_cache_stats_record_call_miss",
-          llvm::FunctionType::get(voidTy, {}, false));
-  declare(module, "elx_cache_stats_record_call_transition",
-          llvm::FunctionType::get(voidTy, {i32, i32}, false));
-#endif
-
-  declare(module, "elx_allocate_upvalue",
-          llvm::FunctionType::get(value, {valuePtr}, false));
-  declare(module, "elx_allocate_upvalue_with_value",
-          llvm::FunctionType::get(value, {value}, false));
-  declare(module, "elx_allocate_closure",
-          llvm::FunctionType::get(value, {value, i32}, false));
-  declare(module, "elx_set_closure_upvalue",
-          llvm::FunctionType::get(voidTy, {value, i32, value}, false));
-  declare(module, "elx_get_upvalue_value",
-          llvm::FunctionType::get(value, {value}, false));
-  declare(module, "elx_set_upvalue_value",
-          llvm::FunctionType::get(voidTy, {value, value}, false));
-  declare(module, "elx_close_upvalues",
-          llvm::FunctionType::get(voidTy, {valuePtr}, false));
-  declare(module, "elx_call_closure", callValueTy);
-
-  declare(module, "elx_validate_superclass",
-          llvm::FunctionType::get(value, {value}, false));
-  declare(module, "elx_allocate_class",
-          llvm::FunctionType::get(value, {value, value}, false));
-  declare(module, "elx_class_add_method",
-          llvm::FunctionType::get(voidTy, {value, value, value}, false));
-  declare(module, "elx_class_prepare_field_shape",
-          llvm::FunctionType::get(voidTy, {value, value}, false));
-  declare(module, "elx_class_find_method",
-          llvm::FunctionType::get(value, {value, value}, false));
-  declare(module, "elx_instantiate_class",
-          llvm::FunctionType::get(value, {value}, false));
-  declare(module, "elx_instantiate_known_class",
-          llvm::FunctionType::get(value, {value}, false));
-  declare(module, "elx_get_instance_class",
-          llvm::FunctionType::get(value, {value}, false));
-  declare(module, "elx_get_instance_field",
-          llvm::FunctionType::get(value, {value, value}, false));
-  declare(module, "elx_set_instance_field",
-          llvm::FunctionType::get(value, {value, value, value}, false));
-  declare(module, "elx_set_instance_field_slot",
-          llvm::FunctionType::get(value, {value, value, i32, value}, false));
-  declare(module, "elx_try_get_instance_field",
-          llvm::FunctionType::get(i32, {value, value, valuePtr}, false));
-  declare(module, "elx_try_get_instance_field_cached",
-          llvm::FunctionType::get(i32, {value, value, valuePtr, valuePtr,
-                                        valuePtr},
-                                  false));
-  declare(module, "elx_set_instance_field_cached",
-          llvm::FunctionType::get(value,
-                                  {value, value, value, valuePtr, valuePtr},
-                                  false));
-  declare(module, "elx_bind_method",
-          llvm::FunctionType::get(value, {value, value}, false));
-  declare(module, "elx_get_property_slow",
-          llvm::FunctionType::get(value, {value, value, cachePtr, i32},
-                                  false));
-  declare(module, "elx_set_property_slow",
-          llvm::FunctionType::get(value, {value, value, value, cachePtr, i32},
-                                  false));
-  declare(module, "elx_instance_shape_ptr",
-          llvm::FunctionType::get(i8Ptr, {value}, false));
-  declare(module, "elx_instance_field_values_ptr",
-          llvm::FunctionType::get(valuePtr, {value}, false));
-  declare(module, "elx_instance_field_presence_ptr",
-          llvm::FunctionType::get(presencePtr, {value}, false));
-
-  declare(module, "elx_cleanup_all_objects",
-          llvm::FunctionType::get(voidTy, {}, false));
-  declare(module, "elx_get_global_builtin",
-          llvm::FunctionType::get(value, {i8Ptr}, false));
-  declare(module, "elx_initialize_global_builtins",
-          llvm::FunctionType::get(voidTy, {}, false));
-  declare(module, "elx_set_global_variable",
-          llvm::FunctionType::get(voidTy, {i8Ptr, value}, false));
-  declare(module, "elx_get_global_variable",
-          llvm::FunctionType::get(value, {i8Ptr}, false));
-  declare(module, "elx_has_global_variable",
-          llvm::FunctionType::get(i32, {i8Ptr}, false));
-  declare(module, "elx_set_global_function",
-          llvm::FunctionType::get(voidTy, {i8Ptr, value}, false));
-  declare(module, "elx_get_global_function",
-          llvm::FunctionType::get(value, {i8Ptr}, false));
-  declare(module, "elx_has_global_function",
-          llvm::FunctionType::get(i32, {i8Ptr}, false));
-
-  declare(module, "elx_runtime_error",
-          llvm::FunctionType::get(voidTy, {i8Ptr}, false));
-  declare(module, "elx_runtime_error_silent",
-          llvm::FunctionType::get(voidTy, {i8Ptr}, false));
-  declare(module, "elx_emit_runtime_error",
-          llvm::FunctionType::get(voidTy, {}, false));
-  declare(module, "elx_has_runtime_error",
-          llvm::FunctionType::get(i32, {}, false));
-  declare(module, "elx_clear_runtime_error",
-          llvm::FunctionType::get(voidTy, {}, false));
-  declare(module, "elx_safe_divide",
-          llvm::FunctionType::get(value, {value, value}, false));
-
-  for (const char *name : {
-           "elx_value_is_string",
-           "elx_strings_equal",
-           "elx_strings_equal_interned",
-           "elx_is_function",
-           "elx_is_closure",
-           "elx_is_native",
-           "elx_is_class",
-           "elx_is_bound_method",
-           "elx_bound_method_matches",
-           "elx_instance_shape_ptr",
-           "elx_instance_field_values_ptr",
-           "elx_instance_field_presence_ptr",
-           "elx_has_runtime_error",
-       }) {
-    markReadOnly(module, name);
+  auto *descriptors = runtimeFunctionDescriptors();
+  const auto count = runtimeFunctionDescriptorCount();
+  for (size_t index = 0; index < count; ++index) {
+    const auto &descriptor = descriptors[index];
+    declare(module, descriptor.name,
+            runtimeFunctionType(module, descriptor.signature));
   }
 
-  for (const char *name : {
-           "elx_print",
-           "elx_runtime_error",
-           "elx_runtime_error_silent",
-           "elx_emit_runtime_error",
-           "elx_clear_runtime_error",
-           "elx_safe_divide",
-       }) {
-    markNoUnwind(module, name);
+  for (size_t index = 0; index < count; ++index) {
+    const auto &descriptor = descriptors[index];
+    if ((descriptor.flags & RuntimeReadOnly) != 0) {
+      markReadOnly(module, descriptor.name);
+    } else if ((descriptor.flags & RuntimeNoUnwind) != 0) {
+      markNoUnwind(module, descriptor.name);
+    }
   }
 }
 
