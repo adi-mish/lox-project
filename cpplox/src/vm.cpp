@@ -142,6 +142,10 @@ void resetVMStats() {
   vm.invokes = 0;
   vm.globalCacheHits = 0;
   vm.globalCacheMisses = 0;
+  vm.methodCacheHits = 0;
+  vm.methodCacheMisses = 0;
+  vm.fieldCacheHits = 0;
+  vm.fieldCacheMisses = 0;
   vm.statsEnabled = enabled;
 }
 
@@ -167,6 +171,10 @@ void printVMStats() {
   fprintf(stderr, "  invokes: %" PRIu64 "\n", vm.invokes);
   fprintf(stderr, "  global_cache_hits: %" PRIu64 "\n", vm.globalCacheHits);
   fprintf(stderr, "  global_cache_misses: %" PRIu64 "\n", vm.globalCacheMisses);
+  fprintf(stderr, "  method_cache_hits: %" PRIu64 "\n", vm.methodCacheHits);
+  fprintf(stderr, "  method_cache_misses: %" PRIu64 "\n", vm.methodCacheMisses);
+  fprintf(stderr, "  field_cache_hits: %" PRIu64 "\n", vm.fieldCacheHits);
+  fprintf(stderr, "  field_cache_misses: %" PRIu64 "\n", vm.fieldCacheMisses);
   fprintf(stderr, "  opcodes:\n");
   for (int i = 0; i < OP_COUNT; i++) {
     if (vm.opcodeCounts[i] == 0)
@@ -190,9 +198,33 @@ void printVMStats() {
     if (vm.statsEnabled)                                                       \
       vm.globalCacheMisses++;                                                  \
   } while (false)
+#define RECORD_METHOD_CACHE_HIT()                                              \
+  do {                                                                         \
+    if (vm.statsEnabled)                                                       \
+      vm.methodCacheHits++;                                                    \
+  } while (false)
+#define RECORD_METHOD_CACHE_MISS()                                             \
+  do {                                                                         \
+    if (vm.statsEnabled)                                                       \
+      vm.methodCacheMisses++;                                                  \
+  } while (false)
+#define RECORD_FIELD_CACHE_HIT()                                               \
+  do {                                                                         \
+    if (vm.statsEnabled)                                                       \
+      vm.fieldCacheHits++;                                                     \
+  } while (false)
+#define RECORD_FIELD_CACHE_MISS()                                              \
+  do {                                                                         \
+    if (vm.statsEnabled)                                                       \
+      vm.fieldCacheMisses++;                                                   \
+  } while (false)
 #else
 #define RECORD_GLOBAL_CACHE_HIT() ((void)0)
 #define RECORD_GLOBAL_CACHE_MISS() ((void)0)
+#define RECORD_METHOD_CACHE_HIT() ((void)0)
+#define RECORD_METHOD_CACHE_MISS() ((void)0)
+#define RECORD_FIELD_CACHE_HIT() ((void)0)
+#define RECORD_FIELD_CACHE_MISS() ((void)0)
 #endif
 
 static Value clockNative(int argCount, Value *args) {
@@ -345,15 +377,33 @@ static bool callValue(Value callee, int argCount) {
   runtimeError("Can only call functions and classes.");
   return false;
 }
-static bool invokeFromClass(ObjClass *klass, ObjString *name, int argCount) {
+static bool invokeFromClass(ObjClass *klass, ObjString *name, int argCount,
+                            InlineCache *cache) {
+  if (cache != NULL && cache->kind == CACHE_METHOD && cache->key == name &&
+      cache->owner == klass &&
+      cache->tableVersion == klass->methods.version) {
+    RECORD_METHOD_CACHE_HIT();
+    return call(AS_CLOSURE(cache->value), argCount);
+  }
+
+  RECORD_METHOD_CACHE_MISS();
   Value method;
   if (!tableGet(&klass->methods, name, &method)) {
     runtimeError("Undefined property '%s'.", name->chars);
     return false;
   }
+
+  if (cache != NULL) {
+    cache->kind = CACHE_METHOD;
+    cache->key = name;
+    cache->owner = klass;
+    cache->value = method;
+    cache->tableVersion = klass->methods.version;
+  }
   return call(AS_CLOSURE(method), argCount);
 }
-static bool invoke(ObjString *name, int argCount) {
+
+static bool invoke(ObjString *name, int argCount, InlineCache *cache) {
 #ifdef CPPLOX_ENABLE_VM_STATS
   if (vm.statsEnabled)
     vm.invokes++;
@@ -373,19 +423,38 @@ static bool invoke(ObjString *name, int argCount) {
     return callValue(value, argCount);
   }
 
-  return invokeFromClass(instance->klass, name, argCount);
+  return invokeFromClass(instance->klass, name, argCount, cache);
 }
-static bool bindMethod(ObjClass *klass, ObjString *name) {
+static bool bindMethodCached(ObjClass *klass, ObjString *name,
+                             InlineCache *cache) {
   Value method;
-  if (!tableGet(&klass->methods, name, &method)) {
-    runtimeError("Undefined property '%s'.", name->chars);
-    return false;
+  if (cache != NULL && cache->kind == CACHE_METHOD && cache->key == name &&
+      cache->owner == klass &&
+      cache->tableVersion == klass->methods.version) {
+    RECORD_METHOD_CACHE_HIT();
+    method = cache->value;
+  } else {
+    RECORD_METHOD_CACHE_MISS();
+    if (!tableGet(&klass->methods, name, &method)) {
+      runtimeError("Undefined property '%s'.", name->chars);
+      return false;
+    }
+    if (cache != NULL) {
+      cache->kind = CACHE_METHOD;
+      cache->key = name;
+      cache->owner = klass;
+      cache->value = method;
+      cache->tableVersion = klass->methods.version;
+    }
   }
 
   ObjBoundMethod *bound = newBoundMethod(peek(0), AS_CLOSURE(method));
   pop();
   push(OBJ_VAL(bound));
   return true;
+}
+static bool bindMethod(ObjClass *klass, ObjString *name) {
+  return bindMethodCached(klass, name, NULL);
 }
 static ObjUpvalue *captureUpvalue(Value *local) {
   ObjUpvalue *prevUpvalue = NULL;
@@ -574,11 +643,12 @@ static InterpretResult run() {
       uint8_t constant = READ_BYTE();
       Chunk *chunk = &frame->closure->function->chunk;
       ObjString *name = AS_STRING(chunk->constants.values[constant]);
-      GlobalCache *cache = &chunk->globalCaches[constant];
+      InlineCache *cache = &chunk->inlineCaches[constant];
 
       Entry *entry = cache->entry;
-      if (cache->key == name && cache->tableVersion == vm.globals.version &&
-          entry != NULL && entry->key == name) {
+      if (cache->kind == CACHE_GLOBAL && cache->key == name &&
+          cache->tableVersion == vm.globals.version && entry != NULL &&
+          entry->key == name) {
         RECORD_GLOBAL_CACHE_HIT();
         PUSH_VALUE(entry->value);
         break;
@@ -594,6 +664,7 @@ static InterpretResult run() {
       cache->key = name;
       cache->entry = entry;
       cache->tableVersion = vm.globals.version;
+      cache->kind = CACHE_GLOBAL;
       PUSH_VALUE(entry->value);
       break;
     }
@@ -602,10 +673,11 @@ static InterpretResult run() {
       Chunk *chunk = &frame->closure->function->chunk;
       ObjString *name = AS_STRING(chunk->constants.values[constant]);
       tableSet(&vm.globals, name, vm.stackTop[-1]);
-      GlobalCache *cache = &chunk->globalCaches[constant];
+      InlineCache *cache = &chunk->inlineCaches[constant];
       cache->key = name;
       cache->entry = tableGetEntry(&vm.globals, name);
       cache->tableVersion = vm.globals.version;
+      cache->kind = CACHE_GLOBAL;
       vm.stackTop--;
       break;
     }
@@ -613,17 +685,19 @@ static InterpretResult run() {
       uint8_t constant = READ_BYTE();
       Chunk *chunk = &frame->closure->function->chunk;
       ObjString *name = AS_STRING(chunk->constants.values[constant]);
-      GlobalCache *cache = &chunk->globalCaches[constant];
+      InlineCache *cache = &chunk->inlineCaches[constant];
 
       Entry *entry = cache->entry;
-      if (!(cache->key == name && cache->tableVersion == vm.globals.version &&
-            entry != NULL && entry->key == name)) {
+      if (!(cache->kind == CACHE_GLOBAL && cache->key == name &&
+            cache->tableVersion == vm.globals.version && entry != NULL &&
+            entry->key == name)) {
         RECORD_GLOBAL_CACHE_MISS();
         entry = tableGetEntry(&vm.globals, name);
         if (entry == NULL) {
           runtimeError("Undefined variable '%s'.", name->chars);
           return INTERPRET_RUNTIME_ERROR;
         }
+        cache->kind = CACHE_GLOBAL;
         cache->key = name;
         cache->entry = entry;
         cache->tableVersion = vm.globals.version;
@@ -655,15 +729,34 @@ static InterpretResult run() {
       }
 
       ObjInstance *instance = AS_INSTANCE(peek(0));
-      ObjString *name = READ_STRING();
+      uint8_t constant = READ_BYTE();
+      Chunk *chunk = &frame->closure->function->chunk;
+      ObjString *name = AS_STRING(chunk->constants.values[constant]);
+      InlineCache *cache = &chunk->inlineCaches[constant];
 
-      Value value;
-      if (tableGet(&instance->fields, name, &value)) {
-        vm.stackTop[-1] = value;
+      Entry *entry = cache->entry;
+      if (cache->kind == CACHE_FIELD && cache->key == name &&
+          cache->owner == instance &&
+          cache->tableVersion == instance->fields.version && entry != NULL &&
+          entry->key == name) {
+        RECORD_FIELD_CACHE_HIT();
+        vm.stackTop[-1] = entry->value;
         break;
       }
 
-      if (!bindMethod(instance->klass, name)) {
+      RECORD_FIELD_CACHE_MISS();
+      entry = tableGetEntry(&instance->fields, name);
+      if (entry != NULL) {
+        cache->kind = CACHE_FIELD;
+        cache->key = name;
+        cache->owner = instance;
+        cache->entry = entry;
+        cache->tableVersion = instance->fields.version;
+        vm.stackTop[-1] = entry->value;
+        break;
+      }
+
+      if (!bindMethodCached(instance->klass, name, cache)) {
         return INTERPRET_RUNTIME_ERROR;
       }
       break;
@@ -769,19 +862,24 @@ static InterpretResult run() {
       break;
     }
     case OP_INVOKE: {
-      ObjString *method = READ_STRING();
+      uint8_t constant = READ_BYTE();
+      Chunk *chunk = &frame->closure->function->chunk;
+      ObjString *method = AS_STRING(chunk->constants.values[constant]);
       int argCount = READ_BYTE();
-      if (!invoke(method, argCount)) {
+      if (!invoke(method, argCount, &chunk->inlineCaches[constant])) {
         return INTERPRET_RUNTIME_ERROR;
       }
       frame = &vm.frames[vm.frameCount - 1];
       break;
     }
     case OP_SUPER_INVOKE: {
-      ObjString *method = READ_STRING();
+      uint8_t constant = READ_BYTE();
+      Chunk *chunk = &frame->closure->function->chunk;
+      ObjString *method = AS_STRING(chunk->constants.values[constant]);
       int argCount = READ_BYTE();
       ObjClass *superclass = AS_CLASS(POP_VALUE());
-      if (!invokeFromClass(superclass, method, argCount)) {
+      if (!invokeFromClass(superclass, method, argCount,
+                           &chunk->inlineCaches[constant])) {
         return INTERPRET_RUNTIME_ERROR;
       }
       frame = &vm.frames[vm.frameCount - 1];

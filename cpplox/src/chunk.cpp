@@ -9,14 +9,14 @@ void initChunk(Chunk *chunk) {
   chunk->capacity = 0;
   chunk->code = NULL;
   chunk->lines = NULL;
-  chunk->globalCaches = NULL;
-  chunk->globalCacheCapacity = 0;
+  chunk->inlineCaches = NULL;
+  chunk->inlineCacheCapacity = 0;
   initValueArray(&chunk->constants);
 }
 void freeChunk(Chunk *chunk) {
   FREE_ARRAY(uint8_t, chunk->code, chunk->capacity);
   FREE_ARRAY(int, chunk->lines, chunk->capacity);
-  FREE_ARRAY(GlobalCache, chunk->globalCaches, chunk->globalCacheCapacity);
+  FREE_ARRAY(InlineCache, chunk->inlineCaches, chunk->inlineCacheCapacity);
   freeValueArray(&chunk->constants);
   initChunk(chunk);
 }
@@ -46,20 +46,26 @@ int addConstant(Chunk *chunk, Value value) {
   int oldCapacity = chunk->constants.capacity;
   writeValueArray(&chunk->constants, value);
   if (chunk->constants.capacity != oldCapacity) {
-    chunk->globalCaches =
-        GROW_ARRAY(GlobalCache, chunk->globalCaches, chunk->globalCacheCapacity,
+    chunk->inlineCaches =
+        GROW_ARRAY(InlineCache, chunk->inlineCaches, chunk->inlineCacheCapacity,
                    chunk->constants.capacity);
-    for (int i = chunk->globalCacheCapacity; i < chunk->constants.capacity;
+    for (int i = chunk->inlineCacheCapacity; i < chunk->constants.capacity;
          i++) {
-      chunk->globalCaches[i].key = NULL;
-      chunk->globalCaches[i].entry = NULL;
-      chunk->globalCaches[i].tableVersion = 0;
+      chunk->inlineCaches[i].kind = CACHE_EMPTY;
+      chunk->inlineCaches[i].key = NULL;
+      chunk->inlineCaches[i].entry = NULL;
+      chunk->inlineCaches[i].tableVersion = 0;
+      chunk->inlineCaches[i].owner = NULL;
+      chunk->inlineCaches[i].value = NIL_VAL;
     }
-    chunk->globalCacheCapacity = chunk->constants.capacity;
+    chunk->inlineCacheCapacity = chunk->constants.capacity;
   }
-  chunk->globalCaches[chunk->constants.count - 1].key = NULL;
-  chunk->globalCaches[chunk->constants.count - 1].entry = NULL;
-  chunk->globalCaches[chunk->constants.count - 1].tableVersion = 0;
+  chunk->inlineCaches[chunk->constants.count - 1].kind = CACHE_EMPTY;
+  chunk->inlineCaches[chunk->constants.count - 1].key = NULL;
+  chunk->inlineCaches[chunk->constants.count - 1].entry = NULL;
+  chunk->inlineCaches[chunk->constants.count - 1].tableVersion = 0;
+  chunk->inlineCaches[chunk->constants.count - 1].owner = NULL;
+  chunk->inlineCaches[chunk->constants.count - 1].value = NIL_VAL;
   pop();
   return chunk->constants.count - 1;
 }

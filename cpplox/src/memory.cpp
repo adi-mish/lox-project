@@ -67,6 +67,18 @@ static void markArray(ValueArray *array) {
     markValue(array->values[i]);
   }
 }
+static void markInlineCaches(Chunk *chunk) {
+  for (int i = 0; i < chunk->constants.count; i++) {
+    InlineCache *cache = &chunk->inlineCaches[i];
+    if ((cache->kind == CACHE_FIELD || cache->kind == CACHE_METHOD) &&
+        cache->owner != NULL) {
+      markObject((Obj *)cache->owner);
+    }
+    if (cache->kind == CACHE_METHOD) {
+      markValue(cache->value);
+    }
+  }
+}
 static void blackenObject(Obj *object) {
 #ifdef DEBUG_LOG_GC
   printf("%p blacken ", (void *)object);
@@ -99,6 +111,7 @@ static void blackenObject(Obj *object) {
     ObjFunction *function = (ObjFunction *)object;
     markObject((Obj *)function->name);
     markArray(&function->chunk.constants);
+    markInlineCaches(&function->chunk);
     break;
   }
   case OBJ_INSTANCE: {

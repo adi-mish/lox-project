@@ -45,6 +45,10 @@ typedef struct {
   uint64_t invokes;
   uint64_t globalCacheHits;
   uint64_t globalCacheMisses;
+  uint64_t methodCacheHits;
+  uint64_t methodCacheMisses;
+  uint64_t fieldCacheHits;
+  uint64_t fieldCacheMisses;
 #endif
 } VM;
 

@@ -5,11 +5,21 @@
 #include "value.h"
 struct Entry;
 
+typedef enum {
+  CACHE_EMPTY,
+  CACHE_GLOBAL,
+  CACHE_FIELD,
+  CACHE_METHOD,
+} InlineCacheKind;
+
 typedef struct {
+  InlineCacheKind kind;
   ObjString *key;
   Entry *entry;
   uint32_t tableVersion;
-} GlobalCache;
+  void *owner;
+  Value value;
+} InlineCache;
 
 typedef enum {
   OP_CONSTANT,
@@ -73,8 +83,8 @@ typedef struct {
   int capacity;
   uint8_t *code;
   int *lines;
-  GlobalCache *globalCaches;
-  int globalCacheCapacity;
+  InlineCache *inlineCaches;
+  int inlineCacheCapacity;
   ValueArray constants;
 } Chunk;
 
