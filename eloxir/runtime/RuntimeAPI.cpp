@@ -2897,21 +2897,26 @@ uint64_t elx_set_property_slow(uint64_t instance_bits, uint64_t name_bits,
 #if defined(ELOXIR_ENABLE_CACHE_STATS)
   elx_cache_stats_record_property_miss(1);
 #endif
-  uint64_t result =
-      elx_set_instance_field(instance_bits, name_bits, value_bits);
-  if (elx_has_runtime_error())
-    return result;
-
   ObjString *field_key = extractStringKey(name_bits, nullptr);
-  if (!field_key)
-    return result;
-
-  size_t slot = 0;
-  if (shapeTryGetSlot(instance->shape, field_key, &slot)) {
-    propertyCacheUpdate(cache, instance->shape, slot, capacity, true);
+  if (!field_key) {
+    elx_runtime_error("Property name must be a string.");
+    return Value::nil().getBits();
   }
 
-  return result;
+  size_t slot = 0;
+  if (!ensureSlotForWrite(instance, field_key, nullptr, nullptr, &slot)) {
+    return Value::nil().getBits();
+  }
+
+  if (!instance->fieldValues || !instance->fieldInitialized ||
+      slot >= instance->fieldCapacity) {
+    return Value::nil().getBits();
+  }
+
+  instance->fieldValues[slot] = value_bits;
+  instance->fieldInitialized[slot] = 1;
+  propertyCacheUpdate(cache, instance->shape, slot, capacity, true);
+  return value_bits;
 }
 
 uint64_t elx_set_instance_field_cached(uint64_t instance_bits,
