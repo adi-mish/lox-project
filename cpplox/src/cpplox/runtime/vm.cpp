@@ -278,7 +278,7 @@ static void runtimeError(const char *format, ...) {
 static void defineNative(const char *name, NativeFn function) {
   push(OBJ_VAL(copyString(name, (int)strlen(name))));
   push(OBJ_VAL(newNative(function)));
-  tableSet(&vm.globals, AS_STRING(vm.stack[0]), vm.stack[1]);
+  vm.globals.set(AS_STRING(vm.stack[0]), vm.stack[1]);
   pop();
   pop();
 }
@@ -297,8 +297,8 @@ void initVM() {
   vm.grayCapacity = 0;
   vm.grayStack = NULL;
 
-  initTable(&vm.globals);
-  initTable(&vm.strings);
+  vm.globals.clear();
+  vm.strings.clear();
 
   vm.initString = NULL;
   vm.initString = copyString("init", 4);
@@ -307,8 +307,8 @@ void initVM() {
 }
 
 void freeVM() {
-  freeTable(&vm.globals);
-  freeTable(&vm.strings);
+  vm.globals.clear();
+  vm.strings.clear();
   vm.initString = NULL;
   freeObjects();
 }
@@ -397,7 +397,7 @@ static bool callValue(Value callee, int argCount) {
 
 static bool getFieldSlot(ObjClass *klass, ObjString *name, int *slot) {
   Value slotValue;
-  if (!tableGet(&klass->fieldSlots, name, &slotValue))
+  if (!klass->fieldSlots.get(name, &slotValue))
     return false;
   *slot = (int)AS_NUMBER(slotValue);
   return true;
@@ -409,7 +409,7 @@ static int ensureFieldSlot(ObjClass *klass, ObjString *name) {
     return slot;
 
   slot = klass->fieldSlotCount++;
-  tableSet(&klass->fieldSlots, name, NUMBER_VAL(slot));
+  klass->fieldSlots.set(name, NUMBER_VAL(slot));
   klass->fieldVersion++;
   return slot;
 }
@@ -450,14 +450,14 @@ static bool findMethodCached(ObjClass *klass, ObjString *name,
                              InlineCache *cache, Value *method) {
   if (cache != NULL && cache->kind == CACHE_METHOD && cache->key == name &&
       cache->owner == klass &&
-      cache->tableVersion == klass->methods.version) {
+      cache->tableVersion == klass->methods.version()) {
     RECORD_METHOD_CACHE_HIT();
     *method = cache->value;
     return true;
   }
 
   RECORD_METHOD_CACHE_MISS();
-  if (!tableGet(&klass->methods, name, method)) {
+  if (!klass->methods.get(name, method)) {
     runtimeError("Undefined property '%s'.", name->chars);
     return false;
   }
@@ -467,7 +467,7 @@ static bool findMethodCached(ObjClass *klass, ObjString *name,
     cache->key = name;
     cache->owner = klass;
     cache->value = *method;
-    cache->tableVersion = klass->methods.version;
+    cache->tableVersion = klass->methods.version();
     cache->secondaryOwner = NULL;
     cache->secondaryVersion = 0;
     cache->entryIndex = -2;
@@ -499,7 +499,7 @@ static bool invoke(ObjString *name, int argCount, InlineCache *cache) {
   ObjInstance *instance = AS_INSTANCE(receiver);
   if (cache != NULL && cache->kind == CACHE_METHOD && cache->key == name &&
       cache->owner == instance->klass &&
-      cache->tableVersion == instance->klass->methods.version &&
+      cache->tableVersion == instance->klass->methods.version() &&
       cache->secondaryVersion == instance->klass->fieldVersion) {
     if (cache->entryIndex == -1) {
       RECORD_METHOD_CACHE_HIT();
@@ -578,7 +578,7 @@ static void closeUpvalues(Value *last) {
 static void defineMethod(ObjString *name) {
   Value method = peek(0);
   ObjClass *klass = AS_CLASS(peek(1));
-  tableSet(&klass->methods, name, method);
+  klass->methods.set(name, method);
   if (name == vm.initString) {
     klass->initializer = AS_CLOSURE(method);
   }
@@ -750,14 +750,14 @@ static InterpretResult run() {
 
       Entry *entry = cache->entry;
       if (cache->kind == CACHE_GLOBAL && cache->key == name &&
-          cache->tableVersion == vm.globals.version && entry != NULL) {
+          cache->tableVersion == vm.globals.version() && entry != NULL) {
         RECORD_GLOBAL_CACHE_HIT();
         PUSH_VALUE(entry->value);
         break;
       }
 
       RECORD_GLOBAL_CACHE_MISS();
-      entry = tableGetEntry(&vm.globals, name);
+      entry = vm.globals.getEntry(name);
       if (entry == NULL) {
         runtimeError("Undefined variable '%s'.", name->chars);
         return INTERPRET_RUNTIME_ERROR;
@@ -765,7 +765,7 @@ static InterpretResult run() {
 
       cache->key = name;
       cache->entry = entry;
-      cache->tableVersion = vm.globals.version;
+      cache->tableVersion = vm.globals.version();
       cache->kind = CACHE_GLOBAL;
       PUSH_VALUE(entry->value);
       break;
@@ -774,11 +774,11 @@ static InterpretResult run() {
       uint8_t constant = READ_BYTE();
       Chunk *chunk = &frame->closure->function->chunk;
       ObjString *name = AS_STRING(chunk->constantAt(constant));
-      tableSet(&vm.globals, name, vm.stackTop[-1]);
+      vm.globals.set(name, vm.stackTop[-1]);
       InlineCache *cache = &chunk->inlineCache(constant);
       cache->key = name;
-      cache->entry = tableGetEntry(&vm.globals, name);
-      cache->tableVersion = vm.globals.version;
+      cache->entry = vm.globals.getEntry(name);
+      cache->tableVersion = vm.globals.version();
       cache->kind = CACHE_GLOBAL;
       vm.stackTop--;
       break;
@@ -791,9 +791,9 @@ static InterpretResult run() {
 
       Entry *entry = cache->entry;
       if (!(cache->kind == CACHE_GLOBAL && cache->key == name &&
-            cache->tableVersion == vm.globals.version && entry != NULL)) {
+            cache->tableVersion == vm.globals.version() && entry != NULL)) {
         RECORD_GLOBAL_CACHE_MISS();
-        entry = tableGetEntry(&vm.globals, name);
+        entry = vm.globals.getEntry(name);
         if (entry == NULL) {
           runtimeError("Undefined variable '%s'.", name->chars);
           return INTERPRET_RUNTIME_ERROR;
@@ -801,7 +801,7 @@ static InterpretResult run() {
         cache->kind = CACHE_GLOBAL;
         cache->key = name;
         cache->entry = entry;
-        cache->tableVersion = vm.globals.version;
+        cache->tableVersion = vm.globals.version();
       } else {
         RECORD_GLOBAL_CACHE_HIT();
       }
@@ -1036,7 +1036,7 @@ static InterpretResult run() {
 
       ObjClass *subclass = AS_CLASS(peek(0));
       ObjClass *superKlass = AS_CLASS(superclass);
-      tableAddAll(&superKlass->methods, &subclass->methods);
+      subclass->methods.addAllFrom(superKlass->methods);
       subclass->initializer = superKlass->initializer;
       vm.stackTop--;
       break;

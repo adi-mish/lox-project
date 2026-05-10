@@ -1,6 +1,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <new>
+
 #include "memory.h"
 #include "object.h"
 #include "table.h"
@@ -34,10 +36,10 @@ ObjBoundMethod *newBoundMethod(Value receiver, ObjClosure *method) {
 }
 ObjClass *newClass(ObjString *name) {
   ObjClass *klass = ALLOCATE_OBJ(ObjClass, OBJ_CLASS);
+  new (&klass->methods) Table();
+  new (&klass->fieldSlots) Table();
   klass->name = name;
-  initTable(&klass->methods);
   klass->initializer = NULL;
-  initTable(&klass->fieldSlots);
   klass->fieldSlotCount = 0;
   klass->fieldVersion = 0;
   return klass;
@@ -82,7 +84,7 @@ static ObjString *allocateString(char *chars, int length, uint32_t hash) {
   string->hash = hash;
 
   push(OBJ_VAL(string));
-  tableSet(&vm.strings, string, NIL_VAL);
+  vm.strings.set(string, NIL_VAL);
   pop();
 
   return string;
@@ -98,7 +100,7 @@ static uint32_t hashString(const char *key, int length) {
 ObjString *takeString(char *chars, int length) {
 
   uint32_t hash = hashString(chars, length);
-  ObjString *interned = tableFindString(&vm.strings, chars, length, hash);
+  ObjString *interned = vm.strings.findString(chars, length, hash);
   if (interned != NULL) {
     FREE_ARRAY(char, chars, length + 1);
     return interned;
@@ -108,7 +110,7 @@ ObjString *takeString(char *chars, int length) {
 }
 ObjString *copyString(const char *chars, int length) {
   uint32_t hash = hashString(chars, length);
-  ObjString *interned = tableFindString(&vm.strings, chars, length, hash);
+  ObjString *interned = vm.strings.findString(chars, length, hash);
   if (interned != NULL)
     return interned;
 

@@ -1,5 +1,4 @@
-#include <stdlib.h>
-#include <string.h>
+#include <cstring>
 
 #include "memory.h"
 #include "object.h"
@@ -10,19 +9,14 @@ namespace cpplox {
 
 #define TABLE_MAX_LOAD 0.75
 
-void initTable(Table *table) {
-  table->count = 0;
-  table->capacity = 0;
-  table->version = 0;
-  table->entries = NULL;
-}
-void freeTable(Table *table) {
-  FREE_ARRAY(Entry, table->entries, table->capacity);
-  initTable(table);
+void Table::clear() {
+  count_ = 0;
+  version_ = 0;
+  entries_.clear();
+  entries_.shrink_to_fit();
 }
 
-static Entry *findEntry(Entry *entries, int capacity, ObjString *key) {
-
+Entry *Table::findEntry(Entry *entries, int capacity, ObjString *key) {
   uint32_t index = key->hash & (capacity - 1);
   Entry *tombstone = NULL;
 
@@ -46,25 +40,31 @@ static Entry *findEntry(Entry *entries, int capacity, ObjString *key) {
     index = (index + 1) & (capacity - 1);
   }
 }
-bool tableGet(Table *table, ObjString *key, Value *value) {
-  if (table->count == 0)
+
+const Entry *Table::findEntry(const Entry *entries, int capacity,
+                              ObjString *key) {
+  return findEntry(const_cast<Entry *>(entries), capacity, key);
+}
+
+bool Table::get(ObjString *key, Value *value) const {
+  if (count_ == 0)
     return false;
 
-  Entry *entry = findEntry(table->entries, table->capacity, key);
+  const Entry *entry = findEntry(entries_.data(), capacity(), key);
   if (entry->key == NULL)
     return false;
 
   *value = entry->value;
   return true;
 }
-Entry *tableFindSlot(Table *table, ObjString *key) {
-  if (table->capacity == 0)
+Entry *Table::findSlot(ObjString *key) {
+  if (entries_.empty())
     return NULL;
 
-  return findEntry(table->entries, table->capacity, key);
+  return findEntry(entries_.data(), capacity(), key);
 }
-Entry *tableGetEntry(Table *table, ObjString *key) {
-  Entry *entry = tableFindSlot(table, key);
+Entry *Table::getEntry(ObjString *key) {
+  Entry *entry = findSlot(key);
   if (entry == NULL)
     return NULL;
   if (entry->key == NULL)
@@ -72,77 +72,71 @@ Entry *tableGetEntry(Table *table, ObjString *key) {
   return entry;
 }
 
-static void adjustCapacity(Table *table, int capacity) {
-  Entry *entries = ALLOCATE(Entry, capacity);
-  for (int i = 0; i < capacity; i++) {
-    entries[i].key = NULL;
-    entries[i].value = NIL_VAL;
-  }
+void Table::adjustCapacity(int capacity) {
+  std::vector<Entry> entries(static_cast<size_t>(capacity));
 
-  table->count = 0;
-  for (int i = 0; i < table->capacity; i++) {
-    Entry *entry = &table->entries[i];
+  count_ = 0;
+  for (Entry &oldEntry : entries_) {
+    Entry *entry = &oldEntry;
     if (entry->key == NULL)
       continue;
 
-    Entry *dest = findEntry(entries, capacity, entry->key);
+    Entry *dest = findEntry(entries.data(), capacity, entry->key);
     dest->key = entry->key;
     dest->value = entry->value;
-    table->count++;
+    count_++;
   }
 
-  FREE_ARRAY(Entry, table->entries, table->capacity);
-  table->entries = entries;
-  table->capacity = capacity;
-  table->version++;
+  entries_.swap(entries);
+  version_++;
 }
-bool tableSet(Table *table, ObjString *key, Value value) {
-  if (table->count + 1 > table->capacity * TABLE_MAX_LOAD) {
-    int capacity = GROW_CAPACITY(table->capacity);
-    adjustCapacity(table, capacity);
+bool Table::set(ObjString *key, Value value) {
+  if (count_ + 1 > capacity() * TABLE_MAX_LOAD) {
+    int newCapacity = GROW_CAPACITY(capacity());
+    adjustCapacity(newCapacity);
   }
 
-  Entry *entry = findEntry(table->entries, table->capacity, key);
+  Entry *entry = findEntry(entries_.data(), capacity(), key);
   bool isNewKey = entry->key == NULL;
 
   if (isNewKey && IS_NIL(entry->value)) {
-    table->count++;
-    table->version++;
+    count_++;
+    version_++;
   }
 
   entry->key = key;
   entry->value = value;
   return isNewKey;
 }
-bool tableDelete(Table *table, ObjString *key) {
-  if (table->count == 0)
+bool Table::remove(ObjString *key) {
+  if (count_ == 0)
     return false;
 
-  Entry *entry = findEntry(table->entries, table->capacity, key);
+  Entry *entry = findEntry(entries_.data(), capacity(), key);
   if (entry->key == NULL)
     return false;
 
   entry->key = NULL;
   entry->value = BOOL_VAL(true);
-  table->version++;
+  version_++;
   return true;
 }
-void tableAddAll(Table *from, Table *to) {
-  for (int i = 0; i < from->capacity; i++) {
-    Entry *entry = &from->entries[i];
+void Table::addAllFrom(const Table &from) {
+  for (const Entry &oldEntry : from.entries_) {
+    const Entry *entry = &oldEntry;
     if (entry->key != NULL) {
-      tableSet(to, entry->key, entry->value);
+      set(entry->key, entry->value);
     }
   }
 }
-ObjString *tableFindString(Table *table, const char *chars, int length,
-                           uint32_t hash) {
-  if (table->count == 0)
+ObjString *Table::findString(const char *chars, int length,
+                             uint32_t hash) const {
+  if (count_ == 0)
     return NULL;
 
-  uint32_t index = hash & (table->capacity - 1);
+  uint32_t index = hash & (capacity() - 1);
   for (;;) {
-    Entry *entry = &table->entries[index];
+    const Entry *entry = &entries_[index];
     if (entry->key == NULL) {
 
       if (IS_NIL(entry->value))
@@ -153,22 +147,21 @@ ObjString *tableFindString(Table *table, const char *chars, int length,
       return entry->key;
     }
 
-    index = (index + 1) & (table->capacity - 1);
+    index = (index + 1) & (capacity() - 1);
   }
 }
-void tableRemoveWhite(Table *table) {
-  for (int i = 0; i < table->capacity; i++) {
-    Entry *entry = &table->entries[i];
+void Table::removeWhite() {
+  for (Entry &oldEntry : entries_) {
+    Entry *entry = &oldEntry;
     if (entry->key != NULL && !entry->key->obj.isMarked) {
-      tableDelete(table, entry->key);
+      remove(entry->key);
     }
   }
 }
-void markTable(Table *table) {
-  for (int i = 0; i < table->capacity; i++) {
-    Entry *entry = &table->entries[i];
-    markObject((Obj *)entry->key);
-    markValue(entry->value);
+void Table::mark() const {
+  for (const Entry &entry : entries_) {
+    markObject((Obj *)entry.key);
+    markValue(entry.value);
   }
 }
 
