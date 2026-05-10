@@ -86,9 +86,12 @@ static ObjString *knownGlobals[UINT8_COUNT];
 static int knownGlobalCount = 0;
 
 static Chunk *currentChunk() { return &current->function->chunk; }
+static int chunkSize(Chunk *chunk) {
+  return static_cast<int>(chunk->code.size());
+}
 static LoopStart currentLoopStart() {
   LoopStart start;
-  start.code = currentChunk()->count;
+  start.code = chunkSize(currentChunk());
   start.logical = current->logicalByteCount;
   return start;
 }
@@ -156,7 +159,7 @@ static void emitLoop(LoopStart loopStart) {
   if (logicalOffset > UINT16_MAX)
     error("Loop body too large.");
 
-  int offset = currentChunk()->count - loopStart.code + 2;
+  int offset = chunkSize(currentChunk()) - loopStart.code + 2;
   if (offset > UINT16_MAX)
     error("Loop body too large.");
 
@@ -167,7 +170,7 @@ static int emitJump(uint8_t instruction) {
   emitByte(instruction);
   emitByte(0xff);
   emitByte(0xff);
-  return currentChunk()->count - 2;
+  return chunkSize(currentChunk()) - 2;
 }
 static void emitReturn() {
 
@@ -198,7 +201,7 @@ static void emitConstant(Value value) {
 }
 static void patchJump(int offset) {
 
-  int jump = currentChunk()->count - offset - 2;
+  int jump = chunkSize(currentChunk()) - offset - 2;
 
   if (jump > UINT16_MAX) {
     error("Too much code to jump over.");
@@ -276,7 +279,7 @@ static void parsePrecedence(Precedence precedence);
 static bool discardPureExpression(int start) {
   Chunk *chunk = currentChunk();
   int depth = 0;
-  for (int offset = start; offset < chunk->count;) {
+  for (int offset = start; offset < chunkSize(chunk);) {
     switch (chunk->code[offset]) {
     case OP_CONSTANT:
       depth++;
@@ -317,7 +320,7 @@ static bool discardPureExpression(int start) {
       break;
     case OP_GET_GLOBAL: {
       ObjString *name =
-          AS_STRING(chunk->constants.values[chunk->code[offset + 1]]);
+          AS_STRING(chunk->constants[chunk->code[offset + 1]]);
       bool known = name->length == 5 && memcmp(name->chars, "clock", 5) == 0;
       for (int i = 0; !known && i < knownGlobalCount; i++) {
         known = knownGlobals[i] == name;
@@ -344,14 +347,15 @@ static bool discardPureExpression(int start) {
     }
   }
   if (depth == 1) {
-    chunk->count = start;
+    chunk->code.resize(start);
+    chunk->lines.resize(start);
     return true;
   }
   return false;
 }
 
 static void rememberGlobal(uint8_t constant) {
-  ObjString *name = AS_STRING(currentChunk()->constants.values[constant]);
+  ObjString *name = AS_STRING(currentChunk()->constants[constant]);
   for (int i = 0; i < knownGlobalCount; i++) {
     if (knownGlobals[i] == name)
       return;
@@ -880,7 +884,7 @@ static void varDeclaration() {
   defineVariable(global);
 }
 static void expressionStatement() {
-  int start = currentChunk()->count;
+  int start = chunkSize(currentChunk());
   expression();
   consume(TOKEN_SEMICOLON, "Expect ';' after expression.");
   if (discardPureExpression(start)) {

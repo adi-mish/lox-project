@@ -262,7 +262,7 @@ static void runtimeError(const char *format, ...) {
     CallFrame *frame = &vm.frames[i];
 
     ObjFunction *function = frame->closure->function;
-    size_t instruction = frame->ip - function->chunk.code - 1;
+    size_t instruction = frame->ip - function->chunk.code.data() - 1;
     fprintf(stderr, "[line %d] in ", function->chunk.lines[instruction]);
     if (function->name == NULL) {
       fprintf(stderr, "script\n");
@@ -336,7 +336,7 @@ static bool call(ObjClosure *closure, int argCount) {
   CallFrame *frame = &vm.frames[vm.frameCount++];
 
   frame->closure = closure;
-  frame->ip = closure->function->chunk.code;
+  frame->ip = closure->function->chunk.code.data();
   frame->slots = vm.stackTop - argCount - 1;
   return true;
 }
@@ -610,7 +610,7 @@ static InterpretResult run() {
   (frame->ip += 2, (uint16_t)((frame->ip[-2] << 8) | frame->ip[-1]))
 
 #define READ_CONSTANT()                                                        \
-  (frame->closure->function->chunk.constants.values[READ_BYTE()])
+  (frame->closure->function->chunk.constants[READ_BYTE()])
 
 #define READ_STRING() AS_STRING(READ_CONSTANT())
 #define PUSH_VALUE(value)                                                      \
@@ -644,7 +644,7 @@ static InterpretResult run() {
 
     disassembleInstruction(
         &frame->closure->function->chunk,
-        (int)(frame->ip - frame->closure->function->chunk.code));
+        (int)(frame->ip - frame->closure->function->chunk.code.data()));
 #endif
 
     uint8_t instruction = READ_BYTE();
@@ -664,7 +664,7 @@ static InterpretResult run() {
     case OP_CONSTANT_5:
     case OP_CONSTANT_6:
     case OP_CONSTANT_7: {
-      Value *constants = frame->closure->function->chunk.constants.values;
+      Value *constants = frame->closure->function->chunk.constants.data();
       PUSH_VALUE(constants[instruction - OP_CONSTANT_0]);
       break;
     }
@@ -743,7 +743,7 @@ static InterpretResult run() {
     case OP_GET_GLOBAL: {
       uint8_t constant = READ_BYTE();
       Chunk *chunk = &frame->closure->function->chunk;
-      ObjString *name = AS_STRING(chunk->constants.values[constant]);
+      ObjString *name = AS_STRING(chunk->constants[constant]);
       InlineCache *cache = &chunk->inlineCaches[constant];
 
       Entry *entry = cache->entry;
@@ -771,7 +771,7 @@ static InterpretResult run() {
     case OP_DEFINE_GLOBAL: {
       uint8_t constant = READ_BYTE();
       Chunk *chunk = &frame->closure->function->chunk;
-      ObjString *name = AS_STRING(chunk->constants.values[constant]);
+      ObjString *name = AS_STRING(chunk->constants[constant]);
       tableSet(&vm.globals, name, vm.stackTop[-1]);
       InlineCache *cache = &chunk->inlineCaches[constant];
       cache->key = name;
@@ -784,7 +784,7 @@ static InterpretResult run() {
     case OP_SET_GLOBAL: {
       uint8_t constant = READ_BYTE();
       Chunk *chunk = &frame->closure->function->chunk;
-      ObjString *name = AS_STRING(chunk->constants.values[constant]);
+      ObjString *name = AS_STRING(chunk->constants[constant]);
       InlineCache *cache = &chunk->inlineCaches[constant];
 
       Entry *entry = cache->entry;
@@ -826,7 +826,7 @@ static InterpretResult run() {
       ObjInstance *instance = AS_INSTANCE(peek(0));
       uint8_t constant = READ_BYTE();
       Chunk *chunk = &frame->closure->function->chunk;
-      ObjString *name = AS_STRING(chunk->constants.values[constant]);
+      ObjString *name = AS_STRING(chunk->constants[constant]);
       InlineCache *cache = &chunk->inlineCaches[constant];
 
       if (cache->kind == CACHE_FIELD && cache->key == name &&
@@ -967,7 +967,7 @@ static InterpretResult run() {
     case OP_INVOKE: {
       uint8_t constant = READ_BYTE();
       Chunk *chunk = &frame->closure->function->chunk;
-      ObjString *method = AS_STRING(chunk->constants.values[constant]);
+      ObjString *method = AS_STRING(chunk->constants[constant]);
       int argCount = READ_BYTE();
       if (!invoke(method, argCount, &chunk->inlineCaches[constant])) {
         return INTERPRET_RUNTIME_ERROR;
@@ -978,7 +978,7 @@ static InterpretResult run() {
     case OP_SUPER_INVOKE: {
       uint8_t constant = READ_BYTE();
       Chunk *chunk = &frame->closure->function->chunk;
-      ObjString *method = AS_STRING(chunk->constants.values[constant]);
+      ObjString *method = AS_STRING(chunk->constants[constant]);
       int argCount = READ_BYTE();
       ObjClass *superclass = AS_CLASS(POP_VALUE());
       if (!invokeFromClass(superclass, method, argCount,

@@ -1,79 +1,45 @@
-#include <stdlib.h>
+#include <new>
 
 #include "chunk.h"
-#include "memory.h"
 #include "vm.h"
 
+static InlineCache emptyInlineCache() {
+  InlineCache cache;
+  cache.kind = CACHE_EMPTY;
+  cache.key = NULL;
+  cache.entry = NULL;
+  cache.tableVersion = 0;
+  cache.owner = NULL;
+  cache.secondaryOwner = NULL;
+  cache.secondaryVersion = 0;
+  cache.entryIndex = -1;
+  cache.tableCapacity = 0;
+  cache.value = NIL_VAL;
+  return cache;
+}
+
 void initChunk(Chunk *chunk) {
-  chunk->count = 0;
-  chunk->capacity = 0;
-  chunk->code = NULL;
-  chunk->lines = NULL;
-  chunk->inlineCaches = NULL;
-  chunk->inlineCacheCapacity = 0;
-  initValueArray(&chunk->constants);
+  new (chunk) Chunk();
 }
 void freeChunk(Chunk *chunk) {
-  FREE_ARRAY(uint8_t, chunk->code, chunk->capacity);
-  FREE_ARRAY(int, chunk->lines, chunk->capacity);
-  FREE_ARRAY(InlineCache, chunk->inlineCaches, chunk->inlineCacheCapacity);
-  freeValueArray(&chunk->constants);
-  initChunk(chunk);
+  chunk->~Chunk();
 }
 
 void writeChunk(Chunk *chunk, uint8_t byte, int line) {
-  if (chunk->capacity < chunk->count + 1) {
-    int oldCapacity = chunk->capacity;
-    chunk->capacity = GROW_CAPACITY(oldCapacity);
-    chunk->code =
-        GROW_ARRAY(uint8_t, chunk->code, oldCapacity, chunk->capacity);
-    chunk->lines = GROW_ARRAY(int, chunk->lines, oldCapacity, chunk->capacity);
-  }
-
-  chunk->code[chunk->count] = byte;
-  chunk->lines[chunk->count] = line;
-  chunk->count++;
+  chunk->code.push_back(byte);
+  chunk->lines.push_back(line);
 }
 int addConstant(Chunk *chunk, Value value) {
   if (IS_OBJ(value)) {
-    for (int i = 0; i < chunk->constants.count; i++) {
-      if (valuesEqual(chunk->constants.values[i], value))
+    for (int i = 0; i < static_cast<int>(chunk->constants.size()); i++) {
+      if (valuesEqual(chunk->constants[i], value))
         return i;
     }
   }
 
   push(value);
-  int oldCapacity = chunk->constants.capacity;
   writeValueArray(&chunk->constants, value);
-  if (chunk->constants.capacity != oldCapacity) {
-    chunk->inlineCaches =
-        GROW_ARRAY(InlineCache, chunk->inlineCaches, chunk->inlineCacheCapacity,
-                   chunk->constants.capacity);
-    for (int i = chunk->inlineCacheCapacity; i < chunk->constants.capacity;
-         i++) {
-      chunk->inlineCaches[i].kind = CACHE_EMPTY;
-      chunk->inlineCaches[i].key = NULL;
-      chunk->inlineCaches[i].entry = NULL;
-      chunk->inlineCaches[i].tableVersion = 0;
-      chunk->inlineCaches[i].owner = NULL;
-      chunk->inlineCaches[i].secondaryOwner = NULL;
-      chunk->inlineCaches[i].secondaryVersion = 0;
-      chunk->inlineCaches[i].entryIndex = -1;
-      chunk->inlineCaches[i].tableCapacity = 0;
-      chunk->inlineCaches[i].value = NIL_VAL;
-    }
-    chunk->inlineCacheCapacity = chunk->constants.capacity;
-  }
-  chunk->inlineCaches[chunk->constants.count - 1].kind = CACHE_EMPTY;
-  chunk->inlineCaches[chunk->constants.count - 1].key = NULL;
-  chunk->inlineCaches[chunk->constants.count - 1].entry = NULL;
-  chunk->inlineCaches[chunk->constants.count - 1].tableVersion = 0;
-  chunk->inlineCaches[chunk->constants.count - 1].owner = NULL;
-  chunk->inlineCaches[chunk->constants.count - 1].secondaryOwner = NULL;
-  chunk->inlineCaches[chunk->constants.count - 1].secondaryVersion = 0;
-  chunk->inlineCaches[chunk->constants.count - 1].entryIndex = -1;
-  chunk->inlineCaches[chunk->constants.count - 1].tableCapacity = 0;
-  chunk->inlineCaches[chunk->constants.count - 1].value = NIL_VAL;
+  chunk->inlineCaches.push_back(emptyInlineCache());
   pop();
-  return chunk->constants.count - 1;
+  return static_cast<int>(chunk->constants.size()) - 1;
 }

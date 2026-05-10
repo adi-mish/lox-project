@@ -63,12 +63,12 @@ void markValue(Value value) {
     markObject(AS_OBJ(value));
 }
 static void markArray(ValueArray *array) {
-  for (int i = 0; i < array->count; i++) {
-    markValue(array->values[i]);
+  for (Value value : *array) {
+    markValue(value);
   }
 }
 static void markInlineCaches(Chunk *chunk) {
-  for (int i = 0; i < chunk->constants.count; i++) {
+  for (int i = 0; i < static_cast<int>(chunk->constants.size()); i++) {
     InlineCache *cache = &chunk->inlineCaches[i];
     if ((cache->kind == CACHE_FIELD || cache->kind == CACHE_METHOD) &&
         cache->owner != NULL) {

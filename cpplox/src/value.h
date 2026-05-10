@@ -2,6 +2,7 @@
 #define clox_value_h
 
 #include <string.h>
+#include <vector>
 
 #include "common.h"
 
@@ -87,11 +88,7 @@ typedef struct {
 
 #endif
 
-typedef struct {
-  int capacity;
-  int count;
-  Value *values;
-} ValueArray;
+using ValueArray = std::vector<Value>;
 
 static inline bool valuesEqual(Value a, Value b) {
 #ifdef NAN_BOXING

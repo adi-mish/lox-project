@@ -1,6 +1,8 @@
 #ifndef clox_chunk_h
 #define clox_chunk_h
 
+#include <vector>
+
 #include "common.h"
 #include "value.h"
 struct Entry;
@@ -91,12 +93,9 @@ typedef enum {
 } OpCode;
 
 typedef struct {
-  int count;
-  int capacity;
-  uint8_t *code;
-  int *lines;
-  InlineCache *inlineCaches;
-  int inlineCacheCapacity;
+  std::vector<uint8_t> code;
+  std::vector<int> lines;
+  std::vector<InlineCache> inlineCaches;
   ValueArray constants;
 } Chunk;
 
