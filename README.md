@@ -155,6 +155,114 @@ Common workflows:
 ./lox.py info --json
 ```
 
+## Lox Grammar
+
+This is the complete grammar for the Lox dialect implemented in this
+repository, written as compact EBNF and cross-checked against the official
+Crafting Interpreters Appendix I grammar:
+
+https://craftinginterpreters.com/appendix-i.html
+
+`for` loops are parsed directly and then compiled or interpreted with the usual
+Lox semantics.
+
+```ebnf
+program        -> declaration* EOF ;
+
+declaration    -> classDecl
+                | funDecl
+                | varDecl
+                | statement ;
+
+classDecl      -> "class" IDENTIFIER ( "<" IDENTIFIER )?
+                   "{" function* "}" ;
+funDecl        -> "fun" function ;
+function       -> IDENTIFIER "(" parameters? ")" block ;
+parameters     -> IDENTIFIER ( "," IDENTIFIER )* ;
+
+varDecl        -> "var" IDENTIFIER ( "=" expression )? ";" ;
+
+statement      -> exprStmt
+                | forStmt
+                | ifStmt
+                | printStmt
+                | returnStmt
+                | whileStmt
+                | block ;
+
+exprStmt       -> expression ";" ;
+forStmt        -> "for" "(" ( varDecl | exprStmt | ";" )
+                   expression? ";"
+                   expression? ")" statement ;
+ifStmt         -> "if" "(" expression ")" statement
+                   ( "else" statement )? ;
+printStmt      -> "print" expression ";" ;
+returnStmt     -> "return" expression? ";" ;
+whileStmt      -> "while" "(" expression ")" statement ;
+block          -> "{" declaration* "}" ;
+
+expression     -> assignment ;
+assignment     -> ( call "." )? IDENTIFIER "=" assignment
+                | logicOr ;
+
+logicOr        -> logicAnd ( "or" logicAnd )* ;
+logicAnd       -> equality ( "and" equality )* ;
+equality       -> comparison ( ( "!=" | "==" ) comparison )* ;
+comparison     -> term ( ( ">" | ">=" | "<" | "<=" ) term )* ;
+term           -> factor ( ( "-" | "+" ) factor )* ;
+factor         -> unary ( ( "/" | "*" ) unary )* ;
+unary          -> ( "!" | "-" ) unary
+                | call ;
+
+call           -> primary ( "(" arguments? ")" | "." IDENTIFIER )* ;
+arguments      -> expression ( "," expression )* ;
+
+primary        -> "true"
+                | "false"
+                | "nil"
+                | "this"
+                | NUMBER
+                | STRING
+                | IDENTIFIER
+                | "(" expression ")"
+                | "super" "." IDENTIFIER ;
+```
+
+Lexical grammar:
+
+```ebnf
+NUMBER         -> DIGIT+ ( "." DIGIT+ )? ;
+STRING         -> "\"" stringChar* "\"" ;
+IDENTIFIER     -> ALPHA ( ALPHA | DIGIT )* ;
+
+ALPHA          -> "a" ... "z" | "A" ... "Z" | "_" ;
+DIGIT          -> "0" ... "9" ;
+stringChar     -> any character except "\"" ;
+lineComment    -> "//" any character until line end ;
+```
+
+Reserved words:
+
+```text
+and class else false for fun if nil or print return super this true var while
+```
+
+Single-character tokens:
+
+```text
+( ) { } , . - + ; / *
+```
+
+One- or two-character tokens:
+
+```text
+! != = == > >= < <=
+```
+
+Whitespace is ignored outside strings. Line comments start with `//` and run to
+the end of the line. Function parameters and call arguments follow the
+Crafting Interpreters limit of at most 255 entries.
+
 ## jlox
 
 `jlox` is a Java tree-walking interpreter under:
