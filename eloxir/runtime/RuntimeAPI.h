@@ -307,4 +307,15 @@ void elx_clear_runtime_error();
 
 // Safe arithmetic operations
 uint64_t elx_safe_divide(uint64_t a_bits, uint64_t b_bits);
+uint64_t elx_add_values(uint64_t a_bits, uint64_t b_bits);
+uint64_t elx_subtract_values(uint64_t a_bits, uint64_t b_bits);
+uint64_t elx_multiply_values(uint64_t a_bits, uint64_t b_bits);
+uint64_t elx_divide_values(uint64_t a_bits, uint64_t b_bits);
+uint64_t elx_greater_values(uint64_t a_bits, uint64_t b_bits);
+uint64_t elx_greater_equal_values(uint64_t a_bits, uint64_t b_bits);
+uint64_t elx_less_values(uint64_t a_bits, uint64_t b_bits);
+uint64_t elx_less_equal_values(uint64_t a_bits, uint64_t b_bits);
+uint64_t elx_equal_values(uint64_t a_bits, uint64_t b_bits);
+uint64_t elx_not_equal_values(uint64_t a_bits, uint64_t b_bits);
+uint64_t elx_negate_value(uint64_t value_bits);
 }

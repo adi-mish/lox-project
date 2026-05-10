@@ -10,6 +10,7 @@
 
 #include <llvm/IR/BasicBlock.h>
 #include <llvm/IR/Constants.h>
+#include <llvm/IR/DerivedTypes.h>
 #include <llvm/IR/Function.h>
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/Instructions.h>
@@ -68,6 +69,9 @@ private:
   llvm::PointerType *i8PtrTy() {
     return llvm::PointerType::get(llvm::Type::getInt8Ty(ctx_), 0);
   }
+  llvm::PointerType *valuePtrTy() {
+    return llvm::PointerType::get(valueTy(), 0);
+  }
 
   llvm::ConstantInt *constantValue(uint64_t bits) {
     return llvm::ConstantInt::get(valueTy(), bits);
@@ -121,6 +125,55 @@ private:
 
   llvm::Value *stringPtr(const std::string &text, const std::string &name) {
     return builder_.CreateGlobalStringPtr(text, name);
+  }
+
+  llvm::Value *nullValuePtr() {
+    return llvm::ConstantPointerNull::get(valuePtrTy());
+  }
+
+  void guardRuntimeError() {
+    auto *hasError = runtime("elx_has_runtime_error");
+    if (!hasError || !function_) {
+      return;
+    }
+
+    auto *current = builder_.GetInsertBlock();
+    if (!current || current->getTerminator()) {
+      return;
+    }
+
+    auto *errorBlock =
+        llvm::BasicBlock::Create(ctx_, "runtime.error", function_);
+    auto *continueBlock =
+        llvm::BasicBlock::Create(ctx_, "runtime.cont", function_);
+    auto *errored = builder_.CreateICmpNE(
+        builder_.CreateCall(hasError, {}, "has.runtime.error"), constantI32(0),
+        "has.runtime.error.bool");
+    builder_.CreateCondBr(errored, errorBlock, continueBlock);
+
+    builder_.SetInsertPoint(errorBlock);
+    builder_.CreateRet(nilValue());
+
+    builder_.SetInsertPoint(continueBlock);
+  }
+
+  llvm::Value *emitArgumentArray(const std::vector<ValueId> &arguments,
+                                 const std::string &name) {
+    if (arguments.empty()) {
+      return nullValuePtr();
+    }
+
+    auto *count =
+        llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), arguments.size());
+    auto *storage = builder_.CreateAlloca(valueTy(), count, name);
+    for (size_t index = 0; index < arguments.size(); ++index) {
+      auto *slot = builder_.CreateGEP(
+          valueTy(), storage,
+          llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), index),
+          name + ".slot");
+      builder_.CreateStore(lookup(arguments[index]), slot);
+    }
+    return storage;
   }
 
   std::optional<std::string> emitFunction(const LoxFunction &function) {
@@ -232,19 +285,24 @@ private:
       return emitBranch(instruction);
     case InstructionKind::Return:
       return emitReturn(instruction);
+    case InstructionKind::Call:
+      return emitCall(instruction);
+    case InstructionKind::GetProperty:
+      return emitGetProperty(instruction);
+    case InstructionKind::SetProperty:
+      return emitSetProperty(instruction);
+    case InstructionKind::DefineClass:
+      return emitDefineClass(instruction);
+    case InstructionKind::DefineMethod:
+      return emitDefineMethod(instruction);
+    case InstructionKind::BindSuper:
+      return emitBindSuper(instruction);
+    case InstructionKind::DefineFunction:
     case InstructionKind::LoadUpvalue:
     case InstructionKind::StoreUpvalue:
     case InstructionKind::Phi:
-    case InstructionKind::DefineFunction:
-    case InstructionKind::Call:
-    case InstructionKind::GetProperty:
-    case InstructionKind::SetProperty:
-    case InstructionKind::DefineClass:
-    case InstructionKind::DefineMethod:
-    case InstructionKind::BindSuper:
     case InstructionKind::CloseUpvalues:
-      return unsupported(instruction,
-                         "not in the initial guarded backend subset");
+      return unsupported(instruction, "not in the generic backend subset");
     case InstructionKind::Unreachable:
       builder_.CreateUnreachable();
       return std::nullopt;
@@ -263,6 +321,17 @@ private:
         "str");
     bind(instruction, value, LoxType::String);
     return std::nullopt;
+  }
+
+  llvm::Value *emitInternedName(const std::string &text,
+                                const std::string &name) {
+    auto *intern = runtime("elx_intern_string");
+    if (!intern) {
+      return nilValue();
+    }
+    return builder_.CreateCall(
+        intern, {stringPtr(text, name), constantI32(static_cast<int>(text.size()))},
+        name + ".interned");
   }
 
   std::optional<std::string> emitLoadGlobal(const Instruction &instruction) {
@@ -395,6 +464,132 @@ private:
     return std::nullopt;
   }
 
+  std::optional<std::string> emitCall(const Instruction &instruction) {
+    if (auto failure = requireOperands(instruction, 1)) {
+      return failure;
+    }
+    for (ValueId id : instruction.arguments) {
+      if (!lookup(id)) {
+        return unsupported(instruction, "argument was not defined");
+      }
+    }
+    auto *call = runtime("elx_call_value");
+    if (!call) {
+      return unsupported(instruction, "missing elx_call_value");
+    }
+    auto *args = emitArgumentArray(instruction.arguments, "call.args");
+    auto *count = constantI32(static_cast<int>(instruction.arguments.size()));
+    auto *result =
+        builder_.CreateCall(call, {lookup(instruction.operands[0]), args, count},
+                            "call");
+    guardRuntimeError();
+    bind(instruction, result, instruction.resultType);
+    return std::nullopt;
+  }
+
+  std::optional<std::string> emitGetProperty(const Instruction &instruction) {
+    if (auto failure = requireOperands(instruction, 1)) {
+      return failure;
+    }
+    auto *get = runtime("elx_get_property_slow");
+    if (!get) {
+      return unsupported(instruction, "missing elx_get_property_slow");
+    }
+    auto *name = emitInternedName(instruction.symbol, "property.name");
+    auto *cache = llvm::ConstantPointerNull::get(
+        llvm::PointerType::get(getOrCreatePropertyCacheIRType(ctx_), 0));
+    auto *result = builder_.CreateCall(
+        get, {lookup(instruction.operands[0]), name, cache, constantI32(0)},
+        "property");
+    guardRuntimeError();
+    bind(instruction, result, instruction.resultType);
+    return std::nullopt;
+  }
+
+  std::optional<std::string> emitSetProperty(const Instruction &instruction) {
+    if (auto failure = requireOperands(instruction, 2)) {
+      return failure;
+    }
+    auto *set = runtime("elx_set_property_slow");
+    if (!set) {
+      return unsupported(instruction, "missing elx_set_property_slow");
+    }
+    auto *name = emitInternedName(instruction.symbol, "property.name");
+    auto *cache = llvm::ConstantPointerNull::get(
+        llvm::PointerType::get(getOrCreatePropertyCacheIRType(ctx_), 0));
+    auto *result = builder_.CreateCall(
+        set,
+        {lookup(instruction.operands[0]), name, lookup(instruction.operands[1]),
+         cache, constantI32(0)},
+        "set.property");
+    guardRuntimeError();
+    bind(instruction, result, instruction.resultType);
+    return std::nullopt;
+  }
+
+  std::optional<std::string> emitDefineClass(const Instruction &instruction) {
+    if (instruction.operands.size() > 1) {
+      return unsupported(instruction, "unexpected superclass operand count");
+    }
+    if (!instruction.operands.empty() && !lookup(instruction.operands[0])) {
+      return unsupported(instruction, "superclass operand was not defined");
+    }
+    auto *allocate = runtime("elx_allocate_class");
+    auto *validate = runtime("elx_validate_superclass");
+    if (!allocate || !validate) {
+      return unsupported(instruction, "missing class runtime helper");
+    }
+    auto *name = emitInternedName(instruction.symbol, "class.name");
+    auto *superclass = nilValue();
+    if (!instruction.operands.empty()) {
+      superclass = builder_.CreateCall(validate, {lookup(instruction.operands[0])},
+                                       "validated.superclass");
+      guardRuntimeError();
+    }
+    auto *klass =
+        builder_.CreateCall(allocate, {name, superclass}, "class.object");
+    guardRuntimeError();
+    bind(instruction, klass, LoxType::Class);
+    return std::nullopt;
+  }
+
+  std::optional<std::string> emitDefineMethod(const Instruction &instruction) {
+    if (auto failure = requireOperands(instruction, 2)) {
+      return failure;
+    }
+    auto *addMethod = runtime("elx_class_add_method");
+    if (!addMethod) {
+      return unsupported(instruction, "missing elx_class_add_method");
+    }
+    auto *name = emitInternedName(instruction.symbol, "method.name");
+    builder_.CreateCall(addMethod,
+                        {lookup(instruction.operands[0]), name,
+                         lookup(instruction.operands[1])});
+    guardRuntimeError();
+    return std::nullopt;
+  }
+
+  std::optional<std::string> emitBindSuper(const Instruction &instruction) {
+    if (auto failure = requireOperands(instruction, 2)) {
+      return failure;
+    }
+    auto *findMethod = runtime("elx_class_find_method");
+    auto *bindMethod = runtime("elx_bind_method");
+    if (!findMethod || !bindMethod) {
+      return unsupported(instruction, "missing super runtime helper");
+    }
+    auto *name = emitInternedName(instruction.symbol, "super.method.name");
+    auto *method =
+        builder_.CreateCall(findMethod, {lookup(instruction.operands[0]), name},
+                            "super.method");
+    guardRuntimeError();
+    auto *bound = builder_.CreateCall(
+        bindMethod, {lookup(instruction.operands[1]), method}, "super.bound");
+    guardRuntimeError();
+    bind(instruction, bound, instruction.resultType);
+    return std::nullopt;
+  }
+
   std::optional<std::string> emitBinary(const Instruction &instruction) {
     if (auto failure = requireOperands(instruction, 2)) {
       return failure;
@@ -404,17 +599,57 @@ private:
     auto *left = lookup(leftId);
     auto *right = lookup(rightId);
 
-    if (typeOf(leftId) != LoxType::Number || typeOf(rightId) != LoxType::Number) {
-      if (instruction.binaryOp == BinaryOp::Equal ||
-          instruction.binaryOp == BinaryOp::NotEqual) {
-        auto *equal = builder_.CreateICmpEQ(left, right, "eq.bits");
-        if (instruction.binaryOp == BinaryOp::NotEqual) {
-          equal = builder_.CreateNot(equal, "neq.bits");
-        }
-        bind(instruction, boolValue(equal), LoxType::Bool);
-        return std::nullopt;
+    if (typeOf(leftId) != LoxType::Number ||
+        typeOf(rightId) != LoxType::Number) {
+      const char *helper = nullptr;
+      LoxType resultType = LoxType::Unknown;
+      switch (instruction.binaryOp) {
+      case BinaryOp::Add:
+        helper = "elx_add_values";
+        break;
+      case BinaryOp::Subtract:
+        helper = "elx_subtract_values";
+        break;
+      case BinaryOp::Multiply:
+        helper = "elx_multiply_values";
+        break;
+      case BinaryOp::Divide:
+        helper = "elx_divide_values";
+        break;
+      case BinaryOp::Equal:
+        helper = "elx_equal_values";
+        resultType = LoxType::Bool;
+        break;
+      case BinaryOp::NotEqual:
+        helper = "elx_not_equal_values";
+        resultType = LoxType::Bool;
+        break;
+      case BinaryOp::Greater:
+        helper = "elx_greater_values";
+        resultType = LoxType::Bool;
+        break;
+      case BinaryOp::GreaterEqual:
+        helper = "elx_greater_equal_values";
+        resultType = LoxType::Bool;
+        break;
+      case BinaryOp::Less:
+        helper = "elx_less_values";
+        resultType = LoxType::Bool;
+        break;
+      case BinaryOp::LessEqual:
+        helper = "elx_less_equal_values";
+        resultType = LoxType::Bool;
+        break;
       }
-      return unsupported(instruction, "dynamic numeric/string operation");
+      auto *operation = runtime(helper);
+      if (!operation) {
+        return unsupported(instruction, "missing dynamic binary helper");
+      }
+      auto *result =
+          builder_.CreateCall(operation, {left, right}, "dynamic.binary");
+      guardRuntimeError();
+      bind(instruction, result, resultType);
+      return std::nullopt;
     }
 
     auto *leftNumber = asDouble(left);
@@ -477,7 +712,14 @@ private:
       return std::nullopt;
     case UnaryOp::Negate:
       if (typeOf(instruction.operands[0]) != LoxType::Number) {
-        return unsupported(instruction, "dynamic negation");
+        auto *negate = runtime("elx_negate_value");
+        if (!negate) {
+          return unsupported(instruction, "missing elx_negate_value");
+        }
+        auto *result = builder_.CreateCall(negate, {operand}, "dynamic.neg");
+        guardRuntimeError();
+        bind(instruction, result, LoxType::Unknown);
+        return std::nullopt;
       }
       bind(instruction,
            fromDouble(builder_.CreateFNeg(asDouble(operand), "neg")),

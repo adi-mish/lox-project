@@ -3099,3 +3099,110 @@ uint64_t elx_safe_divide(uint64_t a_bits, uint64_t b_bits) {
 
   return Value::number(result).getBits();
 }
+
+uint64_t elx_add_values(uint64_t a_bits, uint64_t b_bits) {
+  Value a = Value::fromBits(a_bits);
+  Value b = Value::fromBits(b_bits);
+  if (a.isNum() && b.isNum()) {
+    return Value::number(a.asNum() + b.asNum()).getBits();
+  }
+  if (getStringObject(a) && getStringObject(b)) {
+    return elx_concatenate_strings(a_bits, b_bits);
+  }
+  elx_runtime_error("Operands must be numbers or strings for +.");
+  return Value::nil().getBits();
+}
+
+uint64_t elx_subtract_values(uint64_t a_bits, uint64_t b_bits) {
+  Value a = Value::fromBits(a_bits);
+  Value b = Value::fromBits(b_bits);
+  if (!a.isNum() || !b.isNum()) {
+    elx_runtime_error("Operands must be numbers.");
+    return Value::nil().getBits();
+  }
+  return Value::number(a.asNum() - b.asNum()).getBits();
+}
+
+uint64_t elx_multiply_values(uint64_t a_bits, uint64_t b_bits) {
+  Value a = Value::fromBits(a_bits);
+  Value b = Value::fromBits(b_bits);
+  if (!a.isNum() || !b.isNum()) {
+    elx_runtime_error("Operands must be numbers.");
+    return Value::nil().getBits();
+  }
+  return Value::number(a.asNum() * b.asNum()).getBits();
+}
+
+uint64_t elx_divide_values(uint64_t a_bits, uint64_t b_bits) {
+  return elx_safe_divide(a_bits, b_bits);
+}
+
+uint64_t elx_greater_values(uint64_t a_bits, uint64_t b_bits) {
+  Value a = Value::fromBits(a_bits);
+  Value b = Value::fromBits(b_bits);
+  if (!a.isNum() || !b.isNum()) {
+    elx_runtime_error("Operands must be numbers.");
+    return Value::nil().getBits();
+  }
+  return Value::boolean(a.asNum() > b.asNum()).getBits();
+}
+
+uint64_t elx_greater_equal_values(uint64_t a_bits, uint64_t b_bits) {
+  Value a = Value::fromBits(a_bits);
+  Value b = Value::fromBits(b_bits);
+  if (!a.isNum() || !b.isNum()) {
+    elx_runtime_error("Operands must be numbers.");
+    return Value::nil().getBits();
+  }
+  return Value::boolean(a.asNum() >= b.asNum()).getBits();
+}
+
+uint64_t elx_less_values(uint64_t a_bits, uint64_t b_bits) {
+  Value a = Value::fromBits(a_bits);
+  Value b = Value::fromBits(b_bits);
+  if (!a.isNum() || !b.isNum()) {
+    elx_runtime_error("Operands must be numbers.");
+    return Value::nil().getBits();
+  }
+  return Value::boolean(a.asNum() < b.asNum()).getBits();
+}
+
+uint64_t elx_less_equal_values(uint64_t a_bits, uint64_t b_bits) {
+  Value a = Value::fromBits(a_bits);
+  Value b = Value::fromBits(b_bits);
+  if (!a.isNum() || !b.isNum()) {
+    elx_runtime_error("Operands must be numbers.");
+    return Value::nil().getBits();
+  }
+  return Value::boolean(a.asNum() <= b.asNum()).getBits();
+}
+
+uint64_t elx_equal_values(uint64_t a_bits, uint64_t b_bits) {
+  Value a = Value::fromBits(a_bits);
+  Value b = Value::fromBits(b_bits);
+  if (a.tag() != b.tag()) {
+    return Value::boolean(false).getBits();
+  }
+  if (a.isNum()) {
+    return Value::boolean(a.asNum() == b.asNum()).getBits();
+  }
+  if (getStringObject(a) && getStringObject(b)) {
+    return Value::boolean(elx_strings_equal_interned(a_bits, b_bits) != 0)
+        .getBits();
+  }
+  return Value::boolean(a_bits == b_bits).getBits();
+}
+
+uint64_t elx_not_equal_values(uint64_t a_bits, uint64_t b_bits) {
+  Value equal = Value::fromBits(elx_equal_values(a_bits, b_bits));
+  return Value::boolean(!equal.asBool()).getBits();
+}
+
+uint64_t elx_negate_value(uint64_t value_bits) {
+  Value value = Value::fromBits(value_bits);
+  if (!value.isNum()) {
+    elx_runtime_error("Operand must be a number for negation.");
+    return Value::nil().getBits();
+  }
+  return Value::number(-value.asNum()).getBits();
+}
