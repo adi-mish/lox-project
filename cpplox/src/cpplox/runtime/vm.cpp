@@ -1,8 +1,8 @@
 #include <assert.h>
-#include <stdarg.h>
-#include <stdio.h>
-#include <string.h>
-#include <time.h>
+#include <cstdarg>
+#include <cstdio>
+#include <cstring>
+#include <ctime>
 #ifdef CPPLOX_ENABLE_VM_STATS
 #include <inttypes.h>
 #endif
@@ -16,10 +16,10 @@
 
 namespace cpplox {
 
-static Vm *activeVm = NULL;
+static Vm *activeVm = nullptr;
 
 Vm &currentVm() {
-  assert(activeVm != NULL);
+  assert(activeVm != nullptr);
   return *activeVm;
 }
 
@@ -185,26 +185,26 @@ static void recordInstruction(uint8_t opcode) {
 }
 
 void Vm::printStats() const {
-  fprintf(stderr, "cpplox VM stats:\n");
-  fprintf(stderr, "  instructions: %" PRIu64 "\n", instructionsExecuted);
-  fprintf(stderr, "  max_stack_depth: %" PRIu64 "\n", maxStackDepth);
-  fprintf(stderr, "  bytes_allocated: %zu\n", bytesAllocated);
-  fprintf(stderr, "  closure_calls: %" PRIu64 "\n", closureCalls);
-  fprintf(stderr, "  native_calls: %" PRIu64 "\n", nativeCalls);
-  fprintf(stderr, "  class_calls: %" PRIu64 "\n", classCalls);
-  fprintf(stderr, "  bound_method_calls: %" PRIu64 "\n", boundMethodCalls);
-  fprintf(stderr, "  invokes: %" PRIu64 "\n", invokes);
-  fprintf(stderr, "  global_cache_hits: %" PRIu64 "\n", globalCacheHits);
-  fprintf(stderr, "  global_cache_misses: %" PRIu64 "\n", globalCacheMisses);
-  fprintf(stderr, "  method_cache_hits: %" PRIu64 "\n", methodCacheHits);
-  fprintf(stderr, "  method_cache_misses: %" PRIu64 "\n", methodCacheMisses);
-  fprintf(stderr, "  field_cache_hits: %" PRIu64 "\n", fieldCacheHits);
-  fprintf(stderr, "  field_cache_misses: %" PRIu64 "\n", fieldCacheMisses);
-  fprintf(stderr, "  opcodes:\n");
+  std::fprintf(stderr, "cpplox VM stats:\n");
+  std::fprintf(stderr, "  instructions: %" PRIu64 "\n", instructionsExecuted);
+  std::fprintf(stderr, "  max_stack_depth: %" PRIu64 "\n", maxStackDepth);
+  std::fprintf(stderr, "  bytes_allocated: %zu\n", bytesAllocated);
+  std::fprintf(stderr, "  closure_calls: %" PRIu64 "\n", closureCalls);
+  std::fprintf(stderr, "  native_calls: %" PRIu64 "\n", nativeCalls);
+  std::fprintf(stderr, "  class_calls: %" PRIu64 "\n", classCalls);
+  std::fprintf(stderr, "  bound_method_calls: %" PRIu64 "\n", boundMethodCalls);
+  std::fprintf(stderr, "  invokes: %" PRIu64 "\n", invokes);
+  std::fprintf(stderr, "  global_cache_hits: %" PRIu64 "\n", globalCacheHits);
+  std::fprintf(stderr, "  global_cache_misses: %" PRIu64 "\n", globalCacheMisses);
+  std::fprintf(stderr, "  method_cache_hits: %" PRIu64 "\n", methodCacheHits);
+  std::fprintf(stderr, "  method_cache_misses: %" PRIu64 "\n", methodCacheMisses);
+  std::fprintf(stderr, "  field_cache_hits: %" PRIu64 "\n", fieldCacheHits);
+  std::fprintf(stderr, "  field_cache_misses: %" PRIu64 "\n", fieldCacheMisses);
+  std::fprintf(stderr, "  opcodes:\n");
   for (int i = 0; i < OP_COUNT; i++) {
     if (opcodeCounts[i] == 0)
       continue;
-    fprintf(stderr, "    %-20s %" PRIu64 "\n", opcodeName(i),
+    std::fprintf(stderr, "    %-20s %" PRIu64 "\n", opcodeName(i),
             opcodeCounts[i]);
   }
 }
@@ -253,32 +253,32 @@ void Vm::printStats() const {
 #endif
 
 static Value clockNative(int argCount, Value *args) {
-  return NUMBER_VAL((double)clock() / CLOCKS_PER_SEC);
+  return NUMBER_VAL((double)std::clock() / CLOCKS_PER_SEC);
 }
 static void resetStack() {
   Vm &vm = currentVm();
   vm.stackTop = vm.stack.data();
   vm.frameCount = 0;
-  vm.openUpvalues = NULL;
+  vm.openUpvalues = nullptr;
 }
 static void runtimeError(const char *format, ...) {
   Vm &vm = currentVm();
   va_list args;
   va_start(args, format);
-  vfprintf(stderr, format, args);
+  std::vfprintf(stderr, format, args);
   va_end(args);
-  fputs("\n", stderr);
+  std::fputs("\n", stderr);
 
   for (int i = vm.frameCount - 1; i >= 0; i--) {
     CallFrame *frame = &vm.frames[i];
 
     ObjFunction *function = frame->closure->function;
     size_t instruction = frame->ip - function->chunk.codeData() - 1;
-    fprintf(stderr, "[line %d] in ", function->chunk.lineAt(instruction));
-    if (function->name == NULL) {
-      fprintf(stderr, "script\n");
+    std::fprintf(stderr, "[line %d] in ", function->chunk.lineAt(instruction));
+    if (function->name == nullptr) {
+      std::fprintf(stderr, "script\n");
     } else {
-      fprintf(stderr, "%s()\n", function->name->chars);
+      std::fprintf(stderr, "%s()\n", function->name->chars);
     }
   }
 
@@ -286,7 +286,7 @@ static void runtimeError(const char *format, ...) {
 }
 static void defineNative(const char *name, NativeFn function) {
   Vm &vm = currentVm();
-  vm.push(OBJ_VAL(vm.copyString(name, (int)strlen(name))));
+  vm.push(OBJ_VAL(vm.copyString(name, (int)std::strlen(name))));
   vm.push(OBJ_VAL(vm.newNative(function)));
   vm.globals.set(AS_STRING(vm.stack[0]), vm.stack[1]);
   vm.pop();
@@ -301,7 +301,7 @@ void Vm::initialize() {
   vm.statsEnabled = false;
   resetStats();
 #endif
-  vm.objects = NULL;
+  vm.objects = nullptr;
   vm.bytesAllocated = 0;
   vm.nextGC = 1024 * 1024;
 
@@ -310,7 +310,7 @@ void Vm::initialize() {
   vm.globals.clear();
   vm.strings.clear();
 
-  vm.initString = NULL;
+  vm.initString = nullptr;
   vm.initString = vm.copyString("init", 4);
 
   defineNative("clock", clockNative);
@@ -320,9 +320,9 @@ void Vm::shutdown() {
   Vm &vm = *this;
   vm.globals.clear();
   vm.strings.clear();
-  vm.initString = NULL;
+  vm.initString = nullptr;
   freeObjects();
-  activeVm = NULL;
+  activeVm = nullptr;
 }
 void Vm::push(Value value) {
   *stackTop = value;
@@ -391,7 +391,7 @@ static bool callValue(Value callee, int argCount) {
         vm.classCalls++;
 #endif
       vm.stackTop[-argCount - 1] = OBJ_VAL(vm.newInstance(klass));
-      if (klass->initializer != NULL) {
+      if (klass->initializer != nullptr) {
         return call(klass->initializer, argCount);
       } else if (argCount != 0) {
         runtimeError("Expected 0 arguments but got %d.", argCount);
@@ -480,7 +480,7 @@ static bool findMethodCached(ObjClass *klass, ObjString *name,
 #ifdef CPPLOX_ENABLE_VM_STATS
   Vm &vm = currentVm();
 #endif
-  if (cache != NULL && cache->kind == CACHE_METHOD && cache->key == name &&
+  if (cache != nullptr && cache->kind == CACHE_METHOD && cache->key == name &&
       cache->owner == klass &&
       cache->tableVersion == klass->methods.version()) {
     RECORD_METHOD_CACHE_HIT();
@@ -494,13 +494,13 @@ static bool findMethodCached(ObjClass *klass, ObjString *name,
     return false;
   }
 
-  if (cache != NULL) {
+  if (cache != nullptr) {
     cache->kind = CACHE_METHOD;
     cache->key = name;
     cache->owner = klass;
     cache->value = *method;
     cache->tableVersion = klass->methods.version();
-    cache->secondaryOwner = NULL;
+    cache->secondaryOwner = nullptr;
     cache->secondaryVersion = 0;
     cache->entryIndex = -2;
     cache->tableCapacity = -1;
@@ -530,7 +530,7 @@ static bool invoke(ObjString *name, int argCount, InlineCache *cache) {
   }
 
   ObjInstance *instance = AS_INSTANCE(receiver);
-  if (cache != NULL && cache->kind == CACHE_METHOD && cache->key == name &&
+  if (cache != nullptr && cache->kind == CACHE_METHOD && cache->key == name &&
       cache->owner == instance->klass &&
       cache->tableVersion == instance->klass->methods.version() &&
       cache->secondaryVersion == instance->klass->fieldVersion) {
@@ -557,7 +557,7 @@ static bool invoke(ObjString *name, int argCount, InlineCache *cache) {
 
   if (!findMethodCached(instance->klass, name, cache, &value))
     return false;
-  if (cache != NULL) {
+  if (cache != nullptr) {
     cache->secondaryVersion = instance->klass->fieldVersion;
     cache->entryIndex = fieldSlot >= 0 ? fieldSlot : -1;
   }
@@ -575,25 +575,25 @@ static bool bindMethodCached(ObjClass *klass, ObjString *name,
   return true;
 }
 static bool bindMethod(ObjClass *klass, ObjString *name) {
-  return bindMethodCached(klass, name, NULL);
+  return bindMethodCached(klass, name, nullptr);
 }
 static ObjUpvalue *captureUpvalue(Value *local) {
   Vm &vm = currentVm();
-  ObjUpvalue *prevUpvalue = NULL;
+  ObjUpvalue *prevUpvalue = nullptr;
   ObjUpvalue *upvalue = vm.openUpvalues;
-  while (upvalue != NULL && upvalue->location > local) {
+  while (upvalue != nullptr && upvalue->location > local) {
     prevUpvalue = upvalue;
     upvalue = upvalue->next;
   }
 
-  if (upvalue != NULL && upvalue->location == local) {
+  if (upvalue != nullptr && upvalue->location == local) {
     return upvalue;
   }
 
   ObjUpvalue *createdUpvalue = vm.newUpvalue(local);
   createdUpvalue->next = upvalue;
 
-  if (prevUpvalue == NULL) {
+  if (prevUpvalue == nullptr) {
     vm.openUpvalues = createdUpvalue;
   } else {
     prevUpvalue->next = createdUpvalue;
@@ -603,7 +603,7 @@ static ObjUpvalue *captureUpvalue(Value *local) {
 }
 static void closeUpvalues(Value *last) {
   Vm &vm = currentVm();
-  while (vm.openUpvalues != NULL && vm.openUpvalues->location >= last) {
+  while (vm.openUpvalues != nullptr && vm.openUpvalues->location >= last) {
     ObjUpvalue *upvalue = vm.openUpvalues;
     upvalue->closed = *upvalue->location;
     upvalue->location = &upvalue->closed;
@@ -631,8 +631,8 @@ static void concatenate() {
 
   int length = a->length + b->length;
   char *chars = allocate<char>(length + 1);
-  memcpy(chars, a->chars, a->length);
-  memcpy(chars + a->length, b->chars, b->length);
+  std::memcpy(chars, a->chars, a->length);
+  std::memcpy(chars + a->length, b->chars, b->length);
   chars[length] = '\0';
 
   ObjString *result = vm.takeString(chars, length);
@@ -674,13 +674,13 @@ static InterpretResult run() {
 
   for (;;) {
 #ifdef DEBUG_TRACE_EXECUTION
-    printf("          ");
+    std::printf("          ");
     for (Value *slot = vm.stack.data(); slot < vm.stackTop; slot++) {
-      printf("[ ");
+      std::printf("[ ");
       printValue(*slot);
-      printf(" ]");
+      std::printf(" ]");
     }
-    printf("\n");
+    std::printf("\n");
 
     disassembleInstruction(
         &frame->closure->function->chunk,
@@ -788,7 +788,7 @@ static InterpretResult run() {
 
       Entry *entry = cache->entry;
       if (cache->kind == CACHE_GLOBAL && cache->key == name &&
-          cache->tableVersion == vm.globals.version() && entry != NULL) {
+          cache->tableVersion == vm.globals.version() && entry != nullptr) {
         RECORD_GLOBAL_CACHE_HIT();
         PUSH_VALUE(entry->value);
         break;
@@ -796,7 +796,7 @@ static InterpretResult run() {
 
       RECORD_GLOBAL_CACHE_MISS();
       entry = vm.globals.getEntry(name);
-      if (entry == NULL) {
+      if (entry == nullptr) {
         runtimeError("Undefined variable '%s'.", name->chars);
         return INTERPRET_RUNTIME_ERROR;
       }
@@ -829,10 +829,10 @@ static InterpretResult run() {
 
       Entry *entry = cache->entry;
       if (!(cache->kind == CACHE_GLOBAL && cache->key == name &&
-            cache->tableVersion == vm.globals.version() && entry != NULL)) {
+            cache->tableVersion == vm.globals.version() && entry != nullptr)) {
         RECORD_GLOBAL_CACHE_MISS();
         entry = vm.globals.getEntry(name);
-        if (entry == NULL) {
+        if (entry == nullptr) {
           runtimeError("Undefined variable '%s'.", name->chars);
           return INTERPRET_RUNTIME_ERROR;
         }
@@ -889,7 +889,7 @@ static InterpretResult run() {
         cache->kind = CACHE_FIELD;
         cache->key = name;
         cache->owner = instance->klass;
-        cache->entry = NULL;
+        cache->entry = nullptr;
         cache->entryIndex = fieldSlot;
         cache->tableCapacity = -1;
         cache->tableVersion = 0;
@@ -974,7 +974,7 @@ static InterpretResult run() {
       break;
     case OP_PRINT: {
       printValue(POP_VALUE());
-      printf("\n");
+      std::printf("\n");
       break;
     }
     case OP_JUMP: {
@@ -1098,7 +1098,7 @@ InterpretResult Vm::interpret(const char *source) {
   Vm &vm = *this;
 
   ObjFunction *function = compile(vm, source);
-  if (function == NULL)
+  if (function == nullptr)
     return INTERPRET_COMPILE_ERROR;
 
   vm.push(OBJ_VAL(function));

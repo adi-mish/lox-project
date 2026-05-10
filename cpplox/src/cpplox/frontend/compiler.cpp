@@ -1,6 +1,6 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 
 #include <array>
 
@@ -89,9 +89,9 @@ struct ClassCompiler {
 
 Parser parser;
 static Scanner scanner;
-FunctionCompiler *current = NULL;
-ClassCompiler *currentClass = NULL;
-static Vm *compilingVm = NULL;
+FunctionCompiler *current = nullptr;
+ClassCompiler *currentClass = nullptr;
+static Vm *compilingVm = nullptr;
 static std::array<ObjString *, UINT8_COUNT> knownGlobals;
 static int knownGlobalCount = 0;
 
@@ -110,17 +110,17 @@ static void errorAt(Token *token, const char *message) {
   if (parser.panicMode)
     return;
   parser.panicMode = true;
-  fprintf(stderr, "[line %d] Error", token->line);
+  std::fprintf(stderr, "[line %d] Error", token->line);
 
   if (token->type == TOKEN_EOF) {
-    fprintf(stderr, " at end");
+    std::fprintf(stderr, " at end");
   } else if (token->type == TOKEN_ERROR) {
 
   } else {
-    fprintf(stderr, " at '%.*s'", token->length, token->start);
+    std::fprintf(stderr, " at '%.*s'", token->length, token->start);
   }
 
-  fprintf(stderr, ": %s\n", message);
+  std::fprintf(stderr, ": %s\n", message);
   parser.hadError = true;
 }
 static void error(const char *message) { errorAt(&parser.previous, message); }
@@ -223,7 +223,7 @@ static void patchJump(int offset) {
 
 static void initCompiler(FunctionCompiler *compiler, FunctionType type) {
   compiler->enclosing = current;
-  compiler->function = NULL;
+  compiler->function = nullptr;
   compiler->type = type;
   compiler->localCount = 0;
   compiler->scopeDepth = 0;
@@ -256,7 +256,7 @@ static ObjFunction *endCompiler() {
 #ifdef DEBUG_PRINT_CODE
   if (!parser.hadError) {
 
-    disassembleChunk(currentChunk(), function->name != NULL
+    disassembleChunk(currentChunk(), function->name != nullptr
                                          ? function->name->chars
                                          : "<script>");
   }
@@ -333,7 +333,7 @@ static bool discardPureExpression(int start) {
     case OP_GET_GLOBAL: {
       ObjString *name =
           AS_STRING(chunk->constantAt(chunk->byteAt(offset + 1)));
-      bool known = name->length == 5 && memcmp(name->chars, "clock", 5) == 0;
+      bool known = name->length == 5 && std::memcmp(name->chars, "clock", 5) == 0;
       for (int i = 0; !known && i < knownGlobalCount; i++) {
         known = knownGlobals[i] == name;
       }
@@ -382,7 +382,7 @@ static uint8_t identifierConstant(Token *name) {
 static bool identifiersEqual(Token *a, Token *b) {
   if (a->length != b->length)
     return false;
-  return memcmp(a->start, b->start, a->length) == 0;
+  return std::memcmp(a->start, b->start, a->length) == 0;
 }
 static int resolveLocal(FunctionCompiler *compiler, Token *name) {
   for (int i = compiler->localCount - 1; i >= 0; i--) {
@@ -417,7 +417,7 @@ static int addUpvalue(FunctionCompiler *compiler, uint8_t index, bool isLocal) {
   return compiler->function->upvalueCount++;
 }
 static int resolveUpvalue(FunctionCompiler *compiler, Token *name) {
-  if (compiler->enclosing == NULL)
+  if (compiler->enclosing == nullptr)
     return -1;
 
   int local = resolveLocal(compiler->enclosing, name);
@@ -591,7 +591,7 @@ static void grouping(bool canAssign) {
 }
 
 static void number(bool canAssign) {
-  double value = strtod(parser.previous.start, NULL);
+  double value = std::strtod(parser.previous.start, nullptr);
 
   emitConstant(NUMBER_VAL(value));
 }
@@ -651,11 +651,11 @@ static void variable(bool canAssign) {
 static Token syntheticToken(const char *text) {
   Token token;
   token.start = text;
-  token.length = (int)strlen(text);
+  token.length = (int)std::strlen(text);
   return token;
 }
 static void super_(bool canAssign) {
-  if (currentClass == NULL) {
+  if (currentClass == nullptr) {
     error("Can't use 'super' outside of a class.");
   } else if (!currentClass->hasSuperclass) {
     error("Can't use 'super' in a class with no superclass.");
@@ -678,7 +678,7 @@ static void super_(bool canAssign) {
   }
 }
 static void this_(bool canAssign) {
-  if (currentClass == NULL) {
+  if (currentClass == nullptr) {
     error("Can't use 'this' outside of a class.");
     return;
   }
@@ -705,64 +705,64 @@ static void unary(bool canAssign) {
 ParseRule rules[] = {
 
     {grouping, call, PREC_CALL},
-    {NULL, NULL, PREC_NONE},
-    {NULL, NULL, PREC_NONE},
-    {NULL, NULL, PREC_NONE},
-    {NULL, NULL, PREC_NONE},
+    {nullptr, nullptr, PREC_NONE},
+    {nullptr, nullptr, PREC_NONE},
+    {nullptr, nullptr, PREC_NONE},
+    {nullptr, nullptr, PREC_NONE},
 
-    {NULL, dot, PREC_CALL},
+    {nullptr, dot, PREC_CALL},
     {unary, binary, PREC_TERM},
-    {NULL, binary, PREC_TERM},
-    {NULL, NULL, PREC_NONE},
-    {NULL, binary, PREC_FACTOR},
-    {NULL, binary, PREC_FACTOR},
+    {nullptr, binary, PREC_TERM},
+    {nullptr, nullptr, PREC_NONE},
+    {nullptr, binary, PREC_FACTOR},
+    {nullptr, binary, PREC_FACTOR},
 
-    {unary, NULL, PREC_NONE},
+    {unary, nullptr, PREC_NONE},
 
-    {NULL, binary, PREC_EQUALITY},
-    {NULL, NULL, PREC_NONE},
+    {nullptr, binary, PREC_EQUALITY},
+    {nullptr, nullptr, PREC_NONE},
 
-    {NULL, binary, PREC_EQUALITY},
-    {NULL, binary, PREC_COMPARISON},
-    {NULL, binary, PREC_COMPARISON},
-    {NULL, binary, PREC_COMPARISON},
-    {NULL, binary, PREC_COMPARISON},
+    {nullptr, binary, PREC_EQUALITY},
+    {nullptr, binary, PREC_COMPARISON},
+    {nullptr, binary, PREC_COMPARISON},
+    {nullptr, binary, PREC_COMPARISON},
+    {nullptr, binary, PREC_COMPARISON},
 
-    {variable, NULL, PREC_NONE},
+    {variable, nullptr, PREC_NONE},
 
-    {string, NULL, PREC_NONE},
-    {number, NULL, PREC_NONE},
+    {string, nullptr, PREC_NONE},
+    {number, nullptr, PREC_NONE},
 
-    {NULL, and_, PREC_AND},
-    {NULL, NULL, PREC_NONE},
-    {NULL, NULL, PREC_NONE},
+    {nullptr, and_, PREC_AND},
+    {nullptr, nullptr, PREC_NONE},
+    {nullptr, nullptr, PREC_NONE},
 
-    {literal, NULL, PREC_NONE},
-    {NULL, NULL, PREC_NONE},
-    {NULL, NULL, PREC_NONE},
-    {NULL, NULL, PREC_NONE},
+    {literal, nullptr, PREC_NONE},
+    {nullptr, nullptr, PREC_NONE},
+    {nullptr, nullptr, PREC_NONE},
+    {nullptr, nullptr, PREC_NONE},
 
-    {literal, NULL, PREC_NONE},
+    {literal, nullptr, PREC_NONE},
 
-    {NULL, or_, PREC_OR},
-    {NULL, NULL, PREC_NONE},
-    {NULL, NULL, PREC_NONE},
+    {nullptr, or_, PREC_OR},
+    {nullptr, nullptr, PREC_NONE},
+    {nullptr, nullptr, PREC_NONE},
 
-    {super_, NULL, PREC_NONE},
+    {super_, nullptr, PREC_NONE},
 
-    {this_, NULL, PREC_NONE},
+    {this_, nullptr, PREC_NONE},
 
-    {literal, NULL, PREC_NONE},
-    {NULL, NULL, PREC_NONE},
-    {NULL, NULL, PREC_NONE},
-    {NULL, NULL, PREC_NONE},
-    {NULL, NULL, PREC_NONE},
+    {literal, nullptr, PREC_NONE},
+    {nullptr, nullptr, PREC_NONE},
+    {nullptr, nullptr, PREC_NONE},
+    {nullptr, nullptr, PREC_NONE},
+    {nullptr, nullptr, PREC_NONE},
 };
 static void parsePrecedence(Precedence precedence) {
 
   advance();
   ParseFn prefixRule = getRule(parser.previous.type)->prefix;
-  if (prefixRule == NULL) {
+  if (prefixRule == nullptr) {
     error("Expect expression.");
     return;
   }
@@ -825,7 +825,7 @@ static void method() {
 
   FunctionType type = TYPE_METHOD;
   if (parser.previous.length == 4 &&
-      memcmp(parser.previous.start, "init", 4) == 0) {
+      std::memcmp(parser.previous.start, "init", 4) == 0) {
     type = TYPE_INITIALIZER;
   }
 
@@ -1082,8 +1082,8 @@ ObjFunction *compile(Vm &vm, const char *source) {
   }
 
   ObjFunction *function = endCompiler();
-  compilingVm = NULL;
-  return parser.hadError ? NULL : function;
+  compilingVm = nullptr;
+  return parser.hadError ? nullptr : function;
 }
 
 } // namespace cpplox

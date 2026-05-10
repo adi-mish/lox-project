@@ -5,7 +5,7 @@
 
 #ifdef DEBUG_LOG_GC
 #include "debug.h"
-#include <stdio.h>
+#include <cstdio>
 #endif
 
 namespace cpplox {
@@ -27,25 +27,25 @@ void *reallocate(void *pointer, size_t oldSize, size_t newSize) {
 
   if (newSize == 0) {
     std::free(pointer);
-    return NULL;
+    return nullptr;
   }
 
   void *result = std::realloc(pointer, newSize);
-  if (result == NULL)
+  if (result == nullptr)
     std::exit(1);
   return result;
 }
 void markObject(Obj *object) {
   Vm &vm = currentVm();
-  if (object == NULL)
+  if (object == nullptr)
     return;
   if (object->isMarked)
     return;
 
 #ifdef DEBUG_LOG_GC
-  printf("%p mark ", (void *)object);
+  std::printf("%p mark ", (void *)object);
   printValue(OBJ_VAL(object));
-  printf("\n");
+  std::printf("\n");
 #endif
 
   object->isMarked = true;
@@ -65,7 +65,7 @@ static void markInlineCaches(Chunk *chunk) {
   for (int i = 0; i < static_cast<int>(chunk->constants().size()); i++) {
     InlineCache *cache = &chunk->inlineCache(i);
     if ((cache->kind == CACHE_FIELD || cache->kind == CACHE_METHOD) &&
-        cache->owner != NULL) {
+        cache->owner != nullptr) {
       markObject((Obj *)cache->owner);
     }
     if (cache->kind == CACHE_METHOD) {
@@ -75,9 +75,9 @@ static void markInlineCaches(Chunk *chunk) {
 }
 static void blackenObject(Obj *object) {
 #ifdef DEBUG_LOG_GC
-  printf("%p blacken ", (void *)object);
+  std::printf("%p blacken ", (void *)object);
   printValue(OBJ_VAL(object));
-  printf("\n");
+  std::printf("\n");
 #endif
 
   switch (object->type) {
@@ -130,7 +130,7 @@ static void blackenObject(Obj *object) {
 }
 static void freeObject(Obj *object) {
 #ifdef DEBUG_LOG_GC
-  printf("%p free type %d\n", (void *)object, objectKindIndex(object->type));
+  std::printf("%p free type %d\n", (void *)object, objectKindIndex(object->type));
 #endif
 
   switch (object->type) {
@@ -186,7 +186,7 @@ static void markRoots() {
     markObject((Obj *)vm.frames[i].closure);
   }
 
-  for (ObjUpvalue *upvalue = vm.openUpvalues; upvalue != NULL;
+  for (ObjUpvalue *upvalue = vm.openUpvalues; upvalue != nullptr;
        upvalue = upvalue->next) {
     markObject((Obj *)upvalue);
   }
@@ -205,9 +205,9 @@ static void traceReferences() {
 }
 static void sweep() {
   Vm &vm = currentVm();
-  Obj *previous = NULL;
+  Obj *previous = nullptr;
   Obj *object = vm.objects;
-  while (object != NULL) {
+  while (object != nullptr) {
     if (object->isMarked) {
       object->isMarked = false;
       previous = object;
@@ -215,7 +215,7 @@ static void sweep() {
     } else {
       Obj *unreached = object;
       object = object->next;
-      if (previous != NULL) {
+      if (previous != nullptr) {
         previous->next = object;
       } else {
         vm.objects = object;
@@ -228,7 +228,7 @@ static void sweep() {
 void collectGarbage() {
   Vm &vm = currentVm();
 #ifdef DEBUG_LOG_GC
-  printf("-- gc begin\n");
+  std::printf("-- gc begin\n");
   size_t before = vm.bytesAllocated;
 #endif
 
@@ -240,15 +240,15 @@ void collectGarbage() {
   vm.nextGC = vm.bytesAllocated * GC_HEAP_GROW_FACTOR;
 
 #ifdef DEBUG_LOG_GC
-  printf("-- gc end\n");
-  printf("   collected %zu bytes (from %zu to %zu) next at %zu\n",
+  std::printf("-- gc end\n");
+  std::printf("   collected %zu bytes (from %zu to %zu) next at %zu\n",
          before - vm.bytesAllocated, before, vm.bytesAllocated, vm.nextGC);
 #endif
 }
 void freeObjects() {
   Vm &vm = currentVm();
   Obj *object = vm.objects;
-  while (object != NULL) {
+  while (object != nullptr) {
     Obj *next = object->next;
     freeObject(object);
     object = next;

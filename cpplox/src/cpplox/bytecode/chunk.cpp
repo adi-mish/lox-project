@@ -7,11 +7,11 @@ namespace cpplox {
 static InlineCache emptyInlineCache() {
   InlineCache cache;
   cache.kind = CACHE_EMPTY;
-  cache.key = NULL;
-  cache.entry = NULL;
+  cache.key = nullptr;
+  cache.entry = nullptr;
   cache.tableVersion = 0;
-  cache.owner = NULL;
-  cache.secondaryOwner = NULL;
+  cache.owner = nullptr;
+  cache.secondaryOwner = nullptr;
   cache.secondaryVersion = 0;
   cache.entryIndex = -1;
   cache.tableCapacity = 0;

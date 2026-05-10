@@ -1,5 +1,5 @@
-#include <stdio.h>
-#include <string.h>
+#include <cstdio>
+#include <cstring>
 
 #include <new>
 
@@ -22,7 +22,7 @@ static Object *allocateObject(Vm &vm, ObjectKind type) {
   vm.objects = header;
 
 #ifdef DEBUG_LOG_GC
-  printf("%p allocate %zu for %d\n", (void *)object, sizeof(Object),
+  std::printf("%p allocate %zu for %d\n", (void *)object, sizeof(Object),
          objectKindIndex(type));
 #endif
 
@@ -40,7 +40,7 @@ ObjClass *Vm::newClass(ObjString *name) {
   new (&klass->methods) Table();
   new (&klass->fieldSlots) Table();
   klass->name = name;
-  klass->initializer = NULL;
+  klass->initializer = nullptr;
   klass->fieldSlotCount = 0;
   klass->fieldVersion = 0;
   return klass;
@@ -48,7 +48,7 @@ ObjClass *Vm::newClass(ObjString *name) {
 ObjClosure *Vm::newClosure(ObjFunction *function) {
   ObjUpvalue **upvalues = allocate<ObjUpvalue *>(function->upvalueCount);
   for (int i = 0; i < function->upvalueCount; i++) {
-    upvalues[i] = NULL;
+    upvalues[i] = nullptr;
   }
 
   ObjClosure *closure = allocateObject<ObjClosure>(*this, OBJ_CLOSURE);
@@ -61,14 +61,14 @@ ObjFunction *Vm::newFunction() {
   ObjFunction *function = allocateObject<ObjFunction>(*this, OBJ_FUNCTION);
   function->arity = 0;
   function->upvalueCount = 0;
-  function->name = NULL;
+  function->name = nullptr;
   initChunk(&function->chunk);
   return function;
 }
 ObjInstance *Vm::newInstance(ObjClass *klass) {
   ObjInstance *instance = allocateObject<ObjInstance>(*this, OBJ_INSTANCE);
   instance->klass = klass;
-  instance->fields = NULL;
+  instance->fields = nullptr;
   instance->fieldCapacity = 0;
   return instance;
 }
@@ -102,7 +102,7 @@ static uint32_t hashString(const char *key, int length) {
 ObjString *Vm::takeString(char *chars, int length) {
   uint32_t hash = hashString(chars, length);
   ObjString *interned = strings.findString(chars, length, hash);
-  if (interned != NULL) {
+  if (interned != nullptr) {
     freeArray(chars, length + 1);
     return interned;
   }
@@ -112,11 +112,11 @@ ObjString *Vm::takeString(char *chars, int length) {
 ObjString *Vm::copyString(const char *chars, int length) {
   uint32_t hash = hashString(chars, length);
   ObjString *interned = strings.findString(chars, length, hash);
-  if (interned != NULL)
+  if (interned != nullptr)
     return interned;
 
   char *heapChars = allocate<char>(length + 1);
-  memcpy(heapChars, chars, length);
+  std::memcpy(heapChars, chars, length);
   heapChars[length] = '\0';
 
   return allocateString(*this, heapChars, length, hash);
@@ -125,16 +125,16 @@ ObjUpvalue *Vm::newUpvalue(Value *slot) {
   ObjUpvalue *upvalue = allocateObject<ObjUpvalue>(*this, OBJ_UPVALUE);
   upvalue->closed = NIL_VAL;
   upvalue->location = slot;
-  upvalue->next = NULL;
+  upvalue->next = nullptr;
   return upvalue;
 }
 
 static void printFunction(ObjFunction *function) {
-  if (function->name == NULL) {
-    printf("<script>");
+  if (function->name == nullptr) {
+    std::printf("<script>");
     return;
   }
-  printf("<fn %s>", function->name->chars);
+  std::printf("<fn %s>", function->name->chars);
 }
 void printObject(Value value) {
   switch (OBJ_TYPE(value)) {
@@ -142,7 +142,7 @@ void printObject(Value value) {
     printFunction(AS_BOUND_METHOD(value)->method->function);
     break;
   case OBJ_CLASS:
-    printf("%s", AS_CLASS(value)->name->chars);
+    std::printf("%s", AS_CLASS(value)->name->chars);
     break;
   case OBJ_CLOSURE:
     printFunction(AS_CLOSURE(value)->function);
@@ -151,16 +151,16 @@ void printObject(Value value) {
     printFunction(AS_FUNCTION(value));
     break;
   case OBJ_INSTANCE:
-    printf("%s instance", AS_INSTANCE(value)->klass->name->chars);
+    std::printf("%s instance", AS_INSTANCE(value)->klass->name->chars);
     break;
   case OBJ_NATIVE:
-    printf("<native fn>");
+    std::printf("<native fn>");
     break;
   case OBJ_STRING:
-    printf("%s", AS_CSTRING(value));
+    std::printf("%s", AS_CSTRING(value));
     break;
   case OBJ_UPVALUE:
-    printf("upvalue");
+    std::printf("upvalue");
     break;
   }
 }

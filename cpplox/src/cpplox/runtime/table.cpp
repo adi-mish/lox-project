@@ -18,18 +18,18 @@ void Table::clear() {
 
 Entry *Table::findEntry(Entry *entries, int capacity, ObjString *key) {
   uint32_t index = key->hash & (capacity - 1);
-  Entry *tombstone = NULL;
+  Entry *tombstone = nullptr;
 
   for (;;) {
     Entry *entry = &entries[index];
 
-    if (entry->key == NULL) {
+    if (entry->key == nullptr) {
       if (IS_NIL(entry->value)) {
 
-        return tombstone != NULL ? tombstone : entry;
+        return tombstone != nullptr ? tombstone : entry;
       } else {
 
-        if (tombstone == NULL)
+        if (tombstone == nullptr)
           tombstone = entry;
       }
     } else if (entry->key == key) {
@@ -51,7 +51,7 @@ bool Table::get(ObjString *key, Value *value) const {
     return false;
 
   const Entry *entry = findEntry(entries_.data(), capacity(), key);
-  if (entry->key == NULL)
+  if (entry->key == nullptr)
     return false;
 
   *value = entry->value;
@@ -59,16 +59,16 @@ bool Table::get(ObjString *key, Value *value) const {
 }
 Entry *Table::findSlot(ObjString *key) {
   if (entries_.empty())
-    return NULL;
+    return nullptr;
 
   return findEntry(entries_.data(), capacity(), key);
 }
 Entry *Table::getEntry(ObjString *key) {
   Entry *entry = findSlot(key);
-  if (entry == NULL)
-    return NULL;
-  if (entry->key == NULL)
-    return NULL;
+  if (entry == nullptr)
+    return nullptr;
+  if (entry->key == nullptr)
+    return nullptr;
   return entry;
 }
 
@@ -78,7 +78,7 @@ void Table::adjustCapacity(int capacity) {
   count_ = 0;
   for (Entry &oldEntry : entries_) {
     Entry *entry = &oldEntry;
-    if (entry->key == NULL)
+    if (entry->key == nullptr)
       continue;
 
     Entry *dest = findEntry(entries.data(), capacity, entry->key);
@@ -97,7 +97,7 @@ bool Table::set(ObjString *key, Value value) {
   }
 
   Entry *entry = findEntry(entries_.data(), capacity(), key);
-  bool isNewKey = entry->key == NULL;
+  bool isNewKey = entry->key == nullptr;
 
   if (isNewKey && IS_NIL(entry->value)) {
     count_++;
@@ -113,10 +113,10 @@ bool Table::remove(ObjString *key) {
     return false;
 
   Entry *entry = findEntry(entries_.data(), capacity(), key);
-  if (entry->key == NULL)
+  if (entry->key == nullptr)
     return false;
 
-  entry->key = NULL;
+  entry->key = nullptr;
   entry->value = BOOL_VAL(true);
   version_++;
   return true;
@@ -124,7 +124,7 @@ bool Table::remove(ObjString *key) {
 void Table::addAllFrom(const Table &from) {
   for (const Entry &oldEntry : from.entries_) {
     const Entry *entry = &oldEntry;
-    if (entry->key != NULL) {
+    if (entry->key != nullptr) {
       set(entry->key, entry->value);
     }
   }
@@ -132,17 +132,17 @@ void Table::addAllFrom(const Table &from) {
 ObjString *Table::findString(const char *chars, int length,
                              uint32_t hash) const {
   if (count_ == 0)
-    return NULL;
+    return nullptr;
 
   uint32_t index = hash & (capacity() - 1);
   for (;;) {
     const Entry *entry = &entries_[index];
-    if (entry->key == NULL) {
+    if (entry->key == nullptr) {
 
       if (IS_NIL(entry->value))
-        return NULL;
+        return nullptr;
     } else if (entry->key->length == length && entry->key->hash == hash &&
-               memcmp(entry->key->chars, chars, length) == 0) {
+               std::memcmp(entry->key->chars, chars, length) == 0) {
 
       return entry->key;
     }
@@ -153,7 +153,7 @@ ObjString *Table::findString(const char *chars, int length,
 void Table::removeWhite() {
   for (Entry &oldEntry : entries_) {
     Entry *entry = &oldEntry;
-    if (entry->key != NULL && !entry->key->obj.isMarked) {
+    if (entry->key != nullptr && !entry->key->obj.isMarked) {
       remove(entry->key);
     }
   }

@@ -1,5 +1,5 @@
-#include <stdio.h>
-#include <string.h>
+#include <cstdio>
+#include <cstring>
 
 #include "memory.h"
 #include "object.h"
@@ -20,11 +20,11 @@ void freeValueArray(ValueArray *array) {
 void printValue(Value value) {
 #ifdef NAN_BOXING
   if (IS_BOOL(value)) {
-    printf(AS_BOOL(value) ? "true" : "false");
+    std::printf(AS_BOOL(value) ? "true" : "false");
   } else if (IS_NIL(value)) {
-    printf("nil");
+    std::printf("nil");
   } else if (IS_NUMBER(value)) {
-    printf("%g", AS_NUMBER(value));
+    std::printf("%g", AS_NUMBER(value));
   } else if (IS_OBJ(value)) {
     printObject(value);
   }
@@ -32,19 +32,19 @@ void printValue(Value value) {
 
   switch (value.type) {
   case VAL_BOOL:
-    printf(AS_BOOL(value) ? "true" : "false");
+    std::printf(AS_BOOL(value) ? "true" : "false");
     break;
   case VAL_NIL:
-    printf("nil");
+    std::printf("nil");
     break;
   case VAL_NUMBER:
-    printf("%g", AS_NUMBER(value));
+    std::printf("%g", AS_NUMBER(value));
     break;
   case VAL_OBJ:
     printObject(value);
     break;
   case VAL_UNINITIALIZED:
-    printf("<uninitialized>");
+    std::printf("<uninitialized>");
     break;
   }
 #endif

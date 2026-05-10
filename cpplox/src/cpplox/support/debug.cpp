@@ -1,4 +1,4 @@
-#include <stdio.h>
+#include <cstdio>
 
 #include "debug.h"
 #include "object.h"
@@ -7,7 +7,7 @@
 namespace cpplox {
 
 void disassembleChunk(Chunk *chunk, const char *name) {
-  printf("== %s ==\n", name);
+  std::printf("== %s ==\n", name);
 
   for (int offset = 0; offset < chunk->size();) {
     offset = disassembleInstruction(chunk, offset);
@@ -15,48 +15,48 @@ void disassembleChunk(Chunk *chunk, const char *name) {
 }
 static int constantInstruction(const char *name, Chunk *chunk, int offset) {
   uint8_t constant = chunk->byteAt(offset + 1);
-  printf("%-16s %4d '", name, constant);
+  std::printf("%-16s %4d '", name, constant);
   printValue(chunk->constantAt(constant));
-  printf("'\n");
+  std::printf("'\n");
   return offset + 2;
 }
 static int shortConstantInstruction(const char *name, Chunk *chunk, int offset,
                                     uint8_t constant) {
-  printf("%-16s %4d '", name, constant);
+  std::printf("%-16s %4d '", name, constant);
   printValue(chunk->constantAt(constant));
-  printf("'\n");
+  std::printf("'\n");
   return offset + 1;
 }
 static int invokeInstruction(const char *name, Chunk *chunk, int offset) {
   uint8_t constant = chunk->byteAt(offset + 1);
   uint8_t argCount = chunk->byteAt(offset + 2);
-  printf("%-16s (%d args) %4d '", name, argCount, constant);
+  std::printf("%-16s (%d args) %4d '", name, argCount, constant);
   printValue(chunk->constantAt(constant));
-  printf("'\n");
+  std::printf("'\n");
   return offset + 3;
 }
 static int simpleInstruction(const char *name, int offset) {
-  printf("%s\n", name);
+  std::printf("%s\n", name);
   return offset + 1;
 }
 static int byteInstruction(const char *name, Chunk *chunk, int offset) {
   uint8_t slot = chunk->byteAt(offset + 1);
-  printf("%-16s %4d\n", name, slot);
+  std::printf("%-16s %4d\n", name, slot);
   return offset + 2;
 }
 static int jumpInstruction(const char *name, int sign, Chunk *chunk,
                            int offset) {
   uint16_t jump = (uint16_t)(chunk->byteAt(offset + 1) << 8);
   jump |= chunk->byteAt(offset + 2);
-  printf("%-16s %4d -> %d\n", name, offset, offset + 3 + sign * jump);
+  std::printf("%-16s %4d -> %d\n", name, offset, offset + 3 + sign * jump);
   return offset + 3;
 }
 int disassembleInstruction(Chunk *chunk, int offset) {
-  printf("%04d ", offset);
+  std::printf("%04d ", offset);
   if (offset > 0 && chunk->lineAt(offset) == chunk->lineAt(offset - 1)) {
-    printf("   | ");
+    std::printf("   | ");
   } else {
-    printf("%4d ", chunk->lineAt(offset));
+    std::printf("%4d ", chunk->lineAt(offset));
   }
 
   uint8_t instruction = chunk->byteAt(offset);
@@ -174,15 +174,15 @@ int disassembleInstruction(Chunk *chunk, int offset) {
   case OP_CLOSURE: {
     offset++;
     uint8_t constant = chunk->byteAt(offset++);
-    printf("%-16s %4d ", "OP_CLOSURE", constant);
+    std::printf("%-16s %4d ", "OP_CLOSURE", constant);
     printValue(chunk->constantAt(constant));
-    printf("\n");
+    std::printf("\n");
 
     ObjFunction *function = AS_FUNCTION(chunk->constantAt(constant));
     for (int j = 0; j < function->upvalueCount; j++) {
       int isLocal = chunk->byteAt(offset++);
       int index = chunk->byteAt(offset++);
-      printf("%04d      |                     %s %d\n", offset - 2,
+      std::printf("%04d      |                     %s %d\n", offset - 2,
              isLocal ? "local" : "upvalue", index);
     }
 
@@ -199,7 +199,7 @@ int disassembleInstruction(Chunk *chunk, int offset) {
   case OP_METHOD:
     return constantInstruction("OP_METHOD", chunk, offset);
   default:
-    printf("Unknown opcode %d\n", instruction);
+    std::printf("Unknown opcode %d\n", instruction);
     return offset + 1;
   }
 }

@@ -11,7 +11,7 @@ void *reallocate(void *pointer, size_t oldSize, size_t newSize);
 inline int growCapacity(int capacity) { return capacity < 8 ? 8 : capacity * 2; }
 
 template <typename T> T *allocate(int count = 1) {
-  return static_cast<T *>(reallocate(NULL, 0, sizeof(T) * count));
+  return static_cast<T *>(reallocate(nullptr, 0, sizeof(T) * count));
 }
 
 template <typename T> void release(T *pointer) {
