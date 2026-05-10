@@ -6,10 +6,14 @@
 #include "../frontend/Scanner.h"
 #include "../jit/EloxirJIT.h"
 #include "../jit/OptimisationPipeline.h"
+#include "../lowering/AstLowerer.h"
+#include "../ir/LoxIRVerifier.h"
+#include "../ir/LoxPassManager.h"
 #include "../runtime/RuntimeAPI.h"
 #include <fstream>
 #include <initializer_list>
 #include <iostream>
+#include <cstdlib>
 #include <llvm/IR/PassManager.h>
 #include <llvm/IR/Verifier.h>
 #include <llvm/Support/TargetSelect.h>
@@ -540,6 +544,20 @@ int runFile(const std::string &filename) {
   auto runtimeSyncedGlobals =
       GlobalSyncCollector(resolver.locals).collect(stmts);
   auto codeGenPlan = eloxir::CodeGenPlan::analyze(stmts);
+
+  if (eloxir::loxir::loxirEnvFlag("ELOXIR_PRINT_LOXIR") ||
+      std::getenv("ELOXIR_DUMP_LOXIR")) {
+    eloxir::loxir::AstLowerer lowerer(&resolver.locals);
+    auto loxModule = lowerer.lower("file_module", stmts);
+    auto verification = eloxir::loxir::verifyModule(loxModule);
+    if (!verification.ok) {
+      std::cerr << "LoxIR verification warnings:\n";
+      for (const auto &message : verification.errors) {
+        std::cerr << "  " << message << '\n';
+      }
+    }
+    eloxir::loxir::dumpModuleIfRequested(loxModule, "lowered");
+  }
 
   // Clear any previous runtime errors
   elx_clear_runtime_error();

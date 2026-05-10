@@ -165,6 +165,8 @@ const char *toString(InstructionKind kind) {
     return "load.upvalue";
   case InstructionKind::StoreUpvalue:
     return "store.upvalue";
+  case InstructionKind::Phi:
+    return "phi";
   case InstructionKind::Binary:
     return "binary";
   case InstructionKind::Unary:
@@ -173,6 +175,8 @@ const char *toString(InstructionKind kind) {
     return "is.truthy";
   case InstructionKind::Print:
     return "print";
+  case InstructionKind::DefineFunction:
+    return "function";
   case InstructionKind::Call:
     return "call";
   case InstructionKind::GetProperty:

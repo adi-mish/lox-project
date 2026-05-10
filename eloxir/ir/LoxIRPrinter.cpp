@@ -44,6 +44,7 @@ void printInstruction(std::ostream &out, const Instruction &instruction) {
   case InstructionKind::StoreUpvalue:
   case InstructionKind::GetProperty:
   case InstructionKind::SetProperty:
+  case InstructionKind::DefineFunction:
   case InstructionKind::DefineClass:
   case InstructionKind::DefineMethod:
   case InstructionKind::Call:
