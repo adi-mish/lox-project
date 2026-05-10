@@ -1278,13 +1278,13 @@ bool CodeGenVisitor::emitPlannedClassCall(Call *e) {
   }
 
   const std::string &className = calleeVar->name.getLexeme();
-  const PlannedClass *planned =
-      codeGenPlan->findStableTrivialClass(className);
+  const PlannedClass *planned = codeGenPlan->findStableClass(className);
   if (!planned) {
     return false;
   }
 
-  if (planned->initializerArity != 0 || !e->arguments.empty()) {
+  if (planned->hasSuperclass ||
+      planned->initializerArity != static_cast<int>(e->arguments.size())) {
     return false;
   }
 
@@ -1305,13 +1305,44 @@ bool CodeGenVisitor::emitPlannedClassCall(Call *e) {
     return false;
   }
 
-  llvm::Value *classValue =
-      builder.CreateLoad(llvmValueTy(), slot, className + "_class");
-  for (auto &arg : e->arguments) {
-    arg->accept(this);
+  llvm::Function *initializer = nullptr;
+  if (!planned->trivialInitializer) {
+    auto initIt = stableInitializers.find(className);
+    if (initIt == stableInitializers.end()) {
+      return false;
+    }
+    initializer = initIt->second;
+    if (!initializer ||
+        initializer->arg_size() !=
+            static_cast<unsigned>(e->arguments.size() + 1)) {
+      return false;
+    }
   }
 
-  value = builder.CreateCall(instantiateFn, {classValue}, "direct_class");
+  llvm::Value *classValue =
+      builder.CreateLoad(llvmValueTy(), slot, className + "_class");
+
+  std::vector<llvm::Value *> args;
+  args.reserve(e->arguments.size());
+  for (auto &arg : e->arguments) {
+    arg->accept(this);
+    args.push_back(value);
+  }
+
+  llvm::Value *instance =
+      builder.CreateCall(instantiateFn, {classValue}, "direct_class");
+  if (!initializer) {
+    value = instance;
+    return true;
+  }
+
+  std::vector<llvm::Value *> callArgs;
+  callArgs.reserve(args.size() + 1);
+  callArgs.push_back(instance);
+  callArgs.insert(callArgs.end(), args.begin(), args.end());
+  llvm::Value *initResult =
+      builder.CreateCall(initializer, callArgs, "direct_init");
+  checkRuntimeError(initResult);
   return true;
 }
 
@@ -3535,7 +3566,7 @@ void CodeGenVisitor::visitClassStmt(Class *s) {
 
   if (isGlobal) {
     globalVariables.insert(className);
-    if (codeGenPlan && codeGenPlan->findStableTrivialClass(className)) {
+    if (codeGenPlan && codeGenPlan->findStableClass(className)) {
       stableClassSlots[className] = classSlot;
     }
   }
@@ -3607,6 +3638,13 @@ void CodeGenVisitor::visitClassStmt(Class *s) {
     function_map_key_override = uniqueMapKey;
 
     declareFunctionSignature(method.get());
+    if (codeGenPlan && codeGenPlan->findStableClass(className) &&
+        methodName == "init") {
+      auto initIt = functions.find(uniqueMapKey);
+      if (initIt != functions.end()) {
+        stableInitializers[className] = initIt->second;
+      }
+    }
 
     llvm::Value *methodValue = nullptr;
     try {

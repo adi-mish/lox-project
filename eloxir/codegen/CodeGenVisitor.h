@@ -110,6 +110,7 @@ class CodeGenVisitor : public ExprVisitor, public StmtVisitor {
   const CodeGenPlan *codeGenPlan = nullptr;
   std::unordered_map<std::string, llvm::Value *> stableClassSlots;
   std::unordered_map<std::string, llvm::Value *> stableReceiverSlots;
+  std::unordered_map<std::string, llvm::Function *> stableInitializers;
 
 public:
   CodeGenVisitor(llvm::Module &m);
