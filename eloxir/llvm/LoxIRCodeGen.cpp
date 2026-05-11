@@ -5,6 +5,7 @@
 #include "../runtime/Value.h"
 
 #include <cstdint>
+#include <cstddef>
 #include <cstring>
 #include <sstream>
 #include <unordered_map>
@@ -23,6 +24,7 @@ namespace eloxir::loxir {
 namespace {
 
 static constexpr uint64_t kQnan = 0x7ff8000000000000ULL;
+static constexpr int kPropertyCallMethod = 2;
 
 uint64_t numberBits(double value) {
   uint64_t bits = 0;
@@ -79,7 +81,9 @@ private:
   std::unordered_map<std::string, llvm::GlobalVariable *> internedStrings_;
 
   llvm::IntegerType *valueTy() { return llvm::Type::getInt64Ty(ctx_); }
+  llvm::IntegerType *i8Ty() { return llvm::Type::getInt8Ty(ctx_); }
   llvm::IntegerType *i32Ty() { return llvm::Type::getInt32Ty(ctx_); }
+  llvm::IntegerType *i64Ty() { return llvm::Type::getInt64Ty(ctx_); }
   llvm::PointerType *i8PtrTy() {
     return llvm::PointerType::get(llvm::Type::getInt8Ty(ctx_), 0);
   }
@@ -282,6 +286,121 @@ private:
 
   llvm::Value *nullValuePtr() {
     return llvm::ConstantPointerNull::get(valuePtrTy());
+  }
+
+  llvm::Value *nullI8Ptr() {
+    return llvm::ConstantPointerNull::get(i8PtrTy());
+  }
+
+  llvm::Value *constantI64(uint64_t value) {
+    return llvm::ConstantInt::get(i64Ty(), value);
+  }
+
+  llvm::Value *isObjectValue(llvm::Value *value) {
+    auto *isTagged = builder_.CreateICmpEQ(
+        builder_.CreateAnd(value, constantI64(0xfff8000000000000ULL)),
+        constantI64(kQnan), "is.tagged");
+    auto *tag = builder_.CreateAnd(
+        builder_.CreateLShr(value, constantI64(48)), constantI64(0x7),
+        "value.tag");
+    auto *isObject =
+        builder_.CreateICmpEQ(tag,
+                              constantI64(static_cast<uint64_t>(Tag::OBJ)),
+                              "is.object.tag");
+    return builder_.CreateAnd(isTagged, isObject, "is.object");
+  }
+
+  llvm::Value *objectPointer(llvm::Value *value,
+                             const std::string &name) {
+    auto *raw =
+        builder_.CreateAnd(value, constantI64(0x0000ffffffffffffULL),
+                           name + ".raw");
+    return builder_.CreateIntToPtr(raw, i8PtrTy(), name);
+  }
+
+  llvm::Value *fieldAddress(llvm::Value *base, size_t offset,
+                            const std::string &name) {
+    return builder_.CreateGEP(i8Ty(), base, constantI64(offset), name);
+  }
+
+  llvm::Value *loadI32AtOffset(llvm::Value *base, size_t offset,
+                               const std::string &name) {
+    return builder_.CreateLoad(i32Ty(), fieldAddress(base, offset, name + ".addr"),
+                               name);
+  }
+
+  llvm::Value *loadI64AtOffset(llvm::Value *base, size_t offset,
+                               const std::string &name) {
+    return builder_.CreateLoad(i64Ty(), fieldAddress(base, offset, name + ".addr"),
+                               name);
+  }
+
+  llvm::Value *loadPointerAtOffset(llvm::Value *base, size_t offset,
+                                   const std::string &name) {
+    return builder_.CreateLoad(i8PtrTy(),
+                               fieldAddress(base, offset, name + ".addr"),
+                               name);
+  }
+
+  llvm::Value *cacheEntryShape(llvm::Value *cache, uint32_t index) {
+    auto *cacheTy = getOrCreatePropertyCacheIRType(ctx_);
+    auto *entryPtr = builder_.CreateStructGEP(
+        cacheTy, cache, 1, "property.cache.entries");
+    auto *entry = builder_.CreateGEP(
+        llvm::ArrayType::get(getOrCreatePropertyCacheEntryIRType(ctx_),
+                             eloxir::PROPERTY_CACHE_MAX_SIZE),
+        entryPtr, {constantI64(0), constantI64(index)},
+        "property.cache.entry");
+    return builder_.CreateLoad(
+        i8PtrTy(),
+        builder_.CreateStructGEP(getOrCreatePropertyCacheEntryIRType(ctx_),
+                                 entry, 0, "property.cache.shape.addr"),
+        "property.cache.shape");
+  }
+
+  llvm::Value *cacheEntrySlot(llvm::Value *cache, uint32_t index) {
+    auto *cacheTy = getOrCreatePropertyCacheIRType(ctx_);
+    auto *entryPtr = builder_.CreateStructGEP(
+        cacheTy, cache, 1, "property.cache.entries");
+    auto *entry = builder_.CreateGEP(
+        llvm::ArrayType::get(getOrCreatePropertyCacheEntryIRType(ctx_),
+                             eloxir::PROPERTY_CACHE_MAX_SIZE),
+        entryPtr, {constantI64(0), constantI64(index)},
+        "property.cache.entry");
+    auto *slot32 = builder_.CreateLoad(
+        i32Ty(),
+        builder_.CreateStructGEP(getOrCreatePropertyCacheEntryIRType(ctx_),
+                                 entry, 1, "property.cache.slot.addr"),
+        "property.cache.slot");
+    return builder_.CreateZExt(slot32, i64Ty(), "property.cache.slot64");
+  }
+
+  llvm::Value *cacheHasEntry(llvm::Value *cache, uint32_t index) {
+    auto *cacheTy = getOrCreatePropertyCacheIRType(ctx_);
+    auto *size = builder_.CreateLoad(
+        i32Ty(),
+        builder_.CreateStructGEP(cacheTy, cache, 0, "property.cache.size.addr"),
+        "property.cache.size");
+    return builder_.CreateICmpUGT(
+        size, llvm::ConstantInt::get(i32Ty(), index), "property.cache.has");
+  }
+
+  llvm::Value *loadCallCacheI64(llvm::Value *cache, unsigned fieldIndex,
+                                const std::string &name) {
+    return builder_.CreateLoad(
+        i64Ty(),
+        builder_.CreateStructGEP(getOrCreateCallInlineCacheIRType(ctx_), cache,
+                                 fieldIndex, name + ".addr"),
+        name);
+  }
+
+  llvm::Value *loadCallCacheI32(llvm::Value *cache, unsigned fieldIndex,
+                                const std::string &name) {
+    return builder_.CreateLoad(
+        i32Ty(),
+        builder_.CreateStructGEP(getOrCreateCallInlineCacheIRType(ctx_), cache,
+                                 fieldIndex, name + ".addr"),
+        name);
   }
 
   void guardRuntimeError() {
@@ -913,14 +1032,93 @@ private:
     auto *targetSlot = createStackSlot("property.call.target");
     builder_.CreateStore(nilValue(), targetSlot);
     auto *cache = createCallCache(instruction);
-    auto *kind = builder_.CreateCall(
+    auto *receiver = lookup(instruction.operands[0]);
+
+    auto *objectBlock = llvm::BasicBlock::Create(
+        ctx_, "property.call.fast.object", function_);
+    auto *instanceBlock = llvm::BasicBlock::Create(
+        ctx_, "property.call.fast.instance", function_);
+    auto *hitBlock =
+        llvm::BasicBlock::Create(ctx_, "property.call.fast.hit", function_);
+    auto *fallbackBlock =
+        llvm::BasicBlock::Create(ctx_, "property.call.prepare", function_);
+    auto *doneBlock =
+        llvm::BasicBlock::Create(ctx_, "property.call.ready", function_);
+
+    builder_.CreateCondBr(isObjectValue(receiver), objectBlock, fallbackBlock);
+
+    builder_.SetInsertPoint(objectBlock);
+    auto *objectPtr = objectPointer(receiver, "property.call.object");
+    auto *objectType = loadI32AtOffset(objectPtr, offsetof(Obj, type),
+                                       "property.call.object.type");
+    auto *isInstance = builder_.CreateICmpEQ(
+        objectType,
+        llvm::ConstantInt::get(i32Ty(), static_cast<int>(ObjType::INSTANCE)),
+        "property.call.is.instance");
+    builder_.CreateCondBr(isInstance, instanceBlock, fallbackBlock);
+
+    builder_.SetInsertPoint(instanceBlock);
+    auto *shape = loadPointerAtOffset(objectPtr, offsetof(ObjInstance, shape),
+                                      "property.call.shape");
+    auto *klass = loadPointerAtOffset(objectPtr, offsetof(ObjInstance, klass),
+                                      "property.call.class");
+    auto *shapeBits =
+        builder_.CreatePtrToInt(shape, i64Ty(), "property.call.shape.bits");
+    auto *klassBits =
+        builder_.CreatePtrToInt(klass, i64Ty(), "property.call.class.bits");
+    auto *cachedShape =
+        loadCallCacheI64(cache, 0, "property.call.cached.shape");
+    auto *cachedMethod =
+        loadCallCacheI64(cache, 1, "property.call.cached.method");
+    auto *cachedClass =
+        loadCallCacheI64(cache, 2, "property.call.cached.class");
+    auto *cachedKind =
+        loadCallCacheI32(cache, 5, "property.call.cached.kind");
+    auto *kindMatches = builder_.CreateICmpEQ(
+        cachedKind,
+        llvm::ConstantInt::get(
+            i32Ty(), static_cast<int>(CallInlineCacheKind::BOUND_METHOD)),
+        "property.call.kind.matches");
+    auto *shapeMatches =
+        builder_.CreateICmpEQ(cachedShape, shapeBits,
+                              "property.call.shape.matches");
+    auto *classMatches =
+        builder_.CreateICmpEQ(cachedClass, klassBits,
+                              "property.call.class.matches");
+    auto *hasMethod =
+        builder_.CreateICmpNE(cachedMethod, constantI64(0),
+                              "property.call.has.method");
+    auto *cacheHit =
+        builder_.CreateAnd(kindMatches, shapeMatches, "property.call.hit.0");
+    cacheHit = builder_.CreateAnd(cacheHit, classMatches,
+                                  "property.call.hit.1");
+    cacheHit = builder_.CreateAnd(cacheHit, hasMethod, "property.call.hit");
+    builder_.CreateCondBr(cacheHit, hitBlock, fallbackBlock);
+
+    builder_.SetInsertPoint(hitBlock);
+    builder_.CreateBr(doneBlock);
+    hitBlock = builder_.GetInsertBlock();
+
+    builder_.SetInsertPoint(fallbackBlock);
+    auto *slowKind = builder_.CreateCall(
         prepare,
-        {lookup(instruction.operands[0]), name,
-         builder_.CreatePointerCast(cache, callCachePtrTy()), targetSlot},
-        "property.call.kind");
+        {receiver, name, builder_.CreatePointerCast(cache, callCachePtrTy()),
+         targetSlot},
+        "property.call.kind.slow");
     guardRuntimeError();
-    auto *target =
-        builder_.CreateLoad(valueTy(), targetSlot, "property.call.target");
+    auto *slowTarget =
+        builder_.CreateLoad(valueTy(), targetSlot, "property.call.target.slow");
+    builder_.CreateBr(doneBlock);
+    fallbackBlock = builder_.GetInsertBlock();
+
+    builder_.SetInsertPoint(doneBlock);
+    auto *kind = builder_.CreatePHI(i32Ty(), 2, "property.call.kind");
+    kind->addIncoming(llvm::ConstantInt::get(i32Ty(), kPropertyCallMethod),
+                      hitBlock);
+    kind->addIncoming(slowKind, fallbackBlock);
+    auto *target = builder_.CreatePHI(valueTy(), 2, "property.call.target");
+    target->addIncoming(cachedMethod, hitBlock);
+    target->addIncoming(slowTarget, fallbackBlock);
     bind(instruction, target, instruction.resultType);
     bindValue(*instruction.auxResult, kind);
     return std::nullopt;
@@ -963,13 +1161,92 @@ private:
     }
     auto *name = emitInternedName(instruction.symbol, "property.name");
     auto *cache = createPropertyCache(instruction);
-    auto *result = builder_.CreateCall(
+
+    auto *receiver = lookup(instruction.operands[0]);
+    auto *objectBlock =
+        llvm::BasicBlock::Create(ctx_, "property.fast.object", function_);
+    auto *instanceBlock =
+        llvm::BasicBlock::Create(ctx_, "property.fast.instance", function_);
+    auto *presentBlock =
+        llvm::BasicBlock::Create(ctx_, "property.fast.present", function_);
+    auto *hitBlock =
+        llvm::BasicBlock::Create(ctx_, "property.fast.hit", function_);
+    auto *fallbackBlock =
+        llvm::BasicBlock::Create(ctx_, "property.slow", function_);
+    auto *doneBlock =
+        llvm::BasicBlock::Create(ctx_, "property.done", function_);
+
+    builder_.CreateCondBr(isObjectValue(receiver), objectBlock, fallbackBlock);
+
+    builder_.SetInsertPoint(objectBlock);
+    auto *objectPtr = objectPointer(receiver, "property.object");
+    auto *objectType = loadI32AtOffset(objectPtr, offsetof(Obj, type),
+                                       "property.object.type");
+    auto *isInstance = builder_.CreateICmpEQ(
+        objectType,
+        llvm::ConstantInt::get(i32Ty(), static_cast<int>(ObjType::INSTANCE)),
+        "property.is.instance");
+    builder_.CreateCondBr(isInstance, instanceBlock, fallbackBlock);
+
+    builder_.SetInsertPoint(instanceBlock);
+    auto *shape = loadPointerAtOffset(objectPtr, offsetof(ObjInstance, shape),
+                                      "property.shape");
+    auto *values = loadPointerAtOffset(
+        objectPtr, offsetof(ObjInstance, fieldValues), "property.values");
+    auto *presence = loadPointerAtOffset(
+        objectPtr, offsetof(ObjInstance, fieldInitialized),
+        "property.presence");
+    auto *capacity = loadI64AtOffset(
+        objectPtr, offsetof(ObjInstance, fieldCapacity), "property.capacity");
+    auto *slot = cacheEntrySlot(cache, 0);
+    auto *hasEntry = cacheHasEntry(cache, 0);
+    auto *shapeMatches =
+        builder_.CreateICmpEQ(cacheEntryShape(cache, 0), shape,
+                              "property.shape.matches");
+    auto *slotInBounds =
+        builder_.CreateICmpULT(slot, capacity, "property.slot.in.bounds");
+    auto *hasStorage = builder_.CreateAnd(
+        builder_.CreateICmpNE(values, nullI8Ptr(), "property.values.nonnull"),
+        builder_.CreateICmpNE(presence, nullI8Ptr(),
+                              "property.presence.nonnull"),
+        "property.has.storage");
+    auto *cacheHit =
+        builder_.CreateAnd(hasEntry, shapeMatches, "property.cache.shape.hit");
+    cacheHit = builder_.CreateAnd(cacheHit, slotInBounds,
+                                  "property.cache.bounds.hit");
+    cacheHit = builder_.CreateAnd(cacheHit, hasStorage,
+                                  "property.cache.storage.hit");
+    builder_.CreateCondBr(cacheHit, presentBlock, fallbackBlock);
+
+    builder_.SetInsertPoint(presentBlock);
+    auto *presentSlot =
+        builder_.CreateGEP(i8Ty(), presence, slot, "property.present.slot");
+    auto *present = builder_.CreateICmpNE(
+        builder_.CreateLoad(i8Ty(), presentSlot, "property.present"),
+        llvm::ConstantInt::get(i8Ty(), 0), "property.is.present");
+    builder_.CreateCondBr(present, hitBlock, fallbackBlock);
+
+    builder_.SetInsertPoint(hitBlock);
+    auto *fieldSlot =
+        builder_.CreateGEP(valueTy(), values, slot, "property.value.slot");
+    auto *fastValue = builder_.CreateLoad(valueTy(), fieldSlot, "property.fast");
+    builder_.CreateBr(doneBlock);
+    hitBlock = builder_.GetInsertBlock();
+
+    builder_.SetInsertPoint(fallbackBlock);
+    auto *slowValue = builder_.CreateCall(
         get,
-        {lookup(instruction.operands[0]), name,
-         builder_.CreatePointerCast(cache, propertyCachePtrTy()),
+        {receiver, name, builder_.CreatePointerCast(cache, propertyCachePtrTy()),
          constantI32(static_cast<int>(eloxir::PROPERTY_CACHE_MAX_SIZE))},
-        "property");
+        "property.slow");
     guardRuntimeError();
+    builder_.CreateBr(doneBlock);
+    fallbackBlock = builder_.GetInsertBlock();
+
+    builder_.SetInsertPoint(doneBlock);
+    auto *result = builder_.CreatePHI(valueTy(), 2, "property");
+    result->addIncoming(fastValue, hitBlock);
+    result->addIncoming(slowValue, fallbackBlock);
     bind(instruction, result, instruction.resultType);
     return std::nullopt;
   }

@@ -454,14 +454,22 @@ bool setResultType(Instruction &instruction, LoxType type) {
   return true;
 }
 
-bool mergeGlobalType(std::unordered_map<std::string, LoxType> &globalTypes,
-                     const std::string &name, LoxType type) {
-  if (type == LoxType::Unknown) {
+bool setParameterType(Parameter &parameter, LoxType type) {
+  if (parameter.type == type) {
     return false;
   }
+  parameter.type = type;
+  return true;
+}
+
+bool mergeGlobalType(std::unordered_map<std::string, LoxType> &globalTypes,
+                     const std::string &name, LoxType type) {
   auto [it, inserted] = globalTypes.emplace(name, type);
-  if (inserted || it->second == type) {
-    return inserted;
+  if (inserted) {
+    return true;
+  }
+  if (it->second == type) {
+    return false;
   }
   if (it->second != LoxType::Unknown) {
     it->second = LoxType::Unknown;
@@ -470,11 +478,188 @@ bool mergeGlobalType(std::unordered_map<std::string, LoxType> &globalTypes,
   return false;
 }
 
+bool mergeCandidateType(std::optional<LoxType> &target, LoxType type) {
+  if (!target) {
+    target = type;
+    return true;
+  }
+  if (*target == type) {
+    return false;
+  }
+  if (*target != LoxType::Unknown) {
+    *target = LoxType::Unknown;
+    return true;
+  }
+  return false;
+}
+
+LoxType candidateOrUnknown(const std::optional<LoxType> &candidate) {
+  return candidate ? *candidate : LoxType::Unknown;
+}
+
+std::unordered_map<std::string, LoxType>
+collectModuleGlobalTypes(const LoxModule &module) {
+  std::unordered_map<std::string, LoxType> globalTypes;
+  for (const auto &function : module.functions()) {
+    std::unordered_map<uint32_t, LoxType> valueTypes;
+    for (const auto &parameter : function.parameters()) {
+      valueTypes[parameter.value.id] = parameter.type;
+    }
+    for (const auto &block : function.blocks()) {
+      for (const auto &instruction : block.instructions()) {
+        LoxType instructionType = instruction.resultType;
+        switch (instruction.kind) {
+        case InstructionKind::ConstantNil:
+          instructionType = LoxType::Nil;
+          break;
+        case InstructionKind::ConstantBool:
+          instructionType = LoxType::Bool;
+          break;
+        case InstructionKind::ConstantNumber:
+          instructionType = LoxType::Number;
+          break;
+        case InstructionKind::ConstantString:
+          instructionType = LoxType::String;
+          break;
+        case InstructionKind::DefineFunction:
+          instructionType = instruction.resultType == LoxType::Closure
+                                ? LoxType::Closure
+                                : LoxType::Function;
+          break;
+        case InstructionKind::DefineClass:
+          instructionType = LoxType::Class;
+          break;
+        default:
+          break;
+        }
+        if (instruction.result) {
+          valueTypes[instruction.result->id] = instructionType;
+        }
+        if (instruction.kind == InstructionKind::StoreGlobal &&
+            instruction.operands.size() == 1 && !instruction.symbol.empty()) {
+          mergeGlobalType(globalTypes, instruction.symbol,
+                          valueType(instruction.operands[0], valueTypes));
+        }
+      }
+    }
+  }
+  return globalTypes;
+}
+
+struct StableFunctionTarget {
+  std::string functionName;
+  int arity = 0;
+};
+
+std::unordered_map<std::string, StableFunctionTarget>
+collectStableTopLevelFunctions(const LoxModule &module) {
+  if (module.functions().empty()) {
+    return {};
+  }
+
+  const LoxFunction &main = module.functions().front();
+  std::unordered_map<uint32_t, std::string> definedFunctionByValue;
+  std::unordered_map<std::string, std::string> globalToFunction;
+  std::unordered_map<std::string, uint32_t> declarationCounts;
+  std::unordered_set<std::string> assignedGlobals;
+
+  for (const auto &block : main.blocks()) {
+    for (const auto &instruction : block.instructions()) {
+      if (instruction.kind == InstructionKind::DefineFunction &&
+          instruction.result && !instruction.symbol.empty()) {
+        definedFunctionByValue[instruction.result->id] = instruction.symbol;
+        continue;
+      }
+      if (instruction.kind != InstructionKind::StoreGlobal ||
+          instruction.symbol.empty()) {
+        continue;
+      }
+      if (!instruction.declaresSymbol) {
+        assignedGlobals.insert(instruction.symbol);
+        continue;
+      }
+      ++declarationCounts[instruction.symbol];
+      if (instruction.operands.size() == 1) {
+        auto defIt = definedFunctionByValue.find(instruction.operands[0].id);
+        if (defIt != definedFunctionByValue.end()) {
+          globalToFunction[instruction.symbol] = defIt->second;
+        }
+      }
+    }
+  }
+
+  for (const auto &function : module.functions()) {
+    for (const auto &block : function.blocks()) {
+      for (const auto &instruction : block.instructions()) {
+        if (instruction.kind == InstructionKind::StoreGlobal &&
+            !instruction.declaresSymbol && !instruction.symbol.empty()) {
+          assignedGlobals.insert(instruction.symbol);
+        }
+      }
+    }
+  }
+
+  std::unordered_map<std::string, StableFunctionTarget> stableFunctions;
+  for (const auto &[globalName, functionName] : globalToFunction) {
+    if (assignedGlobals.find(globalName) != assignedGlobals.end()) {
+      continue;
+    }
+    if (declarationCounts[globalName] != 1) {
+      continue;
+    }
+    const LoxFunction *target = module.findFunction(functionName);
+    if (!target || !target->upvalues().empty()) {
+      continue;
+    }
+    stableFunctions.emplace(globalName,
+                            StableFunctionTarget{functionName,
+                                                 target->arity()});
+  }
+  return stableFunctions;
+}
+
+std::unordered_set<std::string>
+collectEscapingStableFunctions(
+    const LoxModule &module,
+    const std::unordered_map<std::string, StableFunctionTarget>
+        &stableFunctions) {
+  std::unordered_set<std::string> escaping;
+  if (stableFunctions.empty()) {
+    return escaping;
+  }
+
+  for (const auto &function : module.functions()) {
+    for (const auto &block : function.blocks()) {
+      for (const auto &instruction : block.instructions()) {
+        if (instruction.kind != InstructionKind::LoadGlobal ||
+            instruction.symbol.empty()) {
+          continue;
+        }
+        auto stableIt = stableFunctions.find(instruction.symbol);
+        if (stableIt != stableFunctions.end()) {
+          escaping.insert(stableIt->second.functionName);
+        }
+      }
+    }
+  }
+  return escaping;
+}
+
+std::unordered_map<std::string, LoxType>
+initialFunctionReturnTypes(const LoxModule &module) {
+  std::unordered_map<std::string, LoxType> returnTypes;
+  for (const auto &function : module.functions()) {
+    returnTypes.emplace(function.name(), LoxType::Unknown);
+  }
+  return returnTypes;
+}
+
 LoxType inferResultType(
     const Instruction &instruction,
     const std::unordered_map<uint32_t, LoxType> &valueTypes,
     const std::unordered_map<std::string, LoxType> &globalTypes,
-    const std::unordered_map<std::string, LoxType> &localTypes) {
+    const std::unordered_map<std::string, LoxType> &localTypes,
+    const std::unordered_map<std::string, LoxType> &functionReturnTypes) {
   switch (instruction.kind) {
   case InstructionKind::ConstantNil:
     return LoxType::Nil;
@@ -531,6 +716,22 @@ LoxType inferResultType(
     return LoxType::Unknown;
   case InstructionKind::IsTruthy:
     return LoxType::Bool;
+  case InstructionKind::DefineFunction:
+    return instruction.resultType == LoxType::Closure ? LoxType::Closure
+                                                      : LoxType::Function;
+  case InstructionKind::DefineClass:
+    return LoxType::Class;
+  case InstructionKind::Call:
+    if (instruction.operands.size() == 1 &&
+        valueType(instruction.operands[0], valueTypes) == LoxType::Class) {
+      return LoxType::Instance;
+    }
+    return instruction.resultType;
+  case InstructionKind::DirectCall: {
+    auto it = functionReturnTypes.find(instruction.symbol);
+    return it == functionReturnTypes.end() ? instruction.resultType
+                                           : it->second;
+  }
   default:
     return instruction.resultType;
   }
@@ -574,43 +775,163 @@ public:
 
   bool run(LoxModule &module) override {
     bool changed = false;
-    for (auto &function : module.functions()) {
-      std::unordered_map<std::string, LoxType> globalTypes;
-      std::unordered_map<std::string, LoxType> localTypes;
-      bool functionChanged = false;
-      do {
-        functionChanged = false;
+    std::unordered_map<std::string, LoxType> functionReturnTypes =
+        initialFunctionReturnTypes(module);
+
+    bool moduleChanged = false;
+    do {
+      moduleChanged = false;
+      auto moduleGlobalTypes = collectModuleGlobalTypes(module);
+      auto stableFunctions = collectStableTopLevelFunctions(module);
+      auto escapingFunctions =
+          collectEscapingStableFunctions(module, stableFunctions);
+      std::unordered_set<std::string> specializableFunctions;
+      for (const auto &entry : stableFunctions) {
+        const auto &target = entry.second;
+        if (escapingFunctions.find(target.functionName) ==
+            escapingFunctions.end()) {
+          specializableFunctions.insert(target.functionName);
+        }
+      }
+
+      std::unordered_map<std::string, std::vector<std::optional<LoxType>>>
+          parameterCandidates;
+      std::unordered_map<std::string, std::vector<bool>> unknownArguments;
+      std::unordered_map<std::string, std::optional<LoxType>>
+          knownReturnCandidates;
+      std::unordered_set<std::string> unknownReturnFunctions;
+      for (const auto &function : module.functions()) {
+        parameterCandidates[function.name()].resize(
+            function.parameters().size());
+        unknownArguments[function.name()].resize(function.parameters().size());
+      }
+
+      for (auto &function : module.functions()) {
+        std::unordered_map<std::string, LoxType> globalTypes =
+            moduleGlobalTypes;
+        std::unordered_map<std::string, LoxType> localTypes;
+        for (const auto &parameter : function.parameters()) {
+          localTypes[parameter.name] = parameter.type;
+        }
+        bool functionChanged = false;
+        do {
+          functionChanged = false;
+          std::unordered_map<uint32_t, LoxType> valueTypes;
+          for (const auto &parameter : function.parameters()) {
+            valueTypes[parameter.value.id] = parameter.type;
+          }
+
+          for (auto &block : function.blocks()) {
+            for (auto &instruction : block.instructions()) {
+              LoxType inferred = inferResultType(
+                  instruction, valueTypes, globalTypes, localTypes,
+                  functionReturnTypes);
+              functionChanged |= setResultType(instruction, inferred);
+              if (instruction.result) {
+                valueTypes[instruction.result->id] = instruction.resultType;
+              }
+              if (instruction.kind == InstructionKind::StoreLocal &&
+                  instruction.operands.size() == 1) {
+                functionChanged |= mergeGlobalType(
+                    localTypes, instruction.symbol,
+                    valueType(instruction.operands[0], valueTypes));
+              }
+              if (instruction.kind == InstructionKind::StoreGlobal &&
+                  instruction.operands.size() == 1) {
+                functionChanged |= mergeGlobalType(
+                    globalTypes, instruction.symbol,
+                    valueType(instruction.operands[0], valueTypes));
+              }
+            }
+          }
+          changed |= functionChanged;
+        } while (functionChanged);
+
         std::unordered_map<uint32_t, LoxType> valueTypes;
         for (const auto &parameter : function.parameters()) {
           valueTypes[parameter.value.id] = parameter.type;
         }
 
-        for (auto &block : function.blocks()) {
-          for (auto &instruction : block.instructions()) {
-            LoxType inferred =
-                inferResultType(instruction, valueTypes, globalTypes,
-                                localTypes);
-            functionChanged |= setResultType(instruction, inferred);
+        for (const auto &block : function.blocks()) {
+          for (const auto &instruction : block.instructions()) {
             if (instruction.result) {
               valueTypes[instruction.result->id] = instruction.resultType;
             }
-            if (instruction.kind == InstructionKind::StoreLocal &&
+            if (instruction.kind == InstructionKind::Return &&
                 instruction.operands.size() == 1) {
-              functionChanged |= mergeGlobalType(
-                  localTypes, instruction.symbol,
-                  valueType(instruction.operands[0], valueTypes));
+              LoxType returnType =
+                  valueType(instruction.operands[0], valueTypes);
+              if (returnType == LoxType::Unknown) {
+                unknownReturnFunctions.insert(function.name());
+              } else {
+                mergeCandidateType(knownReturnCandidates[function.name()],
+                                   returnType);
+              }
             }
-            if (instruction.kind == InstructionKind::StoreGlobal &&
-                instruction.operands.size() == 1) {
-              functionChanged |= mergeGlobalType(
-                  globalTypes, instruction.symbol,
-                  valueType(instruction.operands[0], valueTypes));
+            if (instruction.kind != InstructionKind::DirectCall ||
+                instruction.arguments.size() == 0 ||
+                specializableFunctions.find(instruction.symbol) ==
+                    specializableFunctions.end()) {
+              continue;
+            }
+            auto &candidates = parameterCandidates[instruction.symbol];
+            auto &unknowns = unknownArguments[instruction.symbol];
+            const size_t count =
+                std::min(candidates.size(), instruction.arguments.size());
+            for (size_t index = 0; index < count; ++index) {
+              LoxType argumentType =
+                  valueType(instruction.arguments[index], valueTypes);
+              if (argumentType == LoxType::Unknown) {
+                if (function.name() != instruction.symbol) {
+                  unknowns[index] = true;
+                }
+                continue;
+              }
+              mergeCandidateType(candidates[index], argumentType);
             }
           }
         }
-        changed |= functionChanged;
-      } while (functionChanged);
-    }
+      }
+
+      for (auto &function : module.functions()) {
+        LoxType knownReturn =
+            candidateOrUnknown(knownReturnCandidates[function.name()]);
+        const bool hasUnknownReturn =
+            unknownReturnFunctions.find(function.name()) !=
+            unknownReturnFunctions.end();
+        auto returnIt = functionReturnTypes.find(function.name());
+        const bool canSeedRecursiveReturn =
+            returnIt != functionReturnTypes.end() &&
+            returnIt->second == LoxType::Unknown &&
+            knownReturn != LoxType::Unknown &&
+            specializableFunctions.find(function.name()) !=
+                specializableFunctions.end();
+        LoxType inferredReturn =
+            hasUnknownReturn && !canSeedRecursiveReturn ? LoxType::Unknown
+                                                        : knownReturn;
+        if (returnIt != functionReturnTypes.end() &&
+            returnIt->second != inferredReturn) {
+          returnIt->second = inferredReturn;
+          moduleChanged = true;
+        }
+        if (specializableFunctions.find(function.name()) ==
+            specializableFunctions.end()) {
+          continue;
+        }
+        auto &candidates = parameterCandidates[function.name()];
+        auto &unknowns = unknownArguments[function.name()];
+        for (size_t index = 0; index < function.parameters().size(); ++index) {
+          LoxType inferredType =
+              index < unknowns.size() && unknowns[index]
+                  ? LoxType::Unknown
+                  : candidateOrUnknown(candidates[index]);
+          moduleChanged |=
+              setParameterType(function.parameters()[index], inferredType);
+        }
+      }
+      changed |= moduleChanged;
+    } while (moduleChanged);
+
     return changed;
   }
 };
@@ -735,78 +1056,12 @@ public:
   }
 };
 
-struct StableFunctionTarget {
-  std::string functionName;
-  int arity = 0;
-};
-
 class DirectCallPass final : public LoxPass {
 public:
   std::string name() const override { return "direct-call-specialization"; }
 
   bool run(LoxModule &module) override {
-    if (module.functions().empty()) {
-      return false;
-    }
-
-    const LoxFunction &main = module.functions().front();
-    std::unordered_map<uint32_t, std::string> definedFunctionByValue;
-    std::unordered_map<std::string, std::string> globalToFunction;
-    std::unordered_map<std::string, uint32_t> declarationCounts;
-    std::unordered_set<std::string> assignedGlobals;
-
-    for (const auto &block : main.blocks()) {
-      for (const auto &instruction : block.instructions()) {
-        if (instruction.kind == InstructionKind::DefineFunction &&
-            instruction.result && !instruction.symbol.empty()) {
-          definedFunctionByValue[instruction.result->id] = instruction.symbol;
-          continue;
-        }
-        if (instruction.kind != InstructionKind::StoreGlobal ||
-            instruction.symbol.empty()) {
-          continue;
-        }
-        if (!instruction.declaresSymbol) {
-          assignedGlobals.insert(instruction.symbol);
-          continue;
-        }
-        ++declarationCounts[instruction.symbol];
-        if (instruction.operands.size() == 1) {
-          auto defIt = definedFunctionByValue.find(instruction.operands[0].id);
-          if (defIt != definedFunctionByValue.end()) {
-            globalToFunction[instruction.symbol] = defIt->second;
-          }
-        }
-      }
-    }
-
-    for (const auto &function : module.functions()) {
-      for (const auto &block : function.blocks()) {
-        for (const auto &instruction : block.instructions()) {
-          if (instruction.kind == InstructionKind::StoreGlobal &&
-              !instruction.declaresSymbol && !instruction.symbol.empty()) {
-            assignedGlobals.insert(instruction.symbol);
-          }
-        }
-      }
-    }
-
-    std::unordered_map<std::string, StableFunctionTarget> stableFunctions;
-    for (const auto &[globalName, functionName] : globalToFunction) {
-      if (assignedGlobals.find(globalName) != assignedGlobals.end()) {
-        continue;
-      }
-      if (declarationCounts[globalName] != 1) {
-        continue;
-      }
-      const LoxFunction *target = module.findFunction(functionName);
-      if (!target || !target->upvalues().empty()) {
-        continue;
-      }
-      stableFunctions.emplace(globalName,
-                              StableFunctionTarget{functionName,
-                                                   target->arity()});
-    }
+    auto stableFunctions = collectStableTopLevelFunctions(module);
     if (stableFunctions.empty()) {
       return false;
     }
