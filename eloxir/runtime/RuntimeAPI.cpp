@@ -84,9 +84,6 @@ static FieldBuffer acquireFieldBuffer(size_t slotCount) {
     buffer.values = new uint64_t[slotCount];
     buffer.initialized = new uint8_t[slotCount];
   }
-
-  std::fill_n(buffer.values, slotCount, Value::nil().getBits());
-  std::memset(buffer.initialized, 0, slotCount * sizeof(uint8_t));
   return buffer;
 }
 
@@ -96,6 +93,12 @@ static void releaseFieldBuffer(size_t slotCount, FieldBuffer buffer) {
   }
 
   field_buffer_pool[slotCount].push_back(buffer);
+}
+
+static uint64_t objectBitsUnchecked(void *object) {
+  return 0x7ff8000000000000ULL |
+         (static_cast<uint64_t>(Tag::OBJ) << 48) |
+         reinterpret_cast<uint64_t>(object);
 }
 
 static void ensureInstanceCapacity(ObjInstance *instance, size_t required,
@@ -114,15 +117,31 @@ static void ensureInstanceCapacity(ObjInstance *instance, size_t required,
     return;
   }
 
-  if (instance->fieldCapacity >= required)
+  if (instance->fieldCapacity >= required) {
+    if (!preserveExisting && instance->fieldValues &&
+        instance->fieldInitialized) {
+      std::fill_n(instance->fieldValues, instance->fieldCapacity,
+                  Value::nil().getBits());
+      std::memset(instance->fieldInitialized, 0,
+                  instance->fieldCapacity * sizeof(uint8_t));
+    }
     return;
+  }
 
   FieldBuffer buffer = acquireFieldBuffer(required);
+  const size_t previousCapacity = instance->fieldCapacity;
   if (preserveExisting && instance->fieldValues && instance->fieldInitialized) {
     std::memcpy(buffer.values, instance->fieldValues,
-                instance->fieldCapacity * sizeof(uint64_t));
+                previousCapacity * sizeof(uint64_t));
     std::memcpy(buffer.initialized, instance->fieldInitialized,
-                instance->fieldCapacity * sizeof(uint8_t));
+                previousCapacity * sizeof(uint8_t));
+    std::fill_n(buffer.values + previousCapacity, required - previousCapacity,
+                Value::nil().getBits());
+    std::memset(buffer.initialized + previousCapacity, 0,
+                (required - previousCapacity) * sizeof(uint8_t));
+  } else {
+    std::fill_n(buffer.values, required, Value::nil().getBits());
+    std::memset(buffer.initialized, 0, required * sizeof(uint8_t));
   }
 
   if (instance->fieldValues || instance->fieldInitialized) {
@@ -141,11 +160,6 @@ static void resetInstanceFields(ObjInstance *instance, ObjShape *shape) {
 
   size_t slotCount = shape ? shape->slotCount : 0;
   ensureInstanceCapacity(instance, slotCount, false);
-  size_t capacity = instance->fieldCapacity;
-  if (capacity > 0) {
-    std::fill_n(instance->fieldValues, capacity, Value::nil().getBits());
-    std::memset(instance->fieldInitialized, 0, capacity * sizeof(uint8_t));
-  }
   instance->shape = shape;
 }
 
@@ -2598,18 +2612,18 @@ uint64_t elx_instantiate_class(uint64_t class_bits) {
 }
 
 uint64_t elx_instantiate_known_class(uint64_t class_bits) {
-  Value class_val = Value::fromBits(class_bits);
-  if (!class_val.isObj()) {
-    return Value::nil().getBits();
-  }
-
-  auto *klass = static_cast<ObjClass *>(class_val.asObj());
+  auto *klass = reinterpret_cast<ObjClass *>(class_bits & 0xFFFFFFFFFFFFULL);
   ObjInstance *instance = acquireInstanceObject();
   instance->klass = klass;
-  resetInstanceFields(instance, klass ? klass->defaultShape : nullptr);
+  ObjShape *shape = klass ? klass->defaultShape : nullptr;
+  if (shape && shape->slotCount > 0) {
+    resetInstanceFields(instance, shape);
+  } else {
+    instance->shape = shape;
+  }
 
   trackObject(instance);
-  return Value::object(instance).getBits();
+  return objectBitsUnchecked(instance);
 }
 
 uint64_t elx_get_instance_class(uint64_t instance_bits) {

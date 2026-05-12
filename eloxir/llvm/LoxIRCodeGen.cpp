@@ -857,6 +857,43 @@ private:
     return sawReturn;
   }
 
+  bool functionOnlyReturnsReceiver(const LoxFunction &function) const {
+    if (function.parameters().empty() ||
+        function.parameters().front().name != "this") {
+      return false;
+    }
+
+    std::unordered_set<uint32_t> receiverValues;
+    receiverValues.insert(function.parameters().front().value.id);
+
+    bool sawReturn = false;
+    for (const auto &block : function.blocks()) {
+      for (const auto &instruction : block.instructions()) {
+        switch (instruction.kind) {
+        case InstructionKind::LoadLocal:
+          if (instruction.symbol == "this" && instruction.result) {
+            receiverValues.insert(instruction.result->id);
+            break;
+          }
+          return false;
+        case InstructionKind::Return:
+          sawReturn = true;
+          if (instruction.operands.size() != 1 ||
+              receiverValues.find(instruction.operands[0].id) ==
+                  receiverValues.end()) {
+            return false;
+          }
+          break;
+        case InstructionKind::Unreachable:
+          break;
+        default:
+          return false;
+        }
+      }
+    }
+    return sawReturn;
+  }
+
   std::optional<std::string>
   findKnownMethodFunction(const std::string &classKey,
                           const std::string &methodName) const {
@@ -1416,6 +1453,13 @@ private:
                                          "known.class.instance");
     guardRuntimeError();
 
+    if (functionOnlyReturnsReceiver(initializer)) {
+      bind(instruction, instance, LoxType::Instance);
+      rememberInstanceResult(instruction, *classKey);
+      emitted = true;
+      return std::nullopt;
+    }
+
     std::vector<llvm::Value *> directArgs;
     directArgs.reserve(instruction.arguments.size() + 1);
     directArgs.push_back(instance);
@@ -1795,6 +1839,11 @@ private:
       }
       bind(instruction, result, instruction.resultType);
     };
+
+    if (functionOnlyReturnsReceiver(method)) {
+      bindResult(lookup(instruction.operands[0]));
+      return std::nullopt;
+    }
 
     if (isLeafFunction(method)) {
       auto *result = builder_.CreateCall(functionIt->second, args,
