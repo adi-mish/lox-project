@@ -495,6 +495,10 @@ cpplox: 11 passed, 0 failed, 0 skipped, 11 total (16.567s)
 eloxir: 11 passed, 0 failed, 0 skipped, 11 total (17.289s)
 ```
 
+## License
+
+This project is licensed under the MIT License. See [LICENSE](LICENSE).
+
 ## Acknowledgements
 
 The language, tests, and reference `jlox`/`clox` designs come from
