@@ -36,6 +36,7 @@ struct ObjString {
 struct ObjFunction {
   Obj obj;
   int arity;
+  uint32_t flags;
   const char *name;
   void *llvm_function; // pointer to compiled LLVM function
 };
@@ -115,6 +116,11 @@ constexpr int CALL_CACHE_FLAG_METHOD_IS_FUNCTION = 1 << 1;
 constexpr int CALL_CACHE_FLAG_METHOD_IS_NATIVE = 1 << 2;
 constexpr int CALL_CACHE_FLAG_CLASS_HAS_INITIALIZER = 1 << 3;
 constexpr int CALL_CACHE_FLAG_CLOSURE_HAS_UPVALUES = 1 << 4;
+constexpr int CALL_CACHE_FLAG_TARGET_LEAF = 1 << 5;
+constexpr int CALL_CACHE_FLAG_TARGET_NO_RUNTIME_ERROR = 1 << 6;
+
+constexpr uint32_t FUNCTION_FLAG_LEAF = 1u << 0u;
+constexpr uint32_t FUNCTION_FLAG_NO_RUNTIME_ERROR = 1u << 1u;
 
 struct CallInlineCache {
   uint64_t callee_bits;
@@ -178,6 +184,7 @@ int elx_value_is_string(uint64_t value_bits);
 // Function functions
 uint64_t elx_allocate_function(const char *name, int arity,
                                void *llvm_function);
+void elx_set_function_flags(uint64_t func_bits, int flags);
 uint64_t elx_call_function(uint64_t func_bits, uint64_t *args, int arg_count);
 uint64_t elx_call_value(uint64_t callee_bits, uint64_t *args, int arg_count);
 uint64_t elx_call_property(uint64_t instance_bits, uint64_t name_bits,

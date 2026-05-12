@@ -598,7 +598,7 @@ public:
       methodFn.setDisplayName(displayName);
       methodFn.setMethod(true);
       methodFn.setInitializer(initializer);
-      methodFn.addParameter("this");
+      methodFn.addParameter("this", LoxType::Instance);
       for (const Token &param : method->params) {
         methodFn.addParameter(param.getLexeme());
       }

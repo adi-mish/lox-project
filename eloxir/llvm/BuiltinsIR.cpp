@@ -72,6 +72,8 @@ llvm::FunctionType *runtimeFunctionType(llvm::Module &module,
     return llvm::FunctionType::get(voidTy, {i8Ptr}, false);
   case RuntimeSignature::Void_I32:
     return llvm::FunctionType::get(voidTy, {i32}, false);
+  case RuntimeSignature::Void_Value_I32:
+    return llvm::FunctionType::get(voidTy, {value, i32}, false);
   case RuntimeSignature::Void_I32_I32:
     return llvm::FunctionType::get(voidTy, {i32, i32}, false);
   case RuntimeSignature::Void_Value_Value:

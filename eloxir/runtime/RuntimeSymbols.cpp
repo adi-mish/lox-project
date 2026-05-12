@@ -36,6 +36,8 @@ const RuntimeFunctionDescriptor kRuntimeFunctions[] = {
 
     ELX_RUNTIME_FUNCTION(elx_allocate_function, Value_I8Ptr_I32_I8Ptr,
                          RuntimeNoFlags),
+    ELX_RUNTIME_FUNCTION(elx_set_function_flags, Void_Value_I32,
+                         RuntimeNoUnwind),
     ELX_RUNTIME_FUNCTION(elx_call_function, Value_Value_ValuePtr_I32,
                          RuntimeNoFlags),
     ELX_RUNTIME_FUNCTION(elx_call_value, Value_Value_ValuePtr_I32,

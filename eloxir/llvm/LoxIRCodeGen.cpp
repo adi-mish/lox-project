@@ -311,6 +311,21 @@ private:
     return builder_.CreateAnd(isTagged, isObject, "is.object");
   }
 
+  llvm::Value *isNumberValue(llvm::Value *value) {
+    auto *isTagged = builder_.CreateICmpEQ(
+        builder_.CreateAnd(value, constantI64(0xfff8000000000000ULL)),
+        constantI64(kQnan), "is.tagged");
+    auto *tag = builder_.CreateAnd(
+        builder_.CreateLShr(value, constantI64(48)), constantI64(0x7),
+        "value.tag");
+    auto *isNumberTag =
+        builder_.CreateICmpEQ(tag,
+                              constantI64(static_cast<uint64_t>(Tag::NUMBER)),
+                              "is.number.tag");
+    return builder_.CreateOr(builder_.CreateNot(isTagged), isNumberTag,
+                             "is.number");
+  }
+
   llvm::Value *objectPointer(llvm::Value *value,
                              const std::string &name) {
     auto *raw =
@@ -551,6 +566,69 @@ private:
       }
     }
     return symbols;
+  }
+
+  bool isLeafFunction(const LoxFunction &function) const {
+    for (const auto &block : function.blocks()) {
+      for (const auto &instruction : block.instructions()) {
+        switch (instruction.kind) {
+        case InstructionKind::Call:
+        case InstructionKind::DirectCall:
+        case InstructionKind::CallPreparedProperty:
+          return false;
+        default:
+          break;
+        }
+      }
+    }
+    return true;
+  }
+
+  bool functionCannotRaiseRuntimeError(const LoxFunction &function) const {
+    for (const auto &block : function.blocks()) {
+      for (const auto &instruction : block.instructions()) {
+        switch (instruction.kind) {
+        case InstructionKind::ConstantNil:
+        case InstructionKind::ConstantBool:
+        case InstructionKind::ConstantNumber:
+        case InstructionKind::ConstantString:
+        case InstructionKind::LoadLocal:
+        case InstructionKind::StoreLocal:
+        case InstructionKind::IsTruthy:
+        case InstructionKind::Print:
+        case InstructionKind::Jump:
+        case InstructionKind::Branch:
+        case InstructionKind::Return:
+        case InstructionKind::Unreachable:
+          break;
+        case InstructionKind::Unary:
+          if (instruction.unaryOp == UnaryOp::Not) {
+            break;
+          }
+          return false;
+        case InstructionKind::Binary:
+          if (instruction.binaryOp == BinaryOp::Equal ||
+              instruction.binaryOp == BinaryOp::NotEqual) {
+            break;
+          }
+          return false;
+        default:
+          return false;
+        }
+      }
+    }
+    return true;
+  }
+
+  uint32_t functionRuntimeFlags(const LoxFunction &function) const {
+    uint32_t flags = 0;
+    if (isLeafFunction(function)) {
+      flags |= FUNCTION_FLAG_LEAF;
+    }
+    if (functionCannotRaiseRuntimeError(function)) {
+      flags |= FUNCTION_FLAG_NO_RUNTIME_ERROR;
+    }
+    return flags;
   }
 
   void bind(const Instruction &instruction, llvm::Value *value,
@@ -911,8 +989,9 @@ private:
     auto functionIt = functions_.find(instruction.symbol);
     auto loxIt = loxFunctions_.find(instruction.symbol);
     auto *allocateFunction = runtime("elx_allocate_function");
+    auto *setFunctionFlags = runtime("elx_set_function_flags");
     if (functionIt == functions_.end() || loxIt == loxFunctions_.end() ||
-        !allocateFunction) {
+        !allocateFunction || !setFunctionFlags) {
       return unsupported(instruction, "missing function declaration");
     }
 
@@ -924,6 +1003,11 @@ private:
     auto *functionObject = builder_.CreateCall(
         allocateFunction, {name, arity, functionPtr}, "function.object");
     guardRuntimeError();
+    uint32_t flags = functionRuntimeFlags(target);
+    if (flags != 0) {
+      builder_.CreateCall(setFunctionFlags,
+                          {functionObject, constantI32(static_cast<int>(flags))});
+    }
 
     if (target.upvalues().empty() && !target.isMethod()) {
       bind(instruction, functionObject, LoxType::Function);
@@ -1037,6 +1121,15 @@ private:
                                constantI32(CALL_CACHE_FLAG_CLOSURE_HAS_UPVALUES),
                                "class.call.upvalue.flag"),
             constantI32(0), "class.call.has.upvalues");
+        auto *targetLeaf = builder_.CreateICmpNE(
+            builder_.CreateAnd(flags, constantI32(CALL_CACHE_FLAG_TARGET_LEAF),
+                               "class.call.leaf.flag"),
+            constantI32(0), "class.call.target.leaf");
+        auto *targetCannotError = builder_.CreateICmpNE(
+            builder_.CreateAnd(
+                flags, constantI32(CALL_CACHE_FLAG_TARGET_NO_RUNTIME_ERROR),
+                "class.call.noerror.flag"),
+            constantI32(0), "class.call.target.noerror");
         auto *arityMatches =
             builder_.CreateICmpEQ(expectedArity, count,
                                   "class.call.arity.matches");
@@ -1063,6 +1156,14 @@ private:
         auto *directInitBlock =
             llvm::BasicBlock::Create(ctx_, "class.call.direct.init",
                                      function_);
+        auto *directInitLeafBlock =
+            llvm::BasicBlock::Create(ctx_, "class.call.direct.init.leaf",
+                                     function_);
+        auto *directInitLeafCheckBlock = llvm::BasicBlock::Create(
+            ctx_, "class.call.direct.init.leaf.check", function_);
+        auto *directInitFramedBlock =
+            llvm::BasicBlock::Create(ctx_, "class.call.direct.init.framed",
+                                     function_);
         auto *directNoInitBlock =
             llvm::BasicBlock::Create(ctx_, "class.call.direct.noinit",
                                      function_);
@@ -1085,16 +1186,9 @@ private:
                               directNoInitBlock);
 
         builder_.SetInsertPoint(directInitBlock);
-        auto *entered = builder_.CreateICmpNE(
-            builder_.CreateCall(enter, {}, "class.call.init.entered"),
-            constantI32(0), "class.call.init.can.enter");
-        builder_.CreateCondBr(entered, directInitCallBlock,
-                              directOverflowBlock);
+        builder_.CreateCondBr(targetLeaf, directInitLeafBlock,
+                              directInitFramedBlock);
 
-        builder_.SetInsertPoint(directOverflowBlock);
-        builder_.CreateRet(nilValue());
-
-        builder_.SetInsertPoint(directInitCallBlock);
         std::vector<llvm::Type *> directParamTypes(instruction.arguments.size() + 1,
                                                    valueTy());
         auto *directFunctionTy =
@@ -1105,12 +1199,36 @@ private:
         for (ValueId id : instruction.arguments) {
           directArgs.push_back(lookup(id));
         }
+
+        builder_.SetInsertPoint(directInitLeafBlock);
+        builder_.CreateCall(directFunctionTy, targetPtr, directArgs,
+                            "class.call.initializer.direct.leaf");
+        builder_.CreateCondBr(targetCannotError, doneBlock,
+                              directInitLeafCheckBlock);
+        directInitLeafBlock = builder_.GetInsertBlock();
+
+        builder_.SetInsertPoint(directInitLeafCheckBlock);
+        guardRuntimeError();
+        builder_.CreateBr(doneBlock);
+        directInitLeafCheckBlock = builder_.GetInsertBlock();
+
+        builder_.SetInsertPoint(directInitFramedBlock);
+        auto *entered = builder_.CreateICmpNE(
+            builder_.CreateCall(enter, {}, "class.call.init.entered"),
+            constantI32(0), "class.call.init.can.enter");
+        builder_.CreateCondBr(entered, directInitCallBlock,
+                              directOverflowBlock);
+
+        builder_.SetInsertPoint(directOverflowBlock);
+        builder_.CreateRet(nilValue());
+
+        builder_.SetInsertPoint(directInitCallBlock);
         builder_.CreateCall(directFunctionTy, targetPtr, directArgs,
                             "class.call.initializer.direct");
         builder_.CreateCall(leave, {});
         guardRuntimeError();
         builder_.CreateBr(doneBlock);
-        directInitBlock = builder_.GetInsertBlock();
+        directInitCallBlock = builder_.GetInsertBlock();
 
         builder_.SetInsertPoint(directNoInitBlock);
         builder_.CreateBr(doneBlock);
@@ -1136,8 +1254,10 @@ private:
         fallbackBlock = builder_.GetInsertBlock();
 
         builder_.SetInsertPoint(doneBlock);
-        auto *result = builder_.CreatePHI(valueTy(), 4, "class.call.result");
-        result->addIncoming(instance, directInitBlock);
+        auto *result = builder_.CreatePHI(valueTy(), 6, "class.call.result");
+        result->addIncoming(instance, directInitLeafBlock);
+        result->addIncoming(instance, directInitLeafCheckBlock);
+        result->addIncoming(instance, directInitCallBlock);
         result->addIncoming(instance, directNoInitBlock);
         result->addIncoming(fastResult, helperBlock);
         result->addIncoming(genericResult, fallbackBlock);
@@ -1171,6 +1291,21 @@ private:
     }
     if (!enter || !leave) {
       return unsupported(instruction, "missing direct call frame helper");
+    }
+
+    if (isLeafFunction(*loxIt->second)) {
+      std::vector<llvm::Value *> args;
+      args.reserve(instruction.arguments.size());
+      for (ValueId id : instruction.arguments) {
+        args.push_back(lookup(id));
+      }
+      auto *result =
+          builder_.CreateCall(functionIt->second, args, "direct.call.leaf");
+      if (!functionCannotRaiseRuntimeError(*loxIt->second)) {
+        guardRuntimeError();
+      }
+      bind(instruction, result, instruction.resultType);
+      return std::nullopt;
     }
 
     auto *overflowBlock =
@@ -1233,17 +1368,26 @@ private:
     auto *doneBlock =
         llvm::BasicBlock::Create(ctx_, "property.call.ready", function_);
 
-    builder_.CreateCondBr(isObjectValue(receiver), objectBlock, fallbackBlock);
+    llvm::Value *objectPtr = nullptr;
+    if (typeOf(instruction.operands[0]) == LoxType::Instance) {
+      objectPtr = objectPointer(receiver, "property.call.object");
+      builder_.CreateBr(instanceBlock);
+      builder_.SetInsertPoint(objectBlock);
+      builder_.CreateUnreachable();
+    } else {
+      builder_.CreateCondBr(isObjectValue(receiver), objectBlock,
+                            fallbackBlock);
 
-    builder_.SetInsertPoint(objectBlock);
-    auto *objectPtr = objectPointer(receiver, "property.call.object");
-    auto *objectType = loadI32AtOffset(objectPtr, offsetof(Obj, type),
-                                       "property.call.object.type");
-    auto *isInstance = builder_.CreateICmpEQ(
-        objectType,
-        llvm::ConstantInt::get(i32Ty(), static_cast<int>(ObjType::INSTANCE)),
-        "property.call.is.instance");
-    builder_.CreateCondBr(isInstance, instanceBlock, fallbackBlock);
+      builder_.SetInsertPoint(objectBlock);
+      objectPtr = objectPointer(receiver, "property.call.object");
+      auto *objectType = loadI32AtOffset(objectPtr, offsetof(Obj, type),
+                                         "property.call.object.type");
+      auto *isInstance = builder_.CreateICmpEQ(
+          objectType,
+          llvm::ConstantInt::get(i32Ty(), static_cast<int>(ObjType::INSTANCE)),
+          "property.call.is.instance");
+      builder_.CreateCondBr(isInstance, instanceBlock, fallbackBlock);
+    }
 
     builder_.SetInsertPoint(instanceBlock);
     auto *shape = loadPointerAtOffset(objectPtr, offsetof(ObjInstance, shape),
@@ -1327,6 +1471,8 @@ private:
       return unsupported(instruction, "missing elx_call_prepared_property");
     }
     auto *callMethodFast = runtime("elx_call_method_fast");
+    auto *enter = runtime("elx_enter_call_frame");
+    auto *leave = runtime("elx_leave_call_frame");
     auto *args =
         emitArgumentArray(instruction.arguments, "prepared.property.args");
     auto *count = constantI32(static_cast<int>(instruction.arguments.size()));
@@ -1376,8 +1522,56 @@ private:
                                       "prepared.property.fast.1");
     fastEligible = builder_.CreateAnd(fastEligible, targetAvailable,
                                       "prepared.property.fast");
+    auto *directMethodFlags = builder_.CreateAnd(
+        flags,
+        constantI32(CALL_CACHE_FLAG_METHOD_IS_CLOSURE |
+                    CALL_CACHE_FLAG_METHOD_IS_FUNCTION),
+        "prepared.property.direct.flags");
+    auto *isDirectCallable =
+        builder_.CreateICmpNE(directMethodFlags, constantI32(0),
+                              "prepared.property.direct.callable");
+    auto *hasUpvalues = builder_.CreateICmpNE(
+        builder_.CreateAnd(flags,
+                           constantI32(CALL_CACHE_FLAG_CLOSURE_HAS_UPVALUES),
+                           "prepared.property.upvalue.flag"),
+        constantI32(0), "prepared.property.has.upvalues");
+    auto *targetLeaf = builder_.CreateICmpNE(
+        builder_.CreateAnd(flags, constantI32(CALL_CACHE_FLAG_TARGET_LEAF),
+                           "prepared.property.leaf.flag"),
+        constantI32(0), "prepared.property.target.leaf");
+    auto *targetCannotError = builder_.CreateICmpNE(
+        builder_.CreateAnd(
+            flags, constantI32(CALL_CACHE_FLAG_TARGET_NO_RUNTIME_ERROR),
+            "prepared.property.noerror.flag"),
+        constantI32(0), "prepared.property.target.noerror");
+    auto *arityMatches =
+        builder_.CreateICmpEQ(expectedArity, count,
+                              "prepared.property.arity.matches");
+    auto *canDirectCall =
+        builder_.CreateAnd(fastEligible, isDirectCallable,
+                           "prepared.property.direct.0");
+    canDirectCall = builder_.CreateAnd(
+        canDirectCall, builder_.CreateNot(hasUpvalues),
+        "prepared.property.direct.1");
+    canDirectCall =
+        builder_.CreateAnd(canDirectCall, arityMatches,
+                           "prepared.property.direct");
     auto *fastBlock =
         llvm::BasicBlock::Create(ctx_, "prepared.property.fast", function_);
+    auto *directBlock =
+        llvm::BasicBlock::Create(ctx_, "prepared.property.direct", function_);
+    auto *directLeafBlock = llvm::BasicBlock::Create(
+        ctx_, "prepared.property.direct.leaf", function_);
+    auto *directLeafCheckBlock = llvm::BasicBlock::Create(
+        ctx_, "prepared.property.direct.leaf.check", function_);
+    auto *directFramedBlock = llvm::BasicBlock::Create(
+        ctx_, "prepared.property.direct.framed", function_);
+    auto *directOverflowBlock = llvm::BasicBlock::Create(
+        ctx_, "prepared.property.direct.overflow", function_);
+    auto *directCallBlock = llvm::BasicBlock::Create(
+        ctx_, "prepared.property.direct.call", function_);
+    auto *helperBlock = llvm::BasicBlock::Create(
+        ctx_, "prepared.property.fast.helper", function_);
     auto *fallbackBlock =
         llvm::BasicBlock::Create(ctx_, "prepared.property.generic", function_);
     auto *doneBlock =
@@ -1385,13 +1579,65 @@ private:
     builder_.CreateCondBr(fastEligible, fastBlock, fallbackBlock);
 
     builder_.SetInsertPoint(fastBlock);
+    if (enter && leave) {
+      builder_.CreateCondBr(canDirectCall, directBlock, helperBlock);
+    } else {
+      builder_.CreateBr(helperBlock);
+    }
+    fastBlock = builder_.GetInsertBlock();
+
+    builder_.SetInsertPoint(directBlock);
+    builder_.CreateCondBr(targetLeaf, directLeafBlock, directFramedBlock);
+
+    std::vector<llvm::Type *> directParamTypes(instruction.arguments.size() + 1,
+                                               valueTy());
+    auto *directFunctionTy =
+        llvm::FunctionType::get(valueTy(), directParamTypes, false);
+    std::vector<llvm::Value *> directArgs;
+    directArgs.reserve(instruction.arguments.size() + 1);
+    directArgs.push_back(receiver);
+    for (ValueId id : instruction.arguments) {
+      directArgs.push_back(lookup(id));
+    }
+
+    builder_.SetInsertPoint(directLeafBlock);
+    auto *directLeafResult =
+        builder_.CreateCall(directFunctionTy, targetPtr, directArgs,
+                            "prepared.property.direct.leaf.result");
+    builder_.CreateCondBr(targetCannotError, doneBlock, directLeafCheckBlock);
+    directLeafBlock = builder_.GetInsertBlock();
+
+    builder_.SetInsertPoint(directLeafCheckBlock);
+    guardRuntimeError();
+    builder_.CreateBr(doneBlock);
+    directLeafCheckBlock = builder_.GetInsertBlock();
+
+    builder_.SetInsertPoint(directFramedBlock);
+    auto *entered = builder_.CreateICmpNE(
+        builder_.CreateCall(enter, {}, "prepared.property.direct.entered"),
+        constantI32(0), "prepared.property.direct.can.enter");
+    builder_.CreateCondBr(entered, directCallBlock, directOverflowBlock);
+
+    builder_.SetInsertPoint(directOverflowBlock);
+    builder_.CreateRet(nilValue());
+
+    builder_.SetInsertPoint(directCallBlock);
+    auto *directResult =
+        builder_.CreateCall(directFunctionTy, targetPtr, directArgs,
+                            "prepared.property.direct.result");
+    builder_.CreateCall(leave, {});
+    guardRuntimeError();
+    builder_.CreateBr(doneBlock);
+    directCallBlock = builder_.GetInsertBlock();
+
+    builder_.SetInsertPoint(helperBlock);
     auto *fastResult = builder_.CreateCall(
         callMethodFast, {receiver, args, count, target, targetPtr,
                          expectedArity, flags},
         "prepared.property.method.fast");
     guardRuntimeError();
     builder_.CreateBr(doneBlock);
-    fastBlock = builder_.GetInsertBlock();
+    helperBlock = builder_.GetInsertBlock();
 
     builder_.SetInsertPoint(fallbackBlock);
     auto *genericResult = builder_.CreateCall(
@@ -1401,8 +1647,11 @@ private:
     fallbackBlock = builder_.GetInsertBlock();
 
     builder_.SetInsertPoint(doneBlock);
-    auto *result = builder_.CreatePHI(valueTy(), 2, "prepared.property.result");
-    result->addIncoming(fastResult, fastBlock);
+    auto *result = builder_.CreatePHI(valueTy(), 5, "prepared.property.result");
+    result->addIncoming(directLeafResult, directLeafBlock);
+    result->addIncoming(directLeafResult, directLeafCheckBlock);
+    result->addIncoming(directResult, directCallBlock);
+    result->addIncoming(fastResult, helperBlock);
     result->addIncoming(genericResult, fallbackBlock);
     bind(instruction, result, instruction.resultType);
     return std::nullopt;
@@ -1433,17 +1682,26 @@ private:
     auto *doneBlock =
         llvm::BasicBlock::Create(ctx_, "property.done", function_);
 
-    builder_.CreateCondBr(isObjectValue(receiver), objectBlock, fallbackBlock);
+    llvm::Value *objectPtr = nullptr;
+    if (typeOf(instruction.operands[0]) == LoxType::Instance) {
+      objectPtr = objectPointer(receiver, "property.object");
+      builder_.CreateBr(instanceBlock);
+      builder_.SetInsertPoint(objectBlock);
+      builder_.CreateUnreachable();
+    } else {
+      builder_.CreateCondBr(isObjectValue(receiver), objectBlock,
+                            fallbackBlock);
 
-    builder_.SetInsertPoint(objectBlock);
-    auto *objectPtr = objectPointer(receiver, "property.object");
-    auto *objectType = loadI32AtOffset(objectPtr, offsetof(Obj, type),
-                                       "property.object.type");
-    auto *isInstance = builder_.CreateICmpEQ(
-        objectType,
-        llvm::ConstantInt::get(i32Ty(), static_cast<int>(ObjType::INSTANCE)),
-        "property.is.instance");
-    builder_.CreateCondBr(isInstance, instanceBlock, fallbackBlock);
+      builder_.SetInsertPoint(objectBlock);
+      objectPtr = objectPointer(receiver, "property.object");
+      auto *objectType = loadI32AtOffset(objectPtr, offsetof(Obj, type),
+                                         "property.object.type");
+      auto *isInstance = builder_.CreateICmpEQ(
+          objectType,
+          llvm::ConstantInt::get(i32Ty(), static_cast<int>(ObjType::INSTANCE)),
+          "property.is.instance");
+      builder_.CreateCondBr(isInstance, instanceBlock, fallbackBlock);
+    }
 
     builder_.SetInsertPoint(instanceBlock);
     auto *shape = loadPointerAtOffset(objectPtr, offsetof(ObjInstance, shape),
@@ -1518,13 +1776,100 @@ private:
     }
     auto *name = emitInternedName(instruction.symbol, "property.name");
     auto *cache = createPropertyCache(instruction);
-    auto *result = builder_.CreateCall(
+
+    auto *receiver = lookup(instruction.operands[0]);
+    auto *value = lookup(instruction.operands[1]);
+    auto *objectBlock =
+        llvm::BasicBlock::Create(ctx_, "set.property.fast.object", function_);
+    auto *instanceBlock =
+        llvm::BasicBlock::Create(ctx_, "set.property.fast.instance", function_);
+    auto *hitBlock =
+        llvm::BasicBlock::Create(ctx_, "set.property.fast.hit", function_);
+    auto *fallbackBlock =
+        llvm::BasicBlock::Create(ctx_, "set.property.slow", function_);
+    auto *doneBlock =
+        llvm::BasicBlock::Create(ctx_, "set.property.done", function_);
+
+    llvm::Value *objectPtr = nullptr;
+    if (typeOf(instruction.operands[0]) == LoxType::Instance) {
+      objectPtr = objectPointer(receiver, "set.property.object");
+      builder_.CreateBr(instanceBlock);
+      builder_.SetInsertPoint(objectBlock);
+      builder_.CreateUnreachable();
+    } else {
+      builder_.CreateCondBr(isObjectValue(receiver), objectBlock,
+                            fallbackBlock);
+
+      builder_.SetInsertPoint(objectBlock);
+      objectPtr = objectPointer(receiver, "set.property.object");
+      auto *objectType = loadI32AtOffset(objectPtr, offsetof(Obj, type),
+                                         "set.property.object.type");
+      auto *isInstance = builder_.CreateICmpEQ(
+          objectType,
+          llvm::ConstantInt::get(i32Ty(), static_cast<int>(ObjType::INSTANCE)),
+          "set.property.is.instance");
+      builder_.CreateCondBr(isInstance, instanceBlock, fallbackBlock);
+    }
+
+    builder_.SetInsertPoint(instanceBlock);
+    auto *shape = loadPointerAtOffset(objectPtr, offsetof(ObjInstance, shape),
+                                      "set.property.shape");
+    auto *values = loadPointerAtOffset(
+        objectPtr, offsetof(ObjInstance, fieldValues), "set.property.values");
+    auto *presence = loadPointerAtOffset(
+        objectPtr, offsetof(ObjInstance, fieldInitialized),
+        "set.property.presence");
+    auto *capacity = loadI64AtOffset(objectPtr,
+                                     offsetof(ObjInstance, fieldCapacity),
+                                     "set.property.capacity");
+    auto *slot = cacheEntrySlot(cache, 0);
+    auto *hasEntry = cacheHasEntry(cache, 0);
+    auto *shapeMatches =
+        builder_.CreateICmpEQ(cacheEntryShape(cache, 0), shape,
+                              "set.property.shape.matches");
+    auto *slotInBounds =
+        builder_.CreateICmpULT(slot, capacity, "set.property.slot.in.bounds");
+    auto *hasStorage = builder_.CreateAnd(
+        builder_.CreateICmpNE(values, nullI8Ptr(),
+                              "set.property.values.nonnull"),
+        builder_.CreateICmpNE(presence, nullI8Ptr(),
+                              "set.property.presence.nonnull"),
+        "set.property.has.storage");
+    auto *cacheHit =
+        builder_.CreateAnd(hasEntry, shapeMatches, "set.property.cache.shape.hit");
+    cacheHit =
+        builder_.CreateAnd(cacheHit, slotInBounds,
+                           "set.property.cache.bounds.hit");
+    cacheHit =
+        builder_.CreateAnd(cacheHit, hasStorage,
+                           "set.property.cache.storage.hit");
+    builder_.CreateCondBr(cacheHit, hitBlock, fallbackBlock);
+
+    builder_.SetInsertPoint(hitBlock);
+    auto *fieldSlot =
+        builder_.CreateGEP(valueTy(), values, slot, "set.property.value.slot");
+    builder_.CreateStore(value, fieldSlot);
+    auto *presentSlot =
+        builder_.CreateGEP(i8Ty(), presence, slot, "set.property.present.slot");
+    builder_.CreateStore(llvm::ConstantInt::get(i8Ty(), 1), presentSlot);
+    builder_.CreateBr(doneBlock);
+    hitBlock = builder_.GetInsertBlock();
+
+    builder_.SetInsertPoint(fallbackBlock);
+    auto *slowResult = builder_.CreateCall(
         set,
-        {lookup(instruction.operands[0]), name, lookup(instruction.operands[1]),
+        {receiver, name, value,
          builder_.CreatePointerCast(cache, propertyCachePtrTy()),
          constantI32(static_cast<int>(eloxir::PROPERTY_CACHE_MAX_SIZE))},
         "set.property");
     guardRuntimeError();
+    builder_.CreateBr(doneBlock);
+    fallbackBlock = builder_.GetInsertBlock();
+
+    builder_.SetInsertPoint(doneBlock);
+    auto *result = builder_.CreatePHI(valueTy(), 2, "set.property.result");
+    result->addIncoming(value, hitBlock);
+    result->addIncoming(slowResult, fallbackBlock);
     bind(instruction, result, instruction.resultType);
     return std::nullopt;
   }
@@ -1603,6 +1948,62 @@ private:
     LoxType leftType = typeOf(leftId);
     LoxType rightType = typeOf(rightId);
 
+    auto couldBeNumber = [](LoxType type) {
+      return type == LoxType::Unknown || type == LoxType::Number;
+    };
+    auto resultTypeForDynamicNumberOp = [&]() {
+      switch (instruction.binaryOp) {
+      case BinaryOp::Add:
+        return (leftType == LoxType::Number || rightType == LoxType::Number)
+                   ? LoxType::Number
+                   : LoxType::Unknown;
+      case BinaryOp::Subtract:
+      case BinaryOp::Multiply:
+      case BinaryOp::Divide:
+        return LoxType::Number;
+      case BinaryOp::Equal:
+      case BinaryOp::NotEqual:
+      case BinaryOp::Greater:
+      case BinaryOp::GreaterEqual:
+      case BinaryOp::Less:
+      case BinaryOp::LessEqual:
+        return LoxType::Bool;
+      }
+      return LoxType::Unknown;
+    };
+    auto emitNumberBinary = [&](llvm::Value *leftNumber,
+                                llvm::Value *rightNumber) -> llvm::Value * {
+      switch (instruction.binaryOp) {
+      case BinaryOp::Add:
+        return fromDouble(builder_.CreateFAdd(leftNumber, rightNumber, "add"));
+      case BinaryOp::Subtract:
+        return fromDouble(builder_.CreateFSub(leftNumber, rightNumber, "sub"));
+      case BinaryOp::Multiply:
+        return fromDouble(builder_.CreateFMul(leftNumber, rightNumber, "mul"));
+      case BinaryOp::Divide:
+        return fromDouble(builder_.CreateFDiv(leftNumber, rightNumber, "div"));
+      case BinaryOp::Equal:
+        return boolValue(
+            builder_.CreateFCmpOEQ(leftNumber, rightNumber, "eq"));
+      case BinaryOp::NotEqual:
+        return boolValue(
+            builder_.CreateFCmpUNE(leftNumber, rightNumber, "neq"));
+      case BinaryOp::Greater:
+        return boolValue(
+            builder_.CreateFCmpOGT(leftNumber, rightNumber, "gt"));
+      case BinaryOp::GreaterEqual:
+        return boolValue(
+            builder_.CreateFCmpOGE(leftNumber, rightNumber, "ge"));
+      case BinaryOp::Less:
+        return boolValue(
+            builder_.CreateFCmpOLT(leftNumber, rightNumber, "lt"));
+      case BinaryOp::LessEqual:
+        return boolValue(
+            builder_.CreateFCmpOLE(leftNumber, rightNumber, "le"));
+      }
+      return nilValue();
+    };
+
     if ((instruction.binaryOp == BinaryOp::Equal ||
          instruction.binaryOp == BinaryOp::NotEqual) &&
         leftType != LoxType::Unknown && rightType != LoxType::Unknown &&
@@ -1665,6 +2066,48 @@ private:
       if (!operation) {
         return unsupported(instruction, "missing dynamic binary helper");
       }
+
+      if (couldBeNumber(leftType) && couldBeNumber(rightType)) {
+        llvm::Value *leftIsNumber =
+            leftType == LoxType::Number ? builder_.getTrue()
+                                        : isNumberValue(left);
+        llvm::Value *rightIsNumber =
+            rightType == LoxType::Number ? builder_.getTrue()
+                                         : isNumberValue(right);
+        auto *bothNumbers =
+            builder_.CreateAnd(leftIsNumber, rightIsNumber,
+                               "dynamic.binary.both.numbers");
+
+        auto *numberBlock =
+            llvm::BasicBlock::Create(ctx_, "dynamic.binary.number", function_);
+        auto *fallbackBlock = llvm::BasicBlock::Create(
+            ctx_, "dynamic.binary.generic", function_);
+        auto *doneBlock =
+            llvm::BasicBlock::Create(ctx_, "dynamic.binary.done", function_);
+        builder_.CreateCondBr(bothNumbers, numberBlock, fallbackBlock);
+
+        builder_.SetInsertPoint(numberBlock);
+        auto *fastResult =
+            emitNumberBinary(asDouble(left), asDouble(right));
+        builder_.CreateBr(doneBlock);
+        numberBlock = builder_.GetInsertBlock();
+
+        builder_.SetInsertPoint(fallbackBlock);
+        auto *genericResult =
+            builder_.CreateCall(operation, {left, right}, "dynamic.binary");
+        guardRuntimeError();
+        builder_.CreateBr(doneBlock);
+        fallbackBlock = builder_.GetInsertBlock();
+
+        builder_.SetInsertPoint(doneBlock);
+        auto *result =
+            builder_.CreatePHI(valueTy(), 2, "dynamic.binary.result");
+        result->addIncoming(fastResult, numberBlock);
+        result->addIncoming(genericResult, fallbackBlock);
+        bind(instruction, result, resultTypeForDynamicNumberOp());
+        return std::nullopt;
+      }
+
       auto *result =
           builder_.CreateCall(operation, {left, right}, "dynamic.binary");
       guardRuntimeError();
@@ -1679,39 +2122,18 @@ private:
 
     switch (instruction.binaryOp) {
     case BinaryOp::Add:
-      result = fromDouble(builder_.CreateFAdd(leftNumber, rightNumber, "add"));
-      break;
     case BinaryOp::Subtract:
-      result = fromDouble(builder_.CreateFSub(leftNumber, rightNumber, "sub"));
-      break;
     case BinaryOp::Multiply:
-      result = fromDouble(builder_.CreateFMul(leftNumber, rightNumber, "mul"));
-      break;
     case BinaryOp::Divide:
-      result = fromDouble(builder_.CreateFDiv(leftNumber, rightNumber, "div"));
+      result = emitNumberBinary(leftNumber, rightNumber);
       break;
     case BinaryOp::Equal:
-      result = boolValue(builder_.CreateFCmpOEQ(leftNumber, rightNumber, "eq"));
-      resultType = LoxType::Bool;
-      break;
     case BinaryOp::NotEqual:
-      result = boolValue(builder_.CreateFCmpUNE(leftNumber, rightNumber, "neq"));
-      resultType = LoxType::Bool;
-      break;
     case BinaryOp::Greater:
-      result = boolValue(builder_.CreateFCmpOGT(leftNumber, rightNumber, "gt"));
-      resultType = LoxType::Bool;
-      break;
     case BinaryOp::GreaterEqual:
-      result = boolValue(builder_.CreateFCmpOGE(leftNumber, rightNumber, "ge"));
-      resultType = LoxType::Bool;
-      break;
     case BinaryOp::Less:
-      result = boolValue(builder_.CreateFCmpOLT(leftNumber, rightNumber, "lt"));
-      resultType = LoxType::Bool;
-      break;
     case BinaryOp::LessEqual:
-      result = boolValue(builder_.CreateFCmpOLE(leftNumber, rightNumber, "le"));
+      result = emitNumberBinary(leftNumber, rightNumber);
       resultType = LoxType::Bool;
       break;
     }

@@ -11,6 +11,7 @@ enum class RuntimeSignature : uint8_t {
   Void_ValuePtr,
   Void_I8Ptr,
   Void_I32,
+  Void_Value_I32,
   Void_I32_I32,
   Void_Value_Value,
   Void_Value_Value_Value,

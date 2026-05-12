@@ -1224,6 +1224,7 @@ uint64_t elx_allocate_function(const char *name, int arity,
 
   func->obj.type = ObjType::FUNCTION;
   func->arity = arity;
+  func->flags = 0;
   func->llvm_function = llvm_function;
 
   char *name_storage = reinterpret_cast<char *>(func + 1);
@@ -1236,6 +1237,14 @@ uint64_t elx_allocate_function(const char *name, int arity,
   trackObject(func);
 
   return Value::object(func).getBits();
+}
+
+void elx_set_function_flags(uint64_t func_bits, int flags) {
+  ObjFunction *func = getFunction(Value::fromBits(func_bits));
+  if (!func) {
+    return;
+  }
+  func->flags = static_cast<uint32_t>(flags);
 }
 
 uint64_t elx_call_function(uint64_t func_bits, uint64_t *args, int arg_count) {
@@ -1914,6 +1923,13 @@ static bool configureMethodCallCache(CallInlineCache *cache,
     return false;
   }
 
+  if (func && (func->flags & FUNCTION_FLAG_LEAF) != 0) {
+    flags |= CALL_CACHE_FLAG_TARGET_LEAF;
+  }
+  if (func && (func->flags & FUNCTION_FLAG_NO_RUNTIME_ERROR) != 0) {
+    flags |= CALL_CACHE_FLAG_TARGET_NO_RUNTIME_ERROR;
+  }
+
   elx_call_cache_invalidate(cache);
   cache->callee_bits = callee_bits;
   cache->guard0_bits = method_bits;
@@ -1958,6 +1974,12 @@ void elx_call_cache_update(CallInlineCache *cache, uint64_t callee_bits) {
     cache->kind = static_cast<int32_t>(CallInlineCacheKind::FUNCTION);
     cache->target_ptr = func->llvm_function;
     cache->expected_arity = func->arity;
+    if ((func->flags & FUNCTION_FLAG_LEAF) != 0) {
+      cache->flags |= CALL_CACHE_FLAG_TARGET_LEAF;
+    }
+    if ((func->flags & FUNCTION_FLAG_NO_RUNTIME_ERROR) != 0) {
+      cache->flags |= CALL_CACHE_FLAG_TARGET_NO_RUNTIME_ERROR;
+    }
     updated = true;
     break;
   }
@@ -1970,6 +1992,12 @@ void elx_call_cache_update(CallInlineCache *cache, uint64_t callee_bits) {
     cache->kind = static_cast<int32_t>(CallInlineCacheKind::CLOSURE);
     cache->target_ptr = closure->function->llvm_function;
     cache->expected_arity = closure->function->arity;
+    if ((closure->function->flags & FUNCTION_FLAG_LEAF) != 0) {
+      cache->flags |= CALL_CACHE_FLAG_TARGET_LEAF;
+    }
+    if ((closure->function->flags & FUNCTION_FLAG_NO_RUNTIME_ERROR) != 0) {
+      cache->flags |= CALL_CACHE_FLAG_TARGET_NO_RUNTIME_ERROR;
+    }
     updated = true;
     break;
   }
@@ -2037,6 +2065,13 @@ void elx_call_cache_update(CallInlineCache *cache, uint64_t callee_bits) {
       flags |= CALL_CACHE_FLAG_METHOD_IS_NATIVE;
     } else {
       return;
+    }
+
+    if (func && (func->flags & FUNCTION_FLAG_LEAF) != 0) {
+      flags |= CALL_CACHE_FLAG_TARGET_LEAF;
+    }
+    if (func && (func->flags & FUNCTION_FLAG_NO_RUNTIME_ERROR) != 0) {
+      flags |= CALL_CACHE_FLAG_TARGET_NO_RUNTIME_ERROR;
     }
 
     cache->guard0_bits = initializer_bits;
@@ -2295,6 +2330,52 @@ uint64_t elx_call_method_fast(uint64_t receiver_bits, uint64_t *args,
     total_expected += 1;
   }
 
+  if ((flags & (CALL_CACHE_FLAG_METHOD_IS_CLOSURE |
+                CALL_CACHE_FLAG_METHOD_IS_FUNCTION)) &&
+      !(flags & CALL_CACHE_FLAG_CLOSURE_HAS_UPVALUES)) {
+    if (method_arg_count > 255) {
+      std::string error_msg =
+          "Function arity (" + std::to_string(method_arg_count) +
+          ") exceeds Lox limit of 255 parameters.";
+      elx_runtime_error(error_msg.c_str());
+      return Value::nil().getBits();
+    }
+
+    if ((flags & CALL_CACHE_FLAG_TARGET_LEAF) == 0) {
+      CallDepthGuard depth_guard;
+      if (!depth_guard.entered()) {
+        elx_runtime_error("Stack overflow.");
+        return Value::nil().getBits();
+      }
+      return invoke_function_pointer(function_ptr, method_args,
+                                     method_arg_count);
+    }
+
+    return invoke_function_pointer(function_ptr, method_args,
+                                   method_arg_count);
+  }
+
+  if (flags & CALL_CACHE_FLAG_METHOD_IS_NATIVE) {
+    CallDepthGuard depth_guard;
+    if (!depth_guard.entered()) {
+      elx_runtime_error("Stack overflow.");
+      return Value::nil().getBits();
+    }
+
+    NativeFn target = reinterpret_cast<NativeFn>(function_ptr);
+    try {
+      return target(method_args, method_arg_count);
+    } catch (const std::exception &e) {
+      std::string error_msg =
+          "Exception during native call: " + std::string(e.what());
+      elx_runtime_error(error_msg.c_str());
+      return Value::nil().getBits();
+    } catch (...) {
+      elx_runtime_error("Unknown exception during native call.");
+      return Value::nil().getBits();
+    }
+  }
+
   if (flags & CALL_CACHE_FLAG_METHOD_IS_CLOSURE) {
     return elx_call_closure_fast(method_bits, method_args, method_arg_count,
                                  function_ptr, total_expected);
@@ -2330,42 +2411,8 @@ uint64_t elx_call_bound_method_fast(uint64_t bound_bits, uint64_t *args,
     return elx_call_value(bound_bits, args, arg_count);
   }
 
-  constexpr size_t kSmallArgCapacity = 16;
-  std::array<uint64_t, kSmallArgCapacity> small_args{};
-  std::vector<uint64_t> heap_args;
-  size_t total_arg_count = static_cast<size_t>(arg_count) + 1;
-  uint64_t *method_args = small_args.data();
-  if (total_arg_count > small_args.size()) {
-    heap_args.resize(total_arg_count);
-    method_args = heap_args.data();
-  }
-
-  method_args[0] = bound->receiver;
-  for (int i = 0; i < arg_count; ++i) {
-    method_args[i + 1] = args ? args[i] : Value::nil().getBits();
-  }
-
-  int total_expected = expected_arity;
-  if (total_expected >= 0)
-    total_expected += 1;
-  int method_arg_count = static_cast<int>(total_arg_count);
-
-  if (flags & CALL_CACHE_FLAG_METHOD_IS_CLOSURE) {
-    return elx_call_closure_fast(method_bits, method_args, method_arg_count,
-                                 function_ptr, total_expected);
-  }
-
-  if (flags & CALL_CACHE_FLAG_METHOD_IS_FUNCTION) {
-    return elx_call_function_fast(method_bits, method_args, method_arg_count,
-                                  function_ptr, total_expected);
-  }
-
-  if (flags & CALL_CACHE_FLAG_METHOD_IS_NATIVE) {
-    return elx_call_native_fast(method_bits, method_args, method_arg_count,
-                                function_ptr, total_expected);
-  }
-
-  return elx_call_value(method_bits, method_args, method_arg_count);
+  return elx_call_method_fast(bound->receiver, args, arg_count, method_bits,
+                              function_ptr, expected_arity, flags);
 }
 
 uint64_t elx_call_class_fast(uint64_t class_bits, uint64_t *args, int arg_count,
@@ -2409,39 +2456,9 @@ uint64_t elx_call_class_fast(uint64_t class_bits, uint64_t *args, int arg_count,
     return Value::nil().getBits();
   }
 
-  constexpr size_t kSmallArgCapacity = 16;
-  std::array<uint64_t, kSmallArgCapacity> small_args{};
-  std::vector<uint64_t> heap_args;
-  size_t total_arg_count = static_cast<size_t>(arg_count) + 1;
-  uint64_t *init_args = small_args.data();
-  if (total_arg_count > small_args.size()) {
-    heap_args.resize(total_arg_count);
-    init_args = heap_args.data();
-  }
-
-  init_args[0] = instance_bits;
-  for (int i = 0; i < arg_count; ++i) {
-    init_args[i + 1] = args ? args[i] : Value::nil().getBits();
-  }
-
-  int total_expected = expected_arity;
-  if (total_expected >= 0)
-    total_expected += 1;
-  int init_arg_count = static_cast<int>(total_arg_count);
-
-  uint64_t result = Value::nil().getBits();
-  if (flags & CALL_CACHE_FLAG_METHOD_IS_CLOSURE) {
-    result = elx_call_closure_fast(initializer_bits, init_args, init_arg_count,
-                                   function_ptr, total_expected);
-  } else if (flags & CALL_CACHE_FLAG_METHOD_IS_FUNCTION) {
-    result = elx_call_function_fast(initializer_bits, init_args, init_arg_count,
-                                    function_ptr, total_expected);
-  } else if (flags & CALL_CACHE_FLAG_METHOD_IS_NATIVE) {
-    result = elx_call_native_fast(initializer_bits, init_args, init_arg_count,
-                                  function_ptr, total_expected);
-  } else {
-    result = elx_call_value(initializer_bits, init_args, init_arg_count);
-  }
+  uint64_t result =
+      elx_call_method_fast(instance_bits, args, arg_count, initializer_bits,
+                           function_ptr, expected_arity, flags);
 
   if (elx_has_runtime_error())
     return Value::nil().getBits();
