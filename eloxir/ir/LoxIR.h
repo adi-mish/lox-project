@@ -96,6 +96,7 @@ enum class InstructionKind {
   DefineFunction,
   Call,
   DirectCall,
+  BuiltinCall,
   PreparePropertyCall,
   CallPreparedProperty,
   GetProperty,

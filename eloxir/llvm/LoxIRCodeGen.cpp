@@ -80,6 +80,16 @@ private:
   std::unordered_map<std::string, const LoxFunction *> loxFunctions_;
   std::unordered_map<std::string, llvm::GlobalVariable *> internedStrings_;
   std::unordered_map<uint32_t, llvm::Value *> preparedCallCaches_;
+  struct KnownClass {
+    std::string name;
+    bool hasSuperclass = false;
+    std::string initializerFunction;
+  };
+  std::unordered_set<std::string> reassignedLocals_;
+  std::unordered_map<uint32_t, std::string> functionValueTargets_;
+  std::unordered_map<uint32_t, std::string> classValueTargets_;
+  std::unordered_map<std::string, std::string> localClassTargets_;
+  std::unordered_map<std::string, KnownClass> knownClasses_;
 
   llvm::IntegerType *valueTy() { return llvm::Type::getInt64Ty(ctx_); }
   llvm::IntegerType *i8Ty() { return llvm::Type::getInt8Ty(ctx_); }
@@ -297,6 +307,22 @@ private:
     return llvm::ConstantInt::get(i64Ty(), value);
   }
 
+  llvm::Value *runtimeIntAddress(const int *pointer) {
+    auto address =
+        static_cast<uint64_t>(reinterpret_cast<uintptr_t>(pointer));
+    return llvm::ConstantExpr::getIntToPtr(
+        llvm::ConstantInt::get(i64Ty(), address),
+        llvm::PointerType::get(i32Ty(), 0));
+  }
+
+  llvm::Value *runtimeErrorFlagAddress() {
+    return runtimeIntAddress(&elx_runtime_error_flag);
+  }
+
+  llvm::Value *currentCallDepthAddress() {
+    return runtimeIntAddress(&elx_current_call_depth);
+  }
+
   llvm::Value *isObjectValue(llvm::Value *value) {
     auto *isTagged = builder_.CreateICmpEQ(
         builder_.CreateAnd(value, constantI64(0xfff8000000000000ULL)),
@@ -429,8 +455,7 @@ private:
   }
 
   void guardRuntimeError() {
-    auto *hasError = runtime("elx_has_runtime_error");
-    if (!hasError || !function_) {
+    if (!function_) {
       return;
     }
 
@@ -444,7 +469,9 @@ private:
     auto *continueBlock =
         llvm::BasicBlock::Create(ctx_, "runtime.cont", function_);
     auto *errored = builder_.CreateICmpNE(
-        builder_.CreateCall(hasError, {}, "has.runtime.error"), constantI32(0),
+        builder_.CreateLoad(i32Ty(), runtimeErrorFlagAddress(),
+                            "runtime.error.flag"),
+        constantI32(0),
         "has.runtime.error.bool");
     builder_.CreateCondBr(errored, errorBlock, continueBlock);
 
@@ -452,6 +479,42 @@ private:
     builder_.CreateRet(nilValue());
 
     builder_.SetInsertPoint(continueBlock);
+  }
+
+  void emitStackOverflowReturn() {
+    if (auto *runtimeError = runtime("elx_runtime_error")) {
+      builder_.CreateCall(runtimeError,
+                          {stringPtr("Stack overflow.",
+                                     "stack.overflow.message")});
+    }
+    builder_.CreateRet(nilValue());
+  }
+
+  void emitEnterCallFrame(llvm::BasicBlock *callBlock,
+                          llvm::BasicBlock *overflowBlock,
+                          const std::string &name) {
+    auto *depthPtr = currentCallDepthAddress();
+    auto *depth = builder_.CreateLoad(i32Ty(), depthPtr, name + ".depth");
+    auto *canEnter =
+        builder_.CreateICmpSLT(depth, constantI32(256), name + ".can.enter");
+    builder_.CreateCondBr(canEnter, callBlock, overflowBlock);
+
+    builder_.SetInsertPoint(callBlock);
+    builder_.CreateStore(
+        builder_.CreateAdd(depth, constantI32(1), name + ".depth.next"),
+        depthPtr);
+  }
+
+  void emitLeaveCallFrame(const std::string &name) {
+    auto *depthPtr = currentCallDepthAddress();
+    auto *depth = builder_.CreateLoad(i32Ty(), depthPtr, name + ".depth");
+    auto *positive =
+        builder_.CreateICmpSGT(depth, constantI32(0), name + ".depth.positive");
+    auto *previous =
+        builder_.CreateSub(depth, constantI32(1), name + ".depth.prev");
+    auto *next = builder_.CreateSelect(positive, previous, constantI32(0),
+                                       name + ".depth.after.leave");
+    builder_.CreateStore(next, depthPtr);
   }
 
   llvm::Value *emitArgumentArray(const std::vector<ValueId> &arguments,
@@ -494,7 +557,12 @@ private:
     types_.clear();
     locals_.clear();
     preparedCallCaches_.clear();
+    functionValueTargets_.clear();
+    classValueTargets_.clear();
+    localClassTargets_.clear();
+    knownClasses_.clear();
     capturedLocals_ = capturedLocalSymbols(function);
+    reassignedLocals_ = reassignedLocalSymbols(function);
 
     for (const auto &block : function.blocks()) {
       blocks_[block.id().id] =
@@ -568,6 +636,20 @@ private:
     return symbols;
   }
 
+  std::unordered_set<std::string>
+  reassignedLocalSymbols(const LoxFunction &function) const {
+    std::unordered_set<std::string> symbols;
+    for (const auto &block : function.blocks()) {
+      for (const auto &instruction : block.instructions()) {
+        if (instruction.kind == InstructionKind::StoreLocal &&
+            !instruction.declaresSymbol && !instruction.symbol.empty()) {
+          symbols.insert(instruction.symbol);
+        }
+      }
+    }
+    return symbols;
+  }
+
   bool isLeafFunction(const LoxFunction &function) const {
     for (const auto &block : function.blocks()) {
       for (const auto &instruction : block.instructions()) {
@@ -576,6 +658,8 @@ private:
         case InstructionKind::DirectCall:
         case InstructionKind::CallPreparedProperty:
           return false;
+        case InstructionKind::BuiltinCall:
+          break;
         default:
           break;
         }
@@ -596,6 +680,7 @@ private:
         case InstructionKind::StoreLocal:
         case InstructionKind::IsTruthy:
         case InstructionKind::Print:
+        case InstructionKind::BuiltinCall:
         case InstructionKind::Jump:
         case InstructionKind::Branch:
         case InstructionKind::Return:
@@ -644,6 +729,22 @@ private:
                  LoxType type = LoxType::Unknown) {
     values_[id.id] = value;
     types_[id.id] = type;
+  }
+
+  std::optional<std::string> classTarget(ValueId id) const {
+    auto it = classValueTargets_.find(id.id);
+    if (it == classValueTargets_.end()) {
+      return std::nullopt;
+    }
+    return it->second;
+  }
+
+  std::optional<std::string> functionTarget(ValueId id) const {
+    auto it = functionValueTargets_.find(id.id);
+    if (it == functionValueTargets_.end()) {
+      return std::nullopt;
+    }
+    return it->second;
   }
 
   std::optional<std::string> unsupported(const Instruction &instruction,
@@ -718,6 +819,8 @@ private:
       return emitCall(instruction);
     case InstructionKind::DirectCall:
       return emitDirectCall(instruction);
+    case InstructionKind::BuiltinCall:
+      return emitBuiltinCall(instruction);
     case InstructionKind::PreparePropertyCall:
       return emitPreparePropertyCall(instruction);
     case InstructionKind::CallPreparedProperty:
@@ -837,6 +940,12 @@ private:
     }
     auto *value = builder_.CreateLoad(valueTy(), slot, instruction.symbol);
     bind(instruction, value, instruction.resultType);
+    if (instruction.result) {
+      auto it = localClassTargets_.find(instruction.symbol);
+      if (it != localClassTargets_.end()) {
+        classValueTargets_[instruction.result->id] = it->second;
+      }
+    }
     return std::nullopt;
   }
 
@@ -862,6 +971,15 @@ private:
         return unsupported(instruction, "missing local slot");
       }
       locals_[instruction.symbol] = slot;
+      if (auto target = classTarget(instruction.operands[0]);
+          target &&
+          reassignedLocals_.find(instruction.symbol) ==
+              reassignedLocals_.end() &&
+          capturedLocals_.find(instruction.symbol) == capturedLocals_.end()) {
+        localClassTargets_[instruction.symbol] = *target;
+      } else {
+        localClassTargets_.erase(instruction.symbol);
+      }
       return std::nullopt;
     }
     auto *slot = localSlot(instruction.symbol);
@@ -869,6 +987,7 @@ private:
       return unsupported(instruction, "missing elx_allocate_value_slot");
     }
     builder_.CreateStore(lookup(instruction.operands[0]), slot);
+    localClassTargets_.erase(instruction.symbol);
     return std::nullopt;
   }
 
@@ -1011,6 +1130,9 @@ private:
 
     if (target.upvalues().empty() && !target.isMethod()) {
       bind(instruction, functionObject, LoxType::Function);
+      if (instruction.result) {
+        functionValueTargets_[instruction.result->id] = instruction.symbol;
+      }
       return std::nullopt;
     }
 
@@ -1038,6 +1160,132 @@ private:
     }
 
     bind(instruction, closure, LoxType::Closure);
+    if (instruction.result) {
+      functionValueTargets_[instruction.result->id] = instruction.symbol;
+    }
+    return std::nullopt;
+  }
+
+  std::optional<std::string> emitBuiltinCall(const Instruction &instruction) {
+    if (!instruction.operands.empty() || !instruction.arguments.empty()) {
+      return unsupported(instruction, "unexpected builtin call operands");
+    }
+
+    if (instruction.symbol == "clock") {
+      auto *clock = runtime("elx_clock");
+      if (!clock) {
+        return unsupported(instruction, "missing elx_clock");
+      }
+      bind(instruction, builder_.CreateCall(clock, {}, "builtin.clock"),
+           LoxType::Number);
+      return std::nullopt;
+    }
+
+    if (instruction.symbol == "readLine") {
+      auto *readLine = runtime("elx_readLine");
+      if (!readLine) {
+        return unsupported(instruction, "missing elx_readLine");
+      }
+      bind(instruction, builder_.CreateCall(readLine, {}, "builtin.readline"),
+           instruction.resultType);
+      return std::nullopt;
+    }
+
+    return unsupported(instruction, "unknown builtin call");
+  }
+
+  std::optional<std::string>
+  tryEmitKnownClassCall(const Instruction &instruction, llvm::Value *callee,
+                        bool &emitted) {
+    emitted = false;
+    auto classKey = classTarget(instruction.operands[0]);
+    if (!classKey) {
+      return std::nullopt;
+    }
+    auto classIt = knownClasses_.find(*classKey);
+    if (classIt == knownClasses_.end()) {
+      return std::nullopt;
+    }
+
+    const KnownClass &knownClass = classIt->second;
+    if (knownClass.initializerFunction.empty()) {
+      if (knownClass.hasSuperclass || !instruction.arguments.empty()) {
+        return std::nullopt;
+      }
+      auto *instantiateKnownClass = runtime("elx_instantiate_known_class");
+      if (!instantiateKnownClass) {
+        return unsupported(instruction, "missing elx_instantiate_known_class");
+      }
+      auto *instance = builder_.CreateCall(instantiateKnownClass, {callee},
+                                           "known.class.instance");
+      guardRuntimeError();
+      bind(instruction, instance, LoxType::Instance);
+      emitted = true;
+      return std::nullopt;
+    }
+
+    auto functionIt = functions_.find(knownClass.initializerFunction);
+    auto loxIt = loxFunctions_.find(knownClass.initializerFunction);
+    if (functionIt == functions_.end() || loxIt == loxFunctions_.end()) {
+      return std::nullopt;
+    }
+    const LoxFunction &initializer = *loxIt->second;
+    if (!initializer.upvalues().empty()) {
+      return std::nullopt;
+    }
+    const int expectedArity =
+        initializer.arity() > 0 ? initializer.arity() - 1 : 0;
+    if (static_cast<int>(instruction.arguments.size()) != expectedArity) {
+      return std::nullopt;
+    }
+    auto *instantiateKnownClass = runtime("elx_instantiate_known_class");
+    if (!instantiateKnownClass) {
+      return unsupported(instruction, "missing elx_instantiate_known_class");
+    }
+
+    auto *instance = builder_.CreateCall(instantiateKnownClass, {callee},
+                                         "known.class.instance");
+    guardRuntimeError();
+
+    std::vector<llvm::Value *> directArgs;
+    directArgs.reserve(instruction.arguments.size() + 1);
+    directArgs.push_back(instance);
+    for (ValueId id : instruction.arguments) {
+      directArgs.push_back(lookup(id));
+    }
+
+    if (isLeafFunction(initializer)) {
+      builder_.CreateCall(functionIt->second, directArgs,
+                          "known.class.initializer.leaf");
+      if (!functionCannotRaiseRuntimeError(initializer)) {
+        guardRuntimeError();
+      }
+      bind(instruction, instance, LoxType::Instance);
+      emitted = true;
+      return std::nullopt;
+    }
+
+    auto *overflowBlock =
+        llvm::BasicBlock::Create(ctx_, "known.class.init.overflow", function_);
+    auto *callBlock =
+        llvm::BasicBlock::Create(ctx_, "known.class.init.call", function_);
+    auto *doneBlock =
+        llvm::BasicBlock::Create(ctx_, "known.class.init.done", function_);
+    emitEnterCallFrame(callBlock, overflowBlock, "known.class.init");
+
+    builder_.SetInsertPoint(overflowBlock);
+    emitStackOverflowReturn();
+
+    builder_.SetInsertPoint(callBlock);
+    builder_.CreateCall(functionIt->second, directArgs,
+                        "known.class.initializer");
+    emitLeaveCallFrame("known.class.init");
+    guardRuntimeError();
+    builder_.CreateBr(doneBlock);
+
+    builder_.SetInsertPoint(doneBlock);
+    bind(instruction, instance, LoxType::Instance);
+    emitted = true;
     return std::nullopt;
   }
 
@@ -1054,16 +1302,23 @@ private:
     if (!call) {
       return unsupported(instruction, "missing elx_call_value");
     }
-    auto *args = emitArgumentArray(instruction.arguments, "call.args");
     auto *count = constantI32(static_cast<int>(instruction.arguments.size()));
     if (typeOf(instruction.operands[0]) == LoxType::Class) {
+      bool emittedKnownClassCall = false;
+      if (auto failure = tryEmitKnownClassCall(
+              instruction, lookup(instruction.operands[0]),
+              emittedKnownClassCall)) {
+        return failure;
+      }
+      if (emittedKnownClassCall) {
+        return std::nullopt;
+      }
+
+      auto *args = emitArgumentArray(instruction.arguments, "call.args");
       auto *callClassFast = runtime("elx_call_class_fast");
       auto *instantiateKnownClass = runtime("elx_instantiate_known_class");
       auto *updateCache = runtime("elx_call_cache_update");
-      auto *enter = runtime("elx_enter_call_frame");
-      auto *leave = runtime("elx_leave_call_frame");
-      if (callClassFast && instantiateKnownClass && updateCache && enter &&
-          leave) {
+      if (callClassFast && instantiateKnownClass && updateCache) {
         auto *callee = lookup(instruction.operands[0]);
         auto *cache = createCallCache(instruction);
         auto *cachedCallee =
@@ -1213,19 +1468,16 @@ private:
         directInitLeafCheckBlock = builder_.GetInsertBlock();
 
         builder_.SetInsertPoint(directInitFramedBlock);
-        auto *entered = builder_.CreateICmpNE(
-            builder_.CreateCall(enter, {}, "class.call.init.entered"),
-            constantI32(0), "class.call.init.can.enter");
-        builder_.CreateCondBr(entered, directInitCallBlock,
-                              directOverflowBlock);
+        emitEnterCallFrame(directInitCallBlock, directOverflowBlock,
+                           "class.call.init");
 
         builder_.SetInsertPoint(directOverflowBlock);
-        builder_.CreateRet(nilValue());
+        emitStackOverflowReturn();
 
         builder_.SetInsertPoint(directInitCallBlock);
         builder_.CreateCall(directFunctionTy, targetPtr, directArgs,
                             "class.call.initializer.direct");
-        builder_.CreateCall(leave, {});
+        emitLeaveCallFrame("class.call.init");
         guardRuntimeError();
         builder_.CreateBr(doneBlock);
         directInitCallBlock = builder_.GetInsertBlock();
@@ -1265,6 +1517,7 @@ private:
         return std::nullopt;
       }
     }
+    auto *args = emitArgumentArray(instruction.arguments, "call.args");
     auto *result =
         builder_.CreateCall(call, {lookup(instruction.operands[0]), args, count},
                             "call");
@@ -1281,16 +1534,11 @@ private:
     }
     auto functionIt = functions_.find(instruction.symbol);
     auto loxIt = loxFunctions_.find(instruction.symbol);
-    auto *enter = runtime("elx_enter_call_frame");
-    auto *leave = runtime("elx_leave_call_frame");
     if (functionIt == functions_.end() || loxIt == loxFunctions_.end()) {
       return unsupported(instruction, "missing direct call target");
     }
     if (!loxIt->second->upvalues().empty()) {
       return unsupported(instruction, "direct closure calls are not supported");
-    }
-    if (!enter || !leave) {
-      return unsupported(instruction, "missing direct call frame helper");
     }
 
     if (isLeafFunction(*loxIt->second)) {
@@ -1312,13 +1560,10 @@ private:
         llvm::BasicBlock::Create(ctx_, "direct.call.overflow", function_);
     auto *callBlock =
         llvm::BasicBlock::Create(ctx_, "direct.call.body", function_);
-    auto *entered = builder_.CreateICmpNE(
-        builder_.CreateCall(enter, {}, "direct.call.entered"), constantI32(0),
-        "direct.call.can.enter");
-    builder_.CreateCondBr(entered, callBlock, overflowBlock);
+    emitEnterCallFrame(callBlock, overflowBlock, "direct.call");
 
     builder_.SetInsertPoint(overflowBlock);
-    builder_.CreateRet(nilValue());
+    emitStackOverflowReturn();
 
     builder_.SetInsertPoint(callBlock);
     std::vector<llvm::Value *> args;
@@ -1328,7 +1573,7 @@ private:
     }
     auto *result =
         builder_.CreateCall(functionIt->second, args, "direct.call");
-    builder_.CreateCall(leave, {});
+    emitLeaveCallFrame("direct.call");
     guardRuntimeError();
     bind(instruction, result, instruction.resultType);
     return std::nullopt;
@@ -1471,8 +1716,6 @@ private:
       return unsupported(instruction, "missing elx_call_prepared_property");
     }
     auto *callMethodFast = runtime("elx_call_method_fast");
-    auto *enter = runtime("elx_enter_call_frame");
-    auto *leave = runtime("elx_leave_call_frame");
     auto *args =
         emitArgumentArray(instruction.arguments, "prepared.property.args");
     auto *count = constantI32(static_cast<int>(instruction.arguments.size()));
@@ -1579,11 +1822,7 @@ private:
     builder_.CreateCondBr(fastEligible, fastBlock, fallbackBlock);
 
     builder_.SetInsertPoint(fastBlock);
-    if (enter && leave) {
-      builder_.CreateCondBr(canDirectCall, directBlock, helperBlock);
-    } else {
-      builder_.CreateBr(helperBlock);
-    }
+    builder_.CreateCondBr(canDirectCall, directBlock, helperBlock);
     fastBlock = builder_.GetInsertBlock();
 
     builder_.SetInsertPoint(directBlock);
@@ -1613,19 +1852,17 @@ private:
     directLeafCheckBlock = builder_.GetInsertBlock();
 
     builder_.SetInsertPoint(directFramedBlock);
-    auto *entered = builder_.CreateICmpNE(
-        builder_.CreateCall(enter, {}, "prepared.property.direct.entered"),
-        constantI32(0), "prepared.property.direct.can.enter");
-    builder_.CreateCondBr(entered, directCallBlock, directOverflowBlock);
+    emitEnterCallFrame(directCallBlock, directOverflowBlock,
+                       "prepared.property.direct");
 
     builder_.SetInsertPoint(directOverflowBlock);
-    builder_.CreateRet(nilValue());
+    emitStackOverflowReturn();
 
     builder_.SetInsertPoint(directCallBlock);
     auto *directResult =
         builder_.CreateCall(directFunctionTy, targetPtr, directArgs,
                             "prepared.property.direct.result");
-    builder_.CreateCall(leave, {});
+    emitLeaveCallFrame("prepared.property.direct");
     guardRuntimeError();
     builder_.CreateBr(doneBlock);
     directCallBlock = builder_.GetInsertBlock();
@@ -1897,6 +2134,13 @@ private:
         builder_.CreateCall(allocate, {name, superclass}, "class.object");
     guardRuntimeError();
     bind(instruction, klass, LoxType::Class);
+    if (instruction.result) {
+      std::string key = (loxFunction_ ? loxFunction_->name() : "<module>") +
+                        "#" + std::to_string(instruction.result->id);
+      classValueTargets_[instruction.result->id] = key;
+      knownClasses_[key] =
+          KnownClass{instruction.symbol, !instruction.operands.empty(), ""};
+    }
     return std::nullopt;
   }
 
@@ -1913,6 +2157,16 @@ private:
                         {lookup(instruction.operands[0]), name,
                          lookup(instruction.operands[1])});
     guardRuntimeError();
+    if (instruction.symbol == "init") {
+      auto classKey = classTarget(instruction.operands[0]);
+      auto functionName = functionTarget(instruction.operands[1]);
+      if (classKey && functionName) {
+        auto it = knownClasses_.find(*classKey);
+        if (it != knownClasses_.end()) {
+          it->second.initializerFunction = *functionName;
+        }
+      }
+    }
     return std::nullopt;
   }
 

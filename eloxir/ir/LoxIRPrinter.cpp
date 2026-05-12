@@ -50,6 +50,7 @@ void printInstruction(std::ostream &out, const Instruction &instruction) {
   case InstructionKind::PreparePropertyCall:
   case InstructionKind::Call:
   case InstructionKind::DirectCall:
+  case InstructionKind::BuiltinCall:
   case InstructionKind::CallPreparedProperty:
     if (!instruction.symbol.empty()) {
       out << " @" << instruction.symbol;

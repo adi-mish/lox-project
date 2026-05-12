@@ -551,6 +551,32 @@ struct StableFunctionTarget {
   int arity = 0;
 };
 
+std::optional<LoxType> builtinReturnType(const std::string &name) {
+  if (name == "clock") {
+    return LoxType::Number;
+  }
+  if (name == "readLine") {
+    return LoxType::Unknown;
+  }
+  return std::nullopt;
+}
+
+std::unordered_set<std::string>
+collectDeclaredGlobalSymbols(const LoxModule &module) {
+  std::unordered_set<std::string> globals;
+  for (const auto &function : module.functions()) {
+    for (const auto &block : function.blocks()) {
+      for (const auto &instruction : block.instructions()) {
+        if (instruction.kind == InstructionKind::StoreGlobal &&
+            instruction.declaresSymbol && !instruction.symbol.empty()) {
+          globals.insert(instruction.symbol);
+        }
+      }
+    }
+  }
+  return globals;
+}
+
 std::unordered_map<std::string, StableFunctionTarget>
 collectStableTopLevelFunctions(const LoxModule &module) {
   if (module.functions().empty()) {
@@ -731,6 +757,10 @@ LoxType inferResultType(
     auto it = functionReturnTypes.find(instruction.symbol);
     return it == functionReturnTypes.end() ? instruction.resultType
                                            : it->second;
+  }
+  case InstructionKind::BuiltinCall: {
+    auto type = builtinReturnType(instruction.symbol);
+    return type ? *type : instruction.resultType;
   }
   default:
     return instruction.resultType;
@@ -1125,6 +1155,76 @@ public:
   }
 };
 
+class DirectBuiltinCallPass final : public LoxPass {
+public:
+  std::string name() const override {
+    return "direct-builtin-call-specialization";
+  }
+
+  bool run(LoxModule &module) override {
+    auto declaredGlobals = collectDeclaredGlobalSymbols(module);
+    bool changed = false;
+
+    for (auto &function : module.functions()) {
+      std::unordered_map<uint32_t, Instruction *> definitions;
+      std::unordered_map<uint32_t, uint32_t> useCounts;
+      for (auto &block : function.blocks()) {
+        for (auto &instruction : block.instructions()) {
+          if (instruction.result) {
+            definitions[instruction.result->id] = &instruction;
+          }
+          for (ValueId operand : instruction.operands) {
+            if (operand.valid()) {
+              ++useCounts[operand.id];
+            }
+          }
+          for (ValueId argument : instruction.arguments) {
+            if (argument.valid()) {
+              ++useCounts[argument.id];
+            }
+          }
+        }
+      }
+
+      for (auto &block : function.blocks()) {
+        for (auto &instruction : block.instructions()) {
+          if (instruction.kind != InstructionKind::Call ||
+              instruction.operands.size() != 1 ||
+              !instruction.arguments.empty()) {
+            continue;
+          }
+          auto defIt = definitions.find(instruction.operands[0].id);
+          if (defIt == definitions.end()) {
+            continue;
+          }
+          Instruction *calleeLoad = defIt->second;
+          if (calleeLoad->kind != InstructionKind::LoadGlobal) {
+            continue;
+          }
+          auto returnType = builtinReturnType(calleeLoad->symbol);
+          if (!returnType ||
+              declaredGlobals.find(calleeLoad->symbol) !=
+                  declaredGlobals.end()) {
+            continue;
+          }
+
+          std::string builtinName = calleeLoad->symbol;
+          if (useCounts[instruction.operands[0].id] == 1) {
+            replaceWithNil(*calleeLoad);
+          }
+          instruction.kind = InstructionKind::BuiltinCall;
+          instruction.symbol = std::move(builtinName);
+          instruction.resultType = *returnType;
+          instruction.operands.clear();
+          changed = true;
+        }
+      }
+    }
+
+    return changed;
+  }
+};
+
 class DeadCodeEliminationPass final : public LoxPass {
 public:
   std::string name() const override { return "dead-code-elimination"; }
@@ -1194,6 +1294,7 @@ LoxPassManager createDefaultLoxPassPipeline() {
   LoxPassManager manager;
   manager.add(std::make_unique<GlobalDemotionPass>());
   manager.add(createTypePropagationPass());
+  manager.add(std::make_unique<DirectBuiltinCallPass>());
   manager.add(std::make_unique<DirectCallPass>());
   manager.add(createConstantFoldingPass());
   manager.add(createTypePropagationPass());

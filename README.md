@@ -9,7 +9,8 @@ Robert Nystrom's *Crafting Interpreters*:
   `munificent/craftinginterpreters`.
 - `cpplox`: C++20 bytecode VM focused on fast execution and optional VM
   instrumentation.
-- `eloxir`: C++17 LLVM ORC JIT implementation.
+- `eloxir`: C++17 LLVM ORC JIT implementation with LoxIR-level type and
+  direct-call specialization passes.
 
 The official Lox tests live in `test/`. Use the root `lox.py` command, or the
 installed `lox` console script, to build, run, test, inspect, and clean all
@@ -153,6 +154,26 @@ Common workflows:
 
 # Print machine-readable implementation metadata.
 ./lox.py info --json
+```
+
+## eloxir JIT Inspection
+
+`eloxir` lowers source programs through a typed LoxIR before emitting LLVM IR.
+The JIT keeps Lox semantics visible to LLVM where it can prove them, including
+numeric arithmetic, stable top-level function calls, guarded method/property
+paths, direct instantiation of proven local classes, and unshadowed builtin
+calls such as `clock()`.
+
+Useful inspection toggles:
+
+```bash
+ELOXIR_PRINT_LOXIR=1 ./lox.py run eloxir test/benchmark/fib.lox
+ELOXIR_DUMP_LOXIR=/tmp/loxir ./lox.py run eloxir test/benchmark/fib.lox
+ELOXIR_PRINT_IR=1 ./lox.py run eloxir test/benchmark/fib.lox
+ELOXIR_DUMP_IR_DIR=/tmp/eloxir-ir ./lox.py run eloxir test/benchmark/fib.lox
+ELOXIR_TRACE_LLVM_MODULES=1 ./lox.py run eloxir test/benchmark/fib.lox
+ELOXIR_TIME_PASSES=1 ./lox.py run eloxir test/benchmark/fib.lox
+ELOXIR_TRACE_OPT=1 ./lox.py run eloxir test/benchmark/fib.lox
 ```
 
 ## Lox Grammar

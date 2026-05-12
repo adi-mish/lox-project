@@ -49,10 +49,14 @@ static std::unordered_map<std::string, uint64_t> global_functions;
 static constexpr int PROPERTY_CALL_FIELD = 1;
 static constexpr int PROPERTY_CALL_METHOD = 2;
 
+extern "C" {
+int elx_runtime_error_flag = 0;
+int elx_current_call_depth = 0;
+}
+
 namespace {
 
 // Runtime error state
-static bool runtime_error_flag = false;
 static std::string runtime_error_message;
 struct FieldBuffer {
   uint64_t *values;
@@ -197,22 +201,21 @@ static void releaseInstanceObject(ObjInstance *instance) {
 }
 
 constexpr int MAX_CALL_DEPTH = 256;
-thread_local int current_call_depth = 0;
 
 constexpr uint64_t SUPERCLASS_VALIDATION_FAILED =
     std::numeric_limits<uint64_t>::max();
 
 struct CallDepthGuard {
   CallDepthGuard() {
-    if (current_call_depth < MAX_CALL_DEPTH) {
-      ++current_call_depth;
+    if (elx_current_call_depth < MAX_CALL_DEPTH) {
+      ++elx_current_call_depth;
       active = true;
     }
   }
 
   ~CallDepthGuard() {
     if (active) {
-      --current_call_depth;
+      --elx_current_call_depth;
     }
   }
 
@@ -1929,7 +1932,6 @@ static bool configureMethodCallCache(CallInlineCache *cache,
   if (func && (func->flags & FUNCTION_FLAG_NO_RUNTIME_ERROR) != 0) {
     flags |= CALL_CACHE_FLAG_TARGET_NO_RUNTIME_ERROR;
   }
-
   elx_call_cache_invalidate(cache);
   cache->callee_bits = callee_bits;
   cache->guard0_bits = method_bits;
@@ -2073,7 +2075,6 @@ void elx_call_cache_update(CallInlineCache *cache, uint64_t callee_bits) {
     if (func && (func->flags & FUNCTION_FLAG_NO_RUNTIME_ERROR) != 0) {
       flags |= CALL_CACHE_FLAG_TARGET_NO_RUNTIME_ERROR;
     }
-
     cache->guard0_bits = initializer_bits;
     cache->target_ptr = target;
     cache->flags = flags;
@@ -3201,7 +3202,7 @@ int elx_has_global_function(const char *name) {
 
 // Error handling functions
 static void set_runtime_error(const char *message, bool print_immediately) {
-  runtime_error_flag = true;
+  elx_runtime_error_flag = 1;
   runtime_error_message = std::string(message);
   if (print_immediately) {
     std::cerr << "Runtime error: " << message << std::endl;
@@ -3217,32 +3218,32 @@ void elx_runtime_error_silent(const char *message) {
 }
 
 void elx_emit_runtime_error() {
-  if (!runtime_error_flag)
+  if (!elx_runtime_error_flag)
     return;
 
   const char *message = runtime_error_message.c_str();
   std::cerr << "Runtime error: " << message << std::endl;
 }
 
-int elx_has_runtime_error() { return runtime_error_flag ? 1 : 0; }
+int elx_has_runtime_error() { return elx_runtime_error_flag ? 1 : 0; }
 
 void elx_clear_runtime_error() {
-  runtime_error_flag = false;
+  elx_runtime_error_flag = 0;
   runtime_error_message.clear();
 }
 
 int elx_enter_call_frame() {
-  if (current_call_depth >= MAX_CALL_DEPTH) {
+  if (elx_current_call_depth >= MAX_CALL_DEPTH) {
     elx_runtime_error("Stack overflow.");
     return 0;
   }
-  ++current_call_depth;
+  ++elx_current_call_depth;
   return 1;
 }
 
 void elx_leave_call_frame() {
-  if (current_call_depth > 0) {
-    --current_call_depth;
+  if (elx_current_call_depth > 0) {
+    --elx_current_call_depth;
   }
 }
 

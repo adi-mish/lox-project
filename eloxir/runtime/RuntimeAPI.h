@@ -314,6 +314,8 @@ int elx_has_global_function(const char *name);
 void elx_runtime_error(const char *message);
 void elx_runtime_error_silent(const char *message);
 void elx_emit_runtime_error();
+extern int elx_runtime_error_flag;
+extern int elx_current_call_depth;
 int elx_has_runtime_error();
 void elx_clear_runtime_error();
 int elx_enter_call_frame();
