@@ -1899,6 +1899,9 @@ static bool configureMethodCallCache(CallInlineCache *cache,
     target = closure->function->llvm_function;
     expected_total = closure->function->arity;
     flags |= CALL_CACHE_FLAG_METHOD_IS_CLOSURE;
+    if (closure->upvalue_count > 0) {
+      flags |= CALL_CACHE_FLAG_CLOSURE_HAS_UPVALUES;
+    }
   } else if (func && func->llvm_function) {
     target = func->llvm_function;
     expected_total = func->arity;
@@ -2021,6 +2024,9 @@ void elx_call_cache_update(CallInlineCache *cache, uint64_t callee_bits) {
       target = closure->function->llvm_function;
       expected_total = closure->function->arity;
       flags |= CALL_CACHE_FLAG_METHOD_IS_CLOSURE;
+      if (closure->upvalue_count > 0) {
+        flags |= CALL_CACHE_FLAG_CLOSURE_HAS_UPVALUES;
+      }
     } else if (func && func->llvm_function) {
       target = func->llvm_function;
       expected_total = func->arity;
@@ -2230,6 +2236,81 @@ uint64_t elx_call_native_fast(uint64_t native_bits, uint64_t *args,
     elx_runtime_error("Unknown exception during native call.");
     return Value::nil().getBits();
   }
+}
+
+uint64_t elx_call_method_fast(uint64_t receiver_bits, uint64_t *args,
+                              int arg_count, uint64_t method_bits,
+                              void *function_ptr, int expected_arity,
+                              int flags) {
+  elx_clear_runtime_error();
+
+  constexpr int kCallableMethodFlags = CALL_CACHE_FLAG_METHOD_IS_CLOSURE |
+                                       CALL_CACHE_FLAG_METHOD_IS_FUNCTION |
+                                       CALL_CACHE_FLAG_METHOD_IS_NATIVE;
+  if (!function_ptr || (flags & kCallableMethodFlags) == 0) {
+    return callMethodWithoutBinding(receiver_bits, method_bits, args,
+                                    arg_count);
+  }
+
+  if (expected_arity >= 0 && arg_count != expected_arity) {
+    Value method_val = Value::fromBits(method_bits);
+    ObjClosure *closure = getClosure(method_val);
+    ObjFunction *func = closure ? closure->function : getFunction(method_val);
+    ObjNative *native = (closure || func) ? nullptr : getNative(method_val);
+    const char *name = "<anonymous>";
+    if (func && func->name && func->name[0] != '\0') {
+      name = func->name;
+    } else if (native && native->name && native->name[0] != '\0') {
+      name = native->name;
+    }
+
+    std::string error_msg = formatArityError(name, expected_arity, arg_count);
+    elx_runtime_error(error_msg.c_str());
+    return Value::nil().getBits();
+  }
+
+  size_t total_arg_count = static_cast<size_t>(arg_count) + 1;
+  constexpr size_t kSmallArgCapacity = 16;
+  uint64_t inline_arg = receiver_bits;
+  std::array<uint64_t, kSmallArgCapacity> small_args;
+  std::vector<uint64_t> heap_args;
+  uint64_t *method_args = &inline_arg;
+
+  if (arg_count != 0) {
+    method_args = small_args.data();
+    if (total_arg_count > small_args.size()) {
+      heap_args.resize(total_arg_count);
+      method_args = heap_args.data();
+    }
+
+    method_args[0] = receiver_bits;
+    for (int i = 0; i < arg_count; ++i) {
+      method_args[i + 1] = args ? args[i] : Value::nil().getBits();
+    }
+  }
+
+  int method_arg_count = static_cast<int>(total_arg_count);
+  int total_expected = expected_arity;
+  if (total_expected >= 0) {
+    total_expected += 1;
+  }
+
+  if (flags & CALL_CACHE_FLAG_METHOD_IS_CLOSURE) {
+    return elx_call_closure_fast(method_bits, method_args, method_arg_count,
+                                 function_ptr, total_expected);
+  }
+
+  if (flags & CALL_CACHE_FLAG_METHOD_IS_FUNCTION) {
+    return elx_call_function_fast(method_bits, method_args, method_arg_count,
+                                  function_ptr, total_expected);
+  }
+
+  if (flags & CALL_CACHE_FLAG_METHOD_IS_NATIVE) {
+    return elx_call_native_fast(method_bits, method_args, method_arg_count,
+                                function_ptr, total_expected);
+  }
+
+  return callMethodWithoutBinding(receiver_bits, method_bits, args, arg_count);
 }
 
 uint64_t elx_call_bound_method_fast(uint64_t bound_bits, uint64_t *args,

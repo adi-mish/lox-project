@@ -114,6 +114,7 @@ constexpr int CALL_CACHE_FLAG_METHOD_IS_CLOSURE = 1 << 0;
 constexpr int CALL_CACHE_FLAG_METHOD_IS_FUNCTION = 1 << 1;
 constexpr int CALL_CACHE_FLAG_METHOD_IS_NATIVE = 1 << 2;
 constexpr int CALL_CACHE_FLAG_CLASS_HAS_INITIALIZER = 1 << 3;
+constexpr int CALL_CACHE_FLAG_CLOSURE_HAS_UPVALUES = 1 << 4;
 
 struct CallInlineCache {
   uint64_t callee_bits;
@@ -204,6 +205,10 @@ uint64_t elx_call_closure_fast(uint64_t closure_bits, uint64_t *args,
 uint64_t elx_call_native_fast(uint64_t native_bits, uint64_t *args,
                               int arg_count, void *function_ptr,
                               int expected_arity);
+uint64_t elx_call_method_fast(uint64_t receiver_bits, uint64_t *args,
+                              int arg_count, uint64_t method_bits,
+                              void *function_ptr, int expected_arity,
+                              int flags);
 uint64_t elx_call_bound_method_fast(uint64_t bound_bits, uint64_t *args,
                                     int arg_count, uint64_t method_bits,
                                     void *function_ptr, int expected_arity,

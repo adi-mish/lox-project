@@ -79,6 +79,7 @@ private:
   std::unordered_map<std::string, llvm::Function *> functions_;
   std::unordered_map<std::string, const LoxFunction *> loxFunctions_;
   std::unordered_map<std::string, llvm::GlobalVariable *> internedStrings_;
+  std::unordered_map<uint32_t, llvm::Value *> preparedCallCaches_;
 
   llvm::IntegerType *valueTy() { return llvm::Type::getInt64Ty(ctx_); }
   llvm::IntegerType *i8Ty() { return llvm::Type::getInt8Ty(ctx_); }
@@ -403,6 +404,15 @@ private:
         name);
   }
 
+  llvm::Value *loadCallCachePtr(llvm::Value *cache, unsigned fieldIndex,
+                                const std::string &name) {
+    return builder_.CreateLoad(
+        i8PtrTy(),
+        builder_.CreateStructGEP(getOrCreateCallInlineCacheIRType(ctx_), cache,
+                                 fieldIndex, name + ".addr"),
+        name);
+  }
+
   void guardRuntimeError() {
     auto *hasError = runtime("elx_has_runtime_error");
     if (!hasError || !function_) {
@@ -468,6 +478,7 @@ private:
     values_.clear();
     types_.clear();
     locals_.clear();
+    preparedCallCaches_.clear();
     capturedLocals_ = capturedLocalSymbols(function);
 
     for (const auto &block : function.blocks()) {
@@ -961,6 +972,179 @@ private:
     }
     auto *args = emitArgumentArray(instruction.arguments, "call.args");
     auto *count = constantI32(static_cast<int>(instruction.arguments.size()));
+    if (typeOf(instruction.operands[0]) == LoxType::Class) {
+      auto *callClassFast = runtime("elx_call_class_fast");
+      auto *instantiateKnownClass = runtime("elx_instantiate_known_class");
+      auto *updateCache = runtime("elx_call_cache_update");
+      auto *enter = runtime("elx_enter_call_frame");
+      auto *leave = runtime("elx_leave_call_frame");
+      if (callClassFast && instantiateKnownClass && updateCache && enter &&
+          leave) {
+        auto *callee = lookup(instruction.operands[0]);
+        auto *cache = createCallCache(instruction);
+        auto *cachedCallee =
+            loadCallCacheI64(cache, 0, "class.call.cached.callee");
+        auto *initializer =
+            loadCallCacheI64(cache, 1, "class.call.cached.initializer");
+        auto *targetPtr =
+            loadCallCachePtr(cache, 3, "class.call.cached.target");
+        auto *expectedArity =
+            loadCallCacheI32(cache, 4, "class.call.cached.arity");
+        auto *cachedKind =
+            loadCallCacheI32(cache, 5, "class.call.cached.kind");
+        auto *flags = loadCallCacheI32(cache, 6, "class.call.cached.flags");
+
+        auto *calleeMatches =
+            builder_.CreateICmpEQ(cachedCallee, callee,
+                                  "class.call.callee.matches");
+        auto *kindMatches = builder_.CreateICmpEQ(
+            cachedKind,
+            llvm::ConstantInt::get(
+                i32Ty(), static_cast<int>(CallInlineCacheKind::CLASS)),
+            "class.call.kind.matches");
+        auto *cacheHit = builder_.CreateAnd(calleeMatches, kindMatches,
+                                            "class.call.cache.hit");
+
+        auto *fastBlock =
+            llvm::BasicBlock::Create(ctx_, "class.call.fast", function_);
+        auto *fallbackBlock =
+            llvm::BasicBlock::Create(ctx_, "class.call.generic", function_);
+        auto *doneBlock =
+            llvm::BasicBlock::Create(ctx_, "class.call.done", function_);
+        builder_.CreateCondBr(cacheHit, fastBlock, fallbackBlock);
+
+        builder_.SetInsertPoint(fastBlock);
+        auto *hasInitializer = builder_.CreateICmpNE(
+            builder_.CreateAnd(flags,
+                               constantI32(CALL_CACHE_FLAG_CLASS_HAS_INITIALIZER),
+                               "class.call.initializer.flag"),
+            constantI32(0), "class.call.has.initializer");
+        auto *zeroArgs =
+            builder_.CreateICmpEQ(count, constantI32(0), "class.call.zero.args");
+        auto *canSkipInitializer =
+            builder_.CreateAnd(builder_.CreateNot(hasInitializer), zeroArgs,
+                               "class.call.no.initializer.direct");
+        auto *directMethodFlags = builder_.CreateAnd(
+            flags,
+            constantI32(CALL_CACHE_FLAG_METHOD_IS_CLOSURE |
+                        CALL_CACHE_FLAG_METHOD_IS_FUNCTION),
+            "class.call.direct.flags");
+        auto *isDirectCallable =
+            builder_.CreateICmpNE(directMethodFlags, constantI32(0),
+                                  "class.call.direct.callable");
+        auto *hasUpvalues = builder_.CreateICmpNE(
+            builder_.CreateAnd(flags,
+                               constantI32(CALL_CACHE_FLAG_CLOSURE_HAS_UPVALUES),
+                               "class.call.upvalue.flag"),
+            constantI32(0), "class.call.has.upvalues");
+        auto *arityMatches =
+            builder_.CreateICmpEQ(expectedArity, count,
+                                  "class.call.arity.matches");
+        auto *targetAvailable =
+            builder_.CreateICmpNE(targetPtr,
+                                  llvm::ConstantPointerNull::get(i8PtrTy()),
+                                  "class.call.target.available");
+        auto *canDirectInitialize =
+            builder_.CreateAnd(hasInitializer, isDirectCallable,
+                               "class.call.direct.init.0");
+        canDirectInitialize = builder_.CreateAnd(
+            canDirectInitialize, builder_.CreateNot(hasUpvalues),
+            "class.call.direct.init.1");
+        canDirectInitialize = builder_.CreateAnd(
+            canDirectInitialize, arityMatches, "class.call.direct.init.2");
+        canDirectInitialize =
+            builder_.CreateAnd(canDirectInitialize, targetAvailable,
+                               "class.call.direct.init");
+        auto *canDirectClass = builder_.CreateOr(
+            canSkipInitializer, canDirectInitialize, "class.call.direct");
+
+        auto *directBlock =
+            llvm::BasicBlock::Create(ctx_, "class.call.direct", function_);
+        auto *directInitBlock =
+            llvm::BasicBlock::Create(ctx_, "class.call.direct.init",
+                                     function_);
+        auto *directNoInitBlock =
+            llvm::BasicBlock::Create(ctx_, "class.call.direct.noinit",
+                                     function_);
+        auto *directOverflowBlock =
+            llvm::BasicBlock::Create(ctx_, "class.call.direct.overflow",
+                                     function_);
+        auto *directInitCallBlock =
+            llvm::BasicBlock::Create(ctx_, "class.call.direct.init.call",
+                                     function_);
+        auto *helperBlock =
+            llvm::BasicBlock::Create(ctx_, "class.call.fast.helper",
+                                     function_);
+        builder_.CreateCondBr(canDirectClass, directBlock, helperBlock);
+
+        builder_.SetInsertPoint(directBlock);
+        auto *instance = builder_.CreateCall(instantiateKnownClass, {callee},
+                                             "class.call.instance");
+        guardRuntimeError();
+        builder_.CreateCondBr(canDirectInitialize, directInitBlock,
+                              directNoInitBlock);
+
+        builder_.SetInsertPoint(directInitBlock);
+        auto *entered = builder_.CreateICmpNE(
+            builder_.CreateCall(enter, {}, "class.call.init.entered"),
+            constantI32(0), "class.call.init.can.enter");
+        builder_.CreateCondBr(entered, directInitCallBlock,
+                              directOverflowBlock);
+
+        builder_.SetInsertPoint(directOverflowBlock);
+        builder_.CreateRet(nilValue());
+
+        builder_.SetInsertPoint(directInitCallBlock);
+        std::vector<llvm::Type *> directParamTypes(instruction.arguments.size() + 1,
+                                                   valueTy());
+        auto *directFunctionTy =
+            llvm::FunctionType::get(valueTy(), directParamTypes, false);
+        std::vector<llvm::Value *> directArgs;
+        directArgs.reserve(instruction.arguments.size() + 1);
+        directArgs.push_back(instance);
+        for (ValueId id : instruction.arguments) {
+          directArgs.push_back(lookup(id));
+        }
+        builder_.CreateCall(directFunctionTy, targetPtr, directArgs,
+                            "class.call.initializer.direct");
+        builder_.CreateCall(leave, {});
+        guardRuntimeError();
+        builder_.CreateBr(doneBlock);
+        directInitBlock = builder_.GetInsertBlock();
+
+        builder_.SetInsertPoint(directNoInitBlock);
+        builder_.CreateBr(doneBlock);
+        directNoInitBlock = builder_.GetInsertBlock();
+
+        builder_.SetInsertPoint(helperBlock);
+        auto *fastResult = builder_.CreateCall(
+            callClassFast, {callee, args, count, initializer, targetPtr,
+                            expectedArity, flags},
+            "class.call.fast.result");
+        guardRuntimeError();
+        builder_.CreateBr(doneBlock);
+        helperBlock = builder_.GetInsertBlock();
+
+        builder_.SetInsertPoint(fallbackBlock);
+        auto *genericResult =
+            builder_.CreateCall(call, {callee, args, count}, "class.call");
+        guardRuntimeError();
+        builder_.CreateCall(updateCache,
+                            {builder_.CreatePointerCast(cache, callCachePtrTy()),
+                             callee});
+        builder_.CreateBr(doneBlock);
+        fallbackBlock = builder_.GetInsertBlock();
+
+        builder_.SetInsertPoint(doneBlock);
+        auto *result = builder_.CreatePHI(valueTy(), 4, "class.call.result");
+        result->addIncoming(instance, directInitBlock);
+        result->addIncoming(instance, directNoInitBlock);
+        result->addIncoming(fastResult, helperBlock);
+        result->addIncoming(genericResult, fallbackBlock);
+        bind(instruction, result, instruction.resultType);
+        return std::nullopt;
+      }
+    }
     auto *result =
         builder_.CreateCall(call, {lookup(instruction.operands[0]), args, count},
                             "call");
@@ -1032,6 +1216,10 @@ private:
     auto *targetSlot = createStackSlot("property.call.target");
     builder_.CreateStore(nilValue(), targetSlot);
     auto *cache = createCallCache(instruction);
+    if (instruction.result) {
+      preparedCallCaches_[instruction.result->id] = cache;
+    }
+    preparedCallCaches_[instruction.auxResult->id] = cache;
     auto *receiver = lookup(instruction.operands[0]);
 
     auto *objectBlock = llvm::BasicBlock::Create(
@@ -1138,15 +1326,84 @@ private:
     if (!call) {
       return unsupported(instruction, "missing elx_call_prepared_property");
     }
+    auto *callMethodFast = runtime("elx_call_method_fast");
     auto *args =
         emitArgumentArray(instruction.arguments, "prepared.property.args");
     auto *count = constantI32(static_cast<int>(instruction.arguments.size()));
-    auto *result = builder_.CreateCall(
-        call,
-        {lookup(instruction.operands[1]), lookup(instruction.operands[0]),
-         lookup(instruction.operands[2]), args, count},
-        "prepared.property.call");
+
+    auto cacheIt = preparedCallCaches_.find(instruction.operands[2].id);
+    if (cacheIt == preparedCallCaches_.end() || !callMethodFast) {
+      auto *result = builder_.CreateCall(
+          call,
+          {lookup(instruction.operands[1]), lookup(instruction.operands[0]),
+           lookup(instruction.operands[2]), args, count},
+          "prepared.property.call");
+      guardRuntimeError();
+      bind(instruction, result, instruction.resultType);
+      return std::nullopt;
+    }
+
+    auto *receiver = lookup(instruction.operands[0]);
+    auto *kind = lookup(instruction.operands[1]);
+    auto *target = lookup(instruction.operands[2]);
+    auto *cache = cacheIt->second;
+    auto *cachedMethod =
+        loadCallCacheI64(cache, 1, "prepared.property.cached.method");
+    auto *targetPtr =
+        loadCallCachePtr(cache, 3, "prepared.property.cached.target");
+    auto *expectedArity =
+        loadCallCacheI32(cache, 4, "prepared.property.cached.arity");
+    auto *cachedKind =
+        loadCallCacheI32(cache, 5, "prepared.property.cached.kind");
+    auto *flags = loadCallCacheI32(cache, 6, "prepared.property.cached.flags");
+
+    auto *isMethod = builder_.CreateICmpEQ(
+        kind, llvm::ConstantInt::get(i32Ty(), kPropertyCallMethod),
+        "prepared.property.is.method");
+    auto *cacheIsMethod = builder_.CreateICmpEQ(
+        cachedKind,
+        llvm::ConstantInt::get(
+            i32Ty(), static_cast<int>(CallInlineCacheKind::BOUND_METHOD)),
+        "prepared.property.cache.is.method");
+    auto *targetMatches = builder_.CreateICmpEQ(
+        cachedMethod, target, "prepared.property.target.matches");
+    auto *targetAvailable = builder_.CreateICmpNE(
+        targetPtr, llvm::ConstantPointerNull::get(i8PtrTy()),
+        "prepared.property.target.available");
+    auto *fastEligible =
+        builder_.CreateAnd(isMethod, cacheIsMethod, "prepared.property.fast.0");
+    fastEligible = builder_.CreateAnd(fastEligible, targetMatches,
+                                      "prepared.property.fast.1");
+    fastEligible = builder_.CreateAnd(fastEligible, targetAvailable,
+                                      "prepared.property.fast");
+    auto *fastBlock =
+        llvm::BasicBlock::Create(ctx_, "prepared.property.fast", function_);
+    auto *fallbackBlock =
+        llvm::BasicBlock::Create(ctx_, "prepared.property.generic", function_);
+    auto *doneBlock =
+        llvm::BasicBlock::Create(ctx_, "prepared.property.done", function_);
+    builder_.CreateCondBr(fastEligible, fastBlock, fallbackBlock);
+
+    builder_.SetInsertPoint(fastBlock);
+    auto *fastResult = builder_.CreateCall(
+        callMethodFast, {receiver, args, count, target, targetPtr,
+                         expectedArity, flags},
+        "prepared.property.method.fast");
     guardRuntimeError();
+    builder_.CreateBr(doneBlock);
+    fastBlock = builder_.GetInsertBlock();
+
+    builder_.SetInsertPoint(fallbackBlock);
+    auto *genericResult = builder_.CreateCall(
+        call, {kind, receiver, target, args, count}, "prepared.property.call");
+    guardRuntimeError();
+    builder_.CreateBr(doneBlock);
+    fallbackBlock = builder_.GetInsertBlock();
+
+    builder_.SetInsertPoint(doneBlock);
+    auto *result = builder_.CreatePHI(valueTy(), 2, "prepared.property.result");
+    result->addIncoming(fastResult, fastBlock);
+    result->addIncoming(genericResult, fallbackBlock);
     bind(instruction, result, instruction.resultType);
     return std::nullopt;
   }
