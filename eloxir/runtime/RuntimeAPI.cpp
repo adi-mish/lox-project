@@ -246,6 +246,12 @@ static std::string formatArityError(const char *name, int expected, int got) {
          std::to_string(got) + " for " + display_name + ".";
 }
 
+static const char *className(const ObjClass *klass) {
+  return (klass && klass->name && klass->name->length > 0)
+             ? klass->name->chars
+             : "<anonymous>";
+}
+
 static std::string formatArityError(const ObjFunction *func, int got) {
   if (!func)
     return formatArityError("<anonymous>", 0, got);
@@ -1578,11 +1584,7 @@ uint64_t elx_call_value(uint64_t callee_bits, uint64_t *args, int arg_count) {
       if (elx_has_runtime_error())
         return Value::nil().getBits();
     } else if (arg_count != 0) {
-      const char *class_name =
-          (klass->name && klass->name->chars && klass->name->length > 0)
-              ? klass->name->chars
-              : "<anonymous>";
-      std::string error_msg = formatArityError(class_name, 0, arg_count);
+      std::string error_msg = formatArityError(className(klass), 0, arg_count);
       elx_runtime_error(error_msg.c_str());
       return Value::nil().getBits();
     }
@@ -2449,11 +2451,7 @@ uint64_t elx_call_class_fast(uint64_t class_bits, uint64_t *args, int arg_count,
   bool has_initializer = (flags & CALL_CACHE_FLAG_CLASS_HAS_INITIALIZER) != 0;
   if (!has_initializer) {
     if (arg_count != 0) {
-      const char *class_name =
-          (klass->name && klass->name->chars && klass->name->length > 0)
-              ? klass->name->chars
-              : "<anonymous>";
-      std::string error_msg = formatArityError(class_name, 0, arg_count);
+      std::string error_msg = formatArityError(className(klass), 0, arg_count);
       elx_runtime_error(error_msg.c_str());
       return Value::nil().getBits();
     }
@@ -2461,12 +2459,8 @@ uint64_t elx_call_class_fast(uint64_t class_bits, uint64_t *args, int arg_count,
   }
 
   if (expected_arity >= 0 && arg_count != expected_arity) {
-    const char *class_name =
-        (klass->name && klass->name->chars && klass->name->length > 0)
-            ? klass->name->chars
-            : "<anonymous>";
     std::string error_msg =
-        formatArityError(class_name, expected_arity, arg_count);
+        formatArityError(className(klass), expected_arity, arg_count);
     elx_runtime_error(error_msg.c_str());
     return Value::nil().getBits();
   }

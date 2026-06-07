@@ -3,6 +3,7 @@
 #include "OptimisationPipeline.h"
 #include <algorithm>
 #include <llvm/ADT/StringMap.h>
+#include <llvm/Config/llvm-config.h>
 #include <llvm/ExecutionEngine/Orc/JITTargetMachineBuilder.h>
 #include <llvm/ExecutionEngine/Orc/LLJIT.h>
 #include <llvm/ExecutionEngine/Orc/ThreadSafeModule.h>
@@ -12,6 +13,19 @@
 #include <thread>
 
 namespace eloxir {
+namespace {
+
+llvm::StringMap<bool> detectHostCPUFeatures() {
+#if LLVM_VERSION_MAJOR >= 19
+  return llvm::sys::getHostCPUFeatures();
+#else
+  llvm::StringMap<bool> features;
+  llvm::sys::getHostCPUFeatures(features);
+  return features;
+#endif
+}
+
+} // namespace
 
 llvm::Expected<std::unique_ptr<EloxirJIT>> EloxirJIT::Create() {
   auto jtmb = llvm::orc::JITTargetMachineBuilder::detectHost();
@@ -23,7 +37,7 @@ llvm::Expected<std::unique_ptr<EloxirJIT>> EloxirJIT::Create() {
     jtmb->setCPU(hostCpu.str());
   }
 
-  auto hostFeatures = llvm::sys::getHostCPUFeatures();
+  auto hostFeatures = detectHostCPUFeatures();
   if (!hostFeatures.empty()) {
     std::vector<std::string> features;
     features.reserve(hostFeatures.size());

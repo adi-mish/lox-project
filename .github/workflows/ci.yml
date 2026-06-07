@@ -80,11 +80,11 @@ jobs:
       - name: Show implementation metadata
         run: ./lox.py info ${{ matrix.impl }}
 
-      - name: Check toolchain
-        run: ./lox.py doctor ${{ matrix.impl }}
-
       - name: Build ${{ matrix.impl }}
         run: ./lox.py build ${{ matrix.impl }}
+
+      - name: Check toolchain and built binary
+        run: ./lox.py doctor ${{ matrix.impl }} --require-built
 
       - name: Run official Lox tests
         run: ./lox.py test ${{ matrix.impl }} --skip-build --timeout 600 --timings 10 --show-skips
